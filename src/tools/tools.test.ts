@@ -24,7 +24,7 @@ function setup(opts: { decision?: ApprovalDecision; perms?: Partial<ReturnType<t
   });
   let n = 0;
   const call = (name: string, input: unknown, signal = new AbortController().signal) =>
-    executor.execute({ type: 'tool_call', id: `c${++n}`, name, input }, { sessionId: 's', workspace, signal });
+    executor.execute({ type: 'tool_call', id: `c${++n}`, name, input }, { sessionId: 's', workspace, memoryNamespace: 'default', signal });
   return { workspace, registry, call, asked };
 }
 

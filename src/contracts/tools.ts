@@ -16,6 +16,8 @@ export type ToolContext = {
   callId: string;
   /** Absolute workspace root for this session's sandbox. */
   workspace: string;
+  /** Memory namespace this session may read and write (from its routing profile). */
+  memoryNamespace: string;
   signal: AbortSignal;
 };
 

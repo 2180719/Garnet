@@ -33,6 +33,7 @@ export type AgentDeps = {
   executor: ToolExecutor;
   budget: Budget;
   workspace: string;
+  memoryNamespace?: string;
   persona?: string | undefined;
   maxOutputTokens: number;
   /** Transient provider failures retried per model call. */
@@ -132,7 +133,7 @@ export class Agent {
           store.append(sessionId, { type: 'tool_started', call, operationId });
           emit({ type: 'tool_start', call });
           task.toolCalls += 1;
-          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, signal });
+          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal });
           emit({ type: 'tool_end', call, result });
           if (result.status === 'error' && result.category === 'needs_approval') waiting = `Approval needed for ${call.name}.`;
         }
