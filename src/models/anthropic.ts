@@ -121,7 +121,8 @@ function toBlockParam(block: ContentBlock): BetaContentBlockParam {
 function fromBlock(block: BetaContentBlock): ContentBlock {
   if (block.type === 'text' && !('citations' in block && block.citations?.length)) return { type: 'text', text: block.text };
   if (block.type === 'tool_use') return { type: 'tool_call', id: block.id, name: block.name, input: block.input };
-  return { type: 'provider', provider: PROVIDER, data: block };
+  const bound = block.type === 'thinking' || block.type === 'redacted_thinking';
+  return { type: 'provider', provider: PROVIDER, data: block, ...(bound ? { bound: true } : {}) };
 }
 
 function mapStop(reason: string | null): StopReason {

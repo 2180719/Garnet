@@ -1,1 +1,10 @@
-export { systemPrompt, messagesFromEvents, type SystemPromptInput } from './builder.ts';
+export {
+  systemPrompt,
+  frozenSystem,
+  messagesFromEvents,
+  planCompaction,
+  extractSummary,
+  SUMMARY_PROMPT,
+  type SystemPromptInput,
+  type CompactionPlan,
+} from './builder.ts';

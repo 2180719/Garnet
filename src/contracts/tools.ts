@@ -42,6 +42,16 @@ export type ToolDefinition<I = any> = {
   run: (input: I, ctx: ToolContext) => Promise<ToolOutput>;
 };
 
-export type ToolResult =
-  | { status: 'ok'; content: string; truncated: boolean; durationMs: number }
-  | { status: 'error'; category: ErrorCategory; content: string; durationMs: number };
+/** Extra facts recorded with a result for audit; not sent to the model separately. */
+export type ToolResultMeta = {
+  /** Deterministic repairs applied to the call before execution (repair records). */
+  repairs?: string[];
+  /** Artifact holding the full output when it was too large to return. */
+  artifactId?: string;
+};
+
+export type ToolResult = ToolResultMeta &
+  (
+    | { status: 'ok'; content: string; truncated: boolean; durationMs: number }
+    | { status: 'error'; category: ErrorCategory; content: string; durationMs: number }
+  );

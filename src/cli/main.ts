@@ -9,6 +9,7 @@ import type { Approver } from '../policy/index.ts';
 import type { RuntimeEvent } from '../runtime/index.ts';
 import { sparkle } from './sparkle.ts';
 import { api, pair, service, start } from './admin.ts';
+import { memory, skills } from './knowledge.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
 
@@ -27,6 +28,10 @@ Usage:
   ruby api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
   ruby api key list|revoke <id>
                             Opt-in HTTP API and its keys
+  ruby memory show|edit|history|rollback
+                            Inspect and correct what Ruby remembers
+  ruby skills list|show|proposal|accept|reject|archive|stale
+                            Review skills Ruby has learned
   ruby service install|uninstall|status|show
                             Run Ruby as a background service (systemd/launchd)
   ruby help                 Show this help
@@ -70,6 +75,10 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return api(rest, io);
       case 'service':
         return await service(rest, io);
+      case 'memory':
+        return memory(rest, io);
+      case 'skills':
+        return skills(rest, io);
       case '--sparkle':
         io.out(sparkle());
         return 0;

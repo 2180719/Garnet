@@ -40,6 +40,25 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Per-task resource limits.'),
+    context: z
+      .object({
+        compactAtTokens: z
+          .number()
+          .int()
+          .min(10_000)
+          .default(150_000)
+          .describe('Summarize older turns before a task when the previous request used this many input tokens.'),
+        keepTurns: z.number().int().min(1).max(10).default(2).describe('Recent user turns kept word-for-word after summarizing.'),
+      })
+      .prefault({})
+      .describe('Context window management.'),
+    memory: z
+      .object({
+        memoryChars: z.number().int().min(200).max(20_000).default(2200).describe("Cap for MEMORY.md, Ruby's own notes."),
+        userChars: z.number().int().min(200).max(20_000).default(1400).describe('Cap for USER.md, what Ruby knows about you.'),
+      })
+      .prefault({})
+      .describe('Bounded memory, shown to Ruby at the start of each session.'),
     permissions: z
       .object({
         'fs.read': permission.default('allow'),

@@ -9,7 +9,9 @@ import { AnthropicModel, FakeModel } from './models/index.ts';
 import { Policy, deferAll, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue } from './runtime/index.ts';
 import { GatewayStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
-import { ToolExecutor, ToolRegistry, fileTools } from './tools/index.ts';
+import { MemoryStore, memoryTool } from './memory/index.ts';
+import { SkillStore, skillTools } from './skills/index.ts';
+import { ArtifactStore, ToolExecutor, ToolRegistry, fileTools, readArtifactTool } from './tools/index.ts';
 
 export const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }).version;
 
@@ -23,6 +25,8 @@ export type Ruby = {
   keyStore: KeyStore;
   keys: ApiKeys;
   registry: ToolRegistry;
+  memory: MemoryStore;
+  skills: SkillStore;
   agent: Agent;
   model: ModelAdapter;
   close: () => void;
@@ -47,10 +51,13 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   const db = openDb(options.memoryDb ? ':memory:' : paths.database);
   const store = new SessionStore(db);
   const keyStore = new KeyStore(db);
+  const memory = new MemoryStore({ root: join(paths.home, 'memory'), limits: { memory: config.memory.memoryChars, user: config.memory.userChars } });
+  const skills = new SkillStore({ root: join(paths.home, 'skills') });
+  const artifacts = new ArtifactStore(join(paths.home, 'artifacts'));
   const registry = new ToolRegistry();
-  for (const tool of fileTools) registry.register(tool);
+  for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
   const policy = new Policy(config.permissions);
-  const executor = new ToolExecutor({ registry, policy, approver: options.approver ?? deferAll });
+  const executor = new ToolExecutor({ registry, policy, approver: options.approver ?? deferAll, artifacts });
   const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, env));
   const agent = new Agent({
     store,
@@ -60,6 +67,9 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     budget: config.budgets,
     workspace: paths.workspace,
     persona: config.persona,
+    promptSections: (ns) => [memory.snapshot(ns), skills.index()],
+    compactAtTokens: config.context.compactAtTokens,
+    keepTurns: config.context.keepTurns,
     maxOutputTokens: config.model.maxOutputTokens,
   });
   return {
@@ -72,6 +82,8 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     keyStore,
     keys: new ApiKeys(keyStore),
     registry,
+    memory,
+    skills,
     agent,
     model,
     close: () => db.close(),

@@ -26,7 +26,11 @@ export type SessionEventPayload =
   | { type: 'tool_started'; call: ToolCallBlock; operationId: string }
   | { type: 'tool_finished'; callId: string; operationId: string; result: ToolResult }
   | { type: 'task_status'; taskId: string; status: TaskStatus; reason?: string }
-  | { type: 'model_error'; category: string; message: string };
+  | { type: 'model_error'; category: string; message: string }
+  /** The system prompt frozen for this session (memory snapshot, skills index). Kept stable for prompt caching. */
+  | { type: 'context_frozen'; system: string }
+  /** Compaction: events up to and including `throughSeq` are represented by `summary`. */
+  | { type: 'checkpoint'; summary: string; throughSeq: number; usage: Usage };
 
 export type SessionEvent = SessionEventPayload & {
   sessionId: string;

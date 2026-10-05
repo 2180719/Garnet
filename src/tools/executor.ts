@@ -8,6 +8,8 @@ import {
 } from '../contracts/index.ts';
 import type { Approver, Policy } from '../policy/index.ts';
 import type { ToolRegistry } from './registry.ts';
+import type { ArtifactStore } from './artifacts.ts';
+import { repairCall } from './repair.ts';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_OUTPUT = 20_000;
@@ -16,6 +18,8 @@ export type ExecutorDeps = {
   registry: ToolRegistry;
   policy: Policy;
   approver: Approver;
+  /** When set, oversized outputs are saved here instead of being cut off. */
+  artifacts?: ArtifactStore;
 };
 
 /**
@@ -30,7 +34,16 @@ export class ToolExecutor {
     this.deps = deps;
   }
 
-  async execute(call: ToolCallBlock, ctx: Omit<ToolContext, 'callId'>): Promise<ToolResult> {
+  async execute(original: ToolCallBlock, ctx: Omit<ToolContext, 'callId'>): Promise<ToolResult> {
+    const { call, repairs } = repairCall(original, this.deps.registry.names());
+    const result = await this.run(call, ctx);
+    if (repairs.length === 0) return result;
+    // Tell the model so it learns the exact form; history itself is never rewritten.
+    const note = `\n[Ruby auto-corrected this call: ${repairs.join('; ')}. Use the exact form next time.]`;
+    return { ...result, content: result.content + note, repairs };
+  }
+
+  private async run(call: ToolCallBlock, ctx: Omit<ToolContext, 'callId'>): Promise<ToolResult> {
     const started = Date.now();
     const fail = (category: ErrorCategory, content: string): ToolResult => ({
       status: 'error',
@@ -82,11 +95,15 @@ export class ToolExecutor {
     try {
       const output = await raceAbort(tool.run(input, { ...fullCtx, signal }), signal);
       const max = tool.maxOutputChars ?? DEFAULT_MAX_OUTPUT;
-      const truncated = output.content.length > max;
-      const content = truncated
-        ? `${output.content.slice(0, max)}\n[output truncated: showing ${max} of ${output.content.length} characters]`
-        : output.content;
-      return { status: 'ok', content, truncated, durationMs: Date.now() - started };
+      if (output.content.length <= max) return { status: 'ok', content: output.content, truncated: false, durationMs: Date.now() - started };
+      const head = output.content.slice(0, max);
+      if (this.deps.artifacts) {
+        const artifactId = this.deps.artifacts.save(ctx.sessionId, output.content);
+        const content = `${head}\n[output truncated: showing ${max} of ${output.content.length} characters. Full output saved as ${artifactId}; use read_artifact to see the rest.]`;
+        return { status: 'ok', content, truncated: true, artifactId, durationMs: Date.now() - started };
+      }
+      const content = `${head}\n[output truncated: showing ${max} of ${output.content.length} characters]`;
+      return { status: 'ok', content, truncated: true, durationMs: Date.now() - started };
     } catch (e) {
       if (timeout.aborted && !ctx.signal.aborted) return fail('timeout', `${tool.name} timed out.`);
       if (ctx.signal.aborted) return fail('cancelled', `${tool.name} was cancelled.`);

@@ -22,7 +22,7 @@ test('an interrupted tool call still gets a result, and follow-up text merges in
 });
 
 test('the system prompt is deterministic', () => {
-  const a = systemPrompt({ workspace: '/w', toolNames: ['a'] });
-  assert.equal(a, systemPrompt({ workspace: '/w', toolNames: ['a'] }));
-  assert.match(systemPrompt({ workspace: '/w', toolNames: [], persona: 'Be terse.' }), /Be terse\./);
+  const a = systemPrompt({ workspace: '/w' });
+  assert.equal(a, systemPrompt({ workspace: '/w' }));
+  assert.match(systemPrompt({ workspace: '/w', persona: 'Be terse.' }), /Be terse\./);
 });

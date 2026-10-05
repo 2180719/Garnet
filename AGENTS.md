@@ -20,9 +20,11 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | `src/config/` | Config schema (every field documented), loading, migrations, redaction. |
 | `src/store/` | SQLite: schema migrations, sessions, append-only event log, tasks, gateway tables, API keys and audit log. |
 | `src/policy/` | Capability permissions, approvals, workspace path containment. |
-| `src/tools/` | Tool registry, executor (validate → authorize → run with limits), built-in tools. |
+| `src/tools/` | Tool registry, executor (repair → validate → authorize → run with limits), artifacts for large outputs, built-in tools. |
 | `src/models/` | Model adapters: `fake` (tests) and `anthropic`. |
-| `src/context/` | System prompt and model-facing history derived from events. |
+| `src/context/` | Frozen per-session system prompt, model-facing history derived from events, keep-tail compaction planning. |
+| `src/memory/` | Bounded `MEMORY.md`/`USER.md` per namespace with versioning, and the `memory` tool. |
+| `src/skills/` | `SKILL.md` skills (agentskills.io format) with provenance, owner-edit locks and proposals. |
 | `src/runtime/` | Agent loop, budgets, cancellation, retries, per-session lanes. |
 | `src/gateway/` | Identity and pairing, conversation routing, durable inbox/outbox delivery, restart recovery, API keys, HTTP API. |
 | `src/channels/` | Messaging adapters (Telegram). Normalize a platform; no routing or persistence. |
@@ -40,7 +42,7 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 - Erasable TypeScript only (no `enum`, no constructor parameter properties, no namespaces) because Node strips types at runtime.
 - Tests are offline. Live provider tests must be opt-in (`RUBY_LIVE_TESTS=1`).
 - Never put secrets in config, prompts, logs or tool output. Config stores the *name* of an environment variable.
-- The event log is append-only. Never rewrite history the model has seen; derive cleaned views instead.
+- The event log is append-only. Never rewrite history the model has seen; derive cleaned views instead. The system prompt and tool set stay fixed for a session (prompt caching and signed thinking depend on it); they change only at compaction.
 - Report honestly: say what you verified and what you did not.
 
 ## Self-modification

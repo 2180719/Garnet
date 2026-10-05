@@ -13,8 +13,9 @@ import {
   type ToolCallBlock,
   type ToolResult,
   type Usage,
+  textOf,
 } from '../contracts/index.ts';
-import { messagesFromEvents, systemPrompt } from '../context/index.ts';
+import { extractSummary, frozenSystem, messagesFromEvents, planCompaction, systemPrompt } from '../context/index.ts';
 import type { SessionStore } from '../store/index.ts';
 import type { ToolExecutor, ToolRegistry } from '../tools/index.ts';
 
@@ -24,6 +25,7 @@ export type RuntimeEvent =
   | { type: 'tool_start'; call: ToolCallBlock }
   | { type: 'tool_end'; call: ToolCallBlock; result: ToolResult }
   | { type: 'retry'; attempt: number; delayMs: number; message: string }
+  | { type: 'compacting' }
   | { type: 'status'; status: TaskStatus; reason: string | null };
 
 export type AgentDeps = {
@@ -35,6 +37,16 @@ export type AgentDeps = {
   workspace: string;
   memoryNamespace?: string;
   persona?: string | undefined;
+  /**
+   * Extra stable system-prompt sections for a memory namespace (memory
+   * snapshot, skills index). Read when a session's prompt is frozen: at its
+   * first task and after each compaction.
+   */
+  promptSections?: (memoryNamespace: string) => string[];
+  /** Compact before a task when the previous request used at least this many input tokens. */
+  compactAtTokens?: number;
+  /** User turns kept verbatim after compaction. */
+  keepTurns?: number;
   maxOutputTokens: number;
   /** Transient provider failures retried per model call. */
   maxRetries?: number;
@@ -80,8 +92,11 @@ export class Agent {
       return task;
     };
 
+    // The tool set and system prompt stay fixed for a session so the provider
+    // cache and prefix-bound blocks (signed thinking) remain valid.
     const tools = this.deps.registry.schemas();
-    const system = systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, toolNames: tools.map((t) => t.name) });
+    await this.maybeCompact(sessionId, task, tools, signal, emit);
+    const system = this.systemFor(sessionId);
 
     for (;;) {
       if (signal.aborted) return finish('cancelled', 'Cancelled by the owner.');
@@ -142,6 +157,59 @@ export class Agent {
       store.updateTask(task);
       if (waiting) return finish('waiting_for_approval', waiting);
     }
+  }
+
+  private systemFor(sessionId: string): string {
+    const frozen = frozenSystem(this.deps.store.events(sessionId));
+    if (frozen !== undefined) return frozen;
+    const ns = this.deps.memoryNamespace ?? 'default';
+    const system = systemPrompt({
+      persona: this.deps.persona,
+      workspace: this.deps.workspace,
+      sections: this.deps.promptSections?.(ns) ?? [],
+    });
+    this.deps.store.append(sessionId, { type: 'context_frozen', system });
+    return system;
+  }
+
+  /**
+   * Keep-tail compaction between tasks (never mid tool round): folds older
+   * turns into a summary, then re-freezes the system prompt so memory changes
+   * take effect. Failures are logged as events and never block the task.
+   */
+  private async maybeCompact(
+    sessionId: string,
+    task: TaskRecord,
+    tools: ReturnType<ToolRegistry['schemas']>,
+    signal: AbortSignal,
+    emit: (e: RuntimeEvent) => void,
+  ): Promise<void> {
+    const threshold = this.deps.compactAtTokens;
+    if (!threshold) return;
+    const events = this.deps.store.events(sessionId);
+    const lastUsage = events.findLast((e) => e.type === 'assistant_message' || e.type === 'checkpoint');
+    if (lastUsage?.type !== 'assistant_message') return; // nothing new since the last checkpoint
+    const u = lastUsage.usage;
+    const contextTokens = (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+    if (contextTokens < threshold) return;
+    const plan = planCompaction(events, this.deps.keepTurns ?? 2);
+    if (!plan) return;
+    emit({ type: 'compacting' });
+    const system = frozenSystem(events) ?? this.systemFor(sessionId);
+    const turn = await this.callModel({ system, messages: plan.messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, () => {});
+    task.modelCalls += 1;
+    if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
+    const summary = turn.kind === 'done' ? extractSummary(textOf(turn.message)) : '';
+    if (turn.kind === 'error' || !summary) {
+      this.deps.store.append(sessionId, { type: 'model_error', category: turn.kind === 'error' ? turn.category : 'invalid_input', message: 'Compaction failed; continuing with full history.' });
+      return;
+    }
+    this.deps.store.append(sessionId, { type: 'checkpoint', summary, throughSeq: plan.throughSeq, usage: turn.usage });
+    const ns = this.deps.memoryNamespace ?? 'default';
+    this.deps.store.append(sessionId, {
+      type: 'context_frozen',
+      system: systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [] }),
+    });
   }
 
   private budgetProblem(task: TaskRecord, started: number): string | null {

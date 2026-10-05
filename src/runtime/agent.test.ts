@@ -11,7 +11,7 @@ import { openDb, SessionStore } from '../store/index.ts';
 import { ToolExecutor, ToolRegistry, fileTools } from '../tools/index.ts';
 import { Agent, LaneQueue, type RuntimeEvent } from './index.ts';
 
-function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: Approver } = {}) {
+function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: Approver; sections?: () => string[]; compactAtTokens?: number } = {}) {
   const workspace = tempDir();
   const store = new SessionStore(openDb(':memory:'));
   const registry = new ToolRegistry();
@@ -22,6 +22,8 @@ function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: 
   const agent = new Agent({
     store, model, registry, executor, workspace, maxOutputTokens: 1000,
     budget: { ...config.budgets, ...opts.budget },
+    ...(opts.sections ? { promptSections: opts.sections } : {}),
+    ...(opts.compactAtTokens ? { compactAtTokens: opts.compactAtTokens, keepTurns: 1 } : {}),
     sleep: async () => {},
   });
   const session = store.createSession();
@@ -46,7 +48,7 @@ test('a tool-backed task completes and records usage', async () => {
   const second = t.model.requests[1]!.messages.at(-1)!;
   assert.equal(second.content[0]?.type, 'tool_result');
   const types = t.store.events(t.session.id).map((e) => e.type);
-  assert.deepEqual(types, ['user_message', 'assistant_message', 'tool_started', 'tool_finished', 'assistant_message', 'task_status']);
+  assert.deepEqual(types, ['user_message', 'context_frozen', 'assistant_message', 'tool_started', 'tool_finished', 'assistant_message', 'task_status']);
   assert.ok(t.events.some((e) => e.type === 'text'));
 });
 
@@ -133,4 +135,46 @@ test('lanes serialize per key and run different keys concurrently', async () => 
   await Promise.all([lanes.run('a', job('a1', 20)), lanes.run('a', job('a2', 1)), lanes.run('b', job('b1', 1))]);
   assert.ok(log.indexOf('end a1') < log.indexOf('start a2'), 'same key is serialized');
   assert.ok(log.indexOf('start b1') < log.indexOf('end a1'), 'different keys overlap');
+});
+
+test('the system prompt is frozen per session and refreshed only by compaction', async () => {
+  let memory = 'likes tea';
+  const t = setup(
+    [
+      { text: 'one', usage: { inputTokens: 10 } },
+      { text: 'two', usage: { inputTokens: 5000 } },
+      { text: '<summary>Owner likes tea; discussed one and two.</summary>' },
+      { text: 'three' },
+    ],
+    { sections: () => [`# Memory\n${memory}`], compactAtTokens: 1000 },
+  );
+  await t.run('first');
+  memory = 'likes coffee';
+  await t.run('second');
+  assert.match(t.model.requests[1]!.system, /likes tea/, 'mid-session memory writes do not change the prompt');
+  assert.equal(t.model.requests[0]!.system, t.model.requests[1]!.system);
+  await t.run('third'); // previous request used 5000 tokens -> compact first
+  const summarize = t.model.requests[2]!;
+  assert.match(String((summarize.messages.at(-1)!.content.at(-1) as { text: string }).text), /Summarize the transcript/);
+  const after = t.model.requests[3]!;
+  assert.match(after.system, /likes coffee/, 'compaction re-freezes the prompt with fresh memory');
+  const first = after.messages[0]!.content[0];
+  assert.ok(first?.type === 'text' && first.text.includes('Owner likes tea; discussed one and two.'));
+  assert.equal(after.messages.length, 1, 'only the summary and the kept turn remain');
+  assert.ok(JSON.stringify(after.messages[0]!.content).includes('third'), 'the current turn is kept verbatim');
+  assert.ok(t.store.events(t.session.id).some((e) => e.type === 'checkpoint'));
+});
+
+test('malformed but unambiguous tool calls are repaired and noted', async () => {
+  const t = setup([
+    { toolCalls: [{ name: 'ListFiles', input: '```json\n{"path": ".",}\n```' }] },
+    (req) => {
+      const r = req.messages.at(-1)!.content[0];
+      assert.ok(r?.type === 'tool_result' && !r.isError && /auto-corrected/.test(r.content));
+      return { text: 'ok' };
+    },
+  ]);
+  assert.equal((await t.run('list')).status, 'completed');
+  const finished = t.store.events(t.session.id).find((e) => e.type === 'tool_finished');
+  assert.ok(finished?.type === 'tool_finished' && finished.result.repairs?.length === 2);
 });

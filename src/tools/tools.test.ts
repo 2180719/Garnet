@@ -102,3 +102,25 @@ test('tool schemas are stable JSON Schema', () => {
   assert.equal(schema?.inputSchema.type, 'object');
   assert.deepEqual(registry.schemas(), registry.schemas());
 });
+
+test('repairs never guess ambiguous names; oversized output becomes an artifact', async () => {
+  const { repairCall, ArtifactStore, readArtifactTool } = await import('./index.ts');
+  assert.equal(repairCall({ type: 'tool_call', id: '1', name: 'files', input: {} }, ['list_files', 'read_file']).repairs.length, 0);
+  assert.equal(repairCall({ type: 'tool_call', id: '1', name: 'read-file', input: {} }, ['read_file']).call.name, 'read_file');
+  const workspace = tempDir();
+  const registry = new ToolRegistry();
+  const artifacts = new ArtifactStore(join(workspace, '.artifacts'));
+  const big: ToolDefinition<object> = {
+    name: 'big', version: 1, description: 'big', input: z.object({}), capability: 'fs.read',
+    idempotent: true, maxOutputChars: 10, run: async () => ({ content: '0123456789abcdefghij' }),
+  };
+  registry.register(big).register(readArtifactTool(artifacts));
+  const executor = new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'approved', artifacts });
+  const ctx = { sessionId: 's1', workspace, memoryNamespace: 'default', signal: new AbortController().signal };
+  const r = await executor.execute({ type: 'tool_call', id: 'a', name: 'big', input: {} }, ctx);
+  assert.ok(r.artifactId);
+  const more = await executor.execute({ type: 'tool_call', id: 'b', name: 'read_artifact', input: { id: r.artifactId, offset: 10 } }, ctx);
+  assert.equal(more.content, 'abcdefghij');
+  const other = await executor.execute({ type: 'tool_call', id: 'c', name: 'read_artifact', input: { id: r.artifactId } }, { ...ctx, sessionId: 's2' });
+  assert.equal(other.status === 'error' && other.category, 'denied');
+});

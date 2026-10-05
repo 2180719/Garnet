@@ -25,6 +25,12 @@ export type ProviderBlock = {
   type: 'provider';
   provider: string;
   data: unknown;
+  /**
+   * True when the block is bound to the exact conversation prefix that
+   * produced it (e.g. signed thinking). Bound blocks are dropped from turns
+   * retained after compaction, because their prefix no longer exists.
+   */
+  bound?: boolean;
 };
 
 export type ContentBlock = TextBlock | ToolCallBlock | ToolResultBlock | ProviderBlock;

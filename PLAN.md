@@ -22,7 +22,7 @@ Ruby is a persistent personal agent you run on your own VPS or computer and reac
 2. **Easy for agents to navigate and modify.** Use a predictable layout, a root `AGENTS.md` map, and a single `npm test` that is fast and offline, so a user's own agent can safely change Ruby. Self-modification goes through a branch or patch plus tests, never live edits to the running install.
 3. **Robust gateway.** Durable inbox/outbox, deduplication, per-session serialization, health checks that test real message flow, clean shutdown and restart, and channel adapters isolated from the agent loop.
 4. **Opt-in, key-gated external access.** Off by default and bound to loopback. When enabled: scoped, revocable, hashed API keys; rate limits; an audit log; and an OpenAI-compatible endpoint plus a native API. Ruby refuses to bind publicly without auth.
-5. **Token efficient.** Stable prompt prefix, bounded memory snapshot, on-demand tool schemas, artifact handles for large outputs, recoverable compaction, and per-task usage accounting.
+5. **Token efficient.** Stable prompt prefix, bounded memory snapshot, a small fixed tool set per session (changing tools mid-session would break prompt caching and signed thinking), artifact handles for large outputs, recoverable compaction, and per-task usage accounting.
 6. **Premium, lightweight surfaces.** A no-tracking public website and an opt-in dashboard that ships in the repo, both fast and polished.
 
 Non-goals for v1: multi-agent orchestration inside Ruby, a public skill marketplace, vector search, voice.
