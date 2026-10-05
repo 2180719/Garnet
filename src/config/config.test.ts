@@ -47,3 +47,15 @@ test('redact hides secrets but keeps env var names', () => {
   assert.equal(out.token, '[redacted]');
   assert.equal(out.note, 'key [redacted] here');
 });
+
+test('env file loads without overriding existing variables', async () => {
+  const { loadEnvFile } = await import('./index.ts');
+  const home = tempDir();
+  writeFileSync(join(home, 'env'), '# secrets\nA_KEY="one"\nexport B_KEY=two\nC_KEY=three\n', { mode: 0o600 });
+  const env: NodeJS.ProcessEnv = { C_KEY: 'kept' };
+  const { loaded, warning } = loadEnvFile(home, env);
+  assert.deepEqual(loaded, ['A_KEY', 'B_KEY']);
+  assert.equal(env.A_KEY, 'one');
+  assert.equal(env.C_KEY, 'kept');
+  assert.equal(warning, null);
+});

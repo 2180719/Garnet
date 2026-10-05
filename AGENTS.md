@@ -10,6 +10,7 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | `npm test` | Offline, deterministic tests (`node:test`). |
 | `npm run ruby -- chat --fake` | Chat with the offline fake model. |
 | `npm run ruby -- help` | All CLI commands. |
+| `npm run ruby -- start` | Run the service in the foreground (gateway, channels, API). |
 
 ## Layout
 
@@ -17,16 +18,19 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | --- | --- |
 | `src/contracts/` | Shared types: messages, model/tool/session contracts, errors, IDs. Everyone may import it. |
 | `src/config/` | Config schema (every field documented), loading, migrations, redaction. |
-| `src/store/` | SQLite: schema migrations, sessions, append-only event log, tasks. |
+| `src/store/` | SQLite: schema migrations, sessions, append-only event log, tasks, gateway tables, API keys and audit log. |
 | `src/policy/` | Capability permissions, approvals, workspace path containment. |
 | `src/tools/` | Tool registry, executor (validate → authorize → run with limits), built-in tools. |
 | `src/models/` | Model adapters: `fake` (tests) and `anthropic`. |
 | `src/context/` | System prompt and model-facing history derived from events. |
 | `src/runtime/` | Agent loop, budgets, cancellation, retries, per-session lanes. |
+| `src/gateway/` | Identity and pairing, conversation routing, durable inbox/outbox delivery, restart recovery, API keys, HTTP API. |
+| `src/channels/` | Messaging adapters (Telegram). Normalize a platform; no routing or persistence. |
+| `src/service/` | systemd/launchd service definitions and install. |
 | `src/cli/` | The `ruby` command. |
 | `src/main.ts` | Composition root: the only place modules are wired together. |
 | `site/` | Public static website (no build, no tracking). |
-| `test/` | Shared test helpers and cross-module tests. |
+| `test/` | Shared test helpers and fixtures (fake channel, wired gateway). |
 
 ## Rules (enforced by `scripts/lint.ts` where possible)
 

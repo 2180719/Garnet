@@ -62,9 +62,46 @@ export const configSchema = z
         enabled: z.boolean().default(false).describe('Serve the HTTP API. Off by default.'),
         host: z.string().default('127.0.0.1').describe('Bind address. Non-loopback requires at least one API key.'),
         port: z.number().int().min(1).max(65535).default(7311).describe('HTTP port.'),
+        rateLimitPerMinute: z.number().int().positive().default(60).describe('Requests per minute allowed for each API key.'),
       })
       .prefault({})
       .describe('Opt-in, key-gated external access.'),
+    channels: z
+      .object({
+        telegram: z
+          .object({
+            enabled: z.boolean().default(false).describe('Connect a Telegram bot.'),
+            tokenEnv: z.string().default('TELEGRAM_BOT_TOKEN').describe('Environment variable holding the bot token from @BotFather.'),
+          })
+          .prefault({})
+          .describe('Telegram bot channel.'),
+      })
+      .prefault({})
+      .describe('Messaging channels. Each is off until enabled.'),
+    gateway: z
+      .object({
+        maxConcurrent: z.number().int().min(1).max(64).default(4).describe('Tasks that may run at once across all conversations.'),
+        pairingTtlMinutes: z.number().int().min(1).max(1440).default(60).describe('How long a pairing code stays valid.'),
+      })
+      .prefault({})
+      .describe('Message routing and delivery.'),
+    routes: z
+      .array(
+        z
+          .object({
+            match: z.object({
+              channel: z.string().describe('Channel name, e.g. telegram.'),
+              chatId: z.string().optional().describe('Specific chat; omit to match every chat on the channel.'),
+            }),
+            conversation: z
+              .string()
+              .regex(/^[a-z0-9-]{1,40}$/)
+              .describe('Shared conversation name. Chats routed to the same name share history.'),
+          })
+          .strict(),
+      )
+      .default([])
+      .describe('Optional rules that link chats into shared conversations. By default every chat is its own conversation.'),
     dashboard: z
       .object({
         enabled: z.boolean().default(false).describe('Serve the dashboard through the API server.'),

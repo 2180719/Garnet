@@ -1,0 +1,101 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { RubyError } from '../contracts/index.ts';
+import type { ApiKeyRow, KeyStore } from '../store/index.ts';
+
+export const SCOPES = ['chat', 'read', 'admin'] as const;
+export type Scope = (typeof SCOPES)[number];
+
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+const KEY_SHAPE = /^ruby_([A-Za-z0-9]{8})_([A-Za-z0-9]{32})$/;
+
+function base62(length: number): string {
+  // Rejection sampling keeps the distribution uniform.
+  let out = '';
+  while (out.length < length) {
+    for (const byte of randomBytes(length * 2)) {
+      if (byte < 248 && out.length < length) out += BASE62[byte % 62];
+    }
+  }
+  return out;
+}
+
+/**
+ * Keys are 190-bit random secrets, so a salted HMAC-SHA256 is sufficient; a
+ * slow password hash would add latency to every request without adding
+ * security. Only the hash is stored.
+ */
+function digest(salt: string, secret: string): string {
+  return createHmac('sha256', Buffer.from(salt, 'hex')).update(secret).digest('hex');
+}
+
+export type CreatedKey = { id: string; key: string; name: string; scopes: Scope[]; expiresAt: string | null };
+
+export class ApiKeys {
+  private readonly store: KeyStore;
+
+  constructor(store: KeyStore) {
+    this.store = store;
+  }
+
+  /** Creates a key. The full key is returned once and never stored. */
+  create(name: string, scopes: Scope[], expiresInDays?: number): CreatedKey {
+    if (!name.trim() || name.length > 64) throw new RubyError('invalid_input', 'Key name must be 1-64 characters.');
+    const unknown = scopes.filter((s) => !SCOPES.includes(s));
+    if (scopes.length === 0 || unknown.length) throw new RubyError('invalid_input', `Scopes must be some of: ${SCOPES.join(', ')}.`);
+    const id = base62(8);
+    const secret = base62(32);
+    const salt = randomBytes(16).toString('hex');
+    const expiresAt = expiresInDays ? new Date(Date.now() + expiresInDays * 86_400_000).toISOString() : null;
+    this.store.insert({ id, name: name.trim(), salt, hash: digest(salt, secret), scopes: [...new Set(scopes)], createdAt: new Date().toISOString(), expiresAt });
+    return { id, key: `ruby_${id}_${secret}`, name: name.trim(), scopes, expiresAt };
+  }
+
+  /** Returns the key record when `presented` is a valid, active key. Constant-time comparison. */
+  verify(presented: string, now: Date = new Date()): ApiKeyRow | null {
+    const m = KEY_SHAPE.exec(presented);
+    if (!m) return null;
+    const row = this.store.get(m[1]!);
+    if (!row || row.revokedAt || (row.expiresAt && row.expiresAt <= now.toISOString())) return null;
+    const expected = Buffer.from(row.hash, 'hex');
+    const actual = Buffer.from(digest(row.salt, m[2]!), 'hex');
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+    this.store.touch(row.id);
+    return row;
+  }
+
+  list(): Omit<ApiKeyRow, 'salt' | 'hash'>[] {
+    return this.store.list().map(({ salt: _s, hash: _h, ...rest }) => rest);
+  }
+
+  revoke(id: string): boolean {
+    return this.store.revoke(id);
+  }
+
+  activeCount(): number {
+    return this.store.activeCount();
+  }
+}
+
+/** Per-key token bucket. In memory: limits reset on restart, which is acceptable for abuse control. */
+export class RateLimiter {
+  private readonly buckets = new Map<string, { tokens: number; at: number }>();
+  private readonly perMinute: number;
+
+  constructor(perMinute: number) {
+    this.perMinute = perMinute;
+  }
+
+  /** Returns 0 when allowed, otherwise milliseconds until the next token. */
+  take(key: string, now = Date.now()): number {
+    const rate = this.perMinute / 60_000;
+    const b = this.buckets.get(key) ?? { tokens: this.perMinute, at: now };
+    b.tokens = Math.min(this.perMinute, b.tokens + (now - b.at) * rate);
+    b.at = now;
+    this.buckets.set(key, b);
+    if (b.tokens >= 1) {
+      b.tokens -= 1;
+      return 0;
+    }
+    return Math.ceil((1 - b.tokens) / rate);
+  }
+}

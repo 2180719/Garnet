@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
-import { defaultConfig, loadConfig, redact, rubyHome, writeConfig, configSchema } from '../config/index.ts';
+import { defaultConfig, loadConfig, loadEnvFile, redact, rubyHome, writeConfig, configSchema } from '../config/index.ts';
 import { errorMessage, isRubyError } from '../contracts/index.ts';
 import { createRuby } from '../main.ts';
 import { FakeModel } from '../models/index.ts';
 import type { Approver } from '../policy/index.ts';
 import type { RuntimeEvent } from '../runtime/index.ts';
 import { sparkle } from './sparkle.ts';
+import { api, pair, service, start } from './admin.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
 
@@ -19,11 +20,22 @@ Usage:
   ruby config show          Print the effective config (secrets redacted)
   ruby config explain       Describe every setting
   ruby sessions             List recent sessions
+  ruby start                Run the service (channels, gateway, API) in the foreground
+  ruby pair list|approve <code>|revoke <channel> <id>
+                            Manage who may talk to Ruby
+  ruby api status|enable|disable
+  ruby api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
+  ruby api key list|revoke <id>
+                            Opt-in HTTP API and its keys
+  ruby service install|uninstall|status|show
+                            Run Ruby as a background service (systemd/launchd)
   ruby help                 Show this help
 
 Environment:
   RUBY_HOME                 Data directory (default ~/.ruby)
   ANTHROPIC_API_KEY         Provider key (name configurable via model.apiKeyEnv)
+  TELEGRAM_BOT_TOKEN        Telegram bot token (when channels.telegram.enabled)
+  Service installs read secrets from <RUBY_HOME>/env (KEY=value lines, mode 0600).
 `;
 
 export type Io = {
@@ -39,6 +51,8 @@ const stdio: Io = {
 export async function main(argv: string[], io: Io = stdio): Promise<number> {
   const [command = 'help', ...rest] = argv;
   try {
+    const { warning } = loadEnvFile(rubyHome());
+    if (warning) io.err(`Warning: ${warning}\n`);
     switch (command) {
       case 'init':
         return init(io);
@@ -48,6 +62,14 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return configCommand(rest, io);
       case 'sessions':
         return sessions(io);
+      case 'start':
+        return await start(io);
+      case 'pair':
+        return pair(rest, io);
+      case 'api':
+        return api(rest, io);
+      case 'service':
+        return await service(rest, io);
       case '--sparkle':
         io.out(sparkle());
         return 0;
@@ -115,7 +137,7 @@ function explain(schema: JsonSchema, prefix: string): string[] {
 }
 
 function sessions(io: Io): number {
-  const ruby = createRuby({ model: new FakeModel() });
+  const ruby = createRuby({ noModel: true });
   try {
     const rows = ruby.store.listSessions(20);
     if (rows.length === 0) io.out('No sessions yet. Start one with `ruby chat`.\n');

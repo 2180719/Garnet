@@ -55,6 +55,24 @@ export class SessionStore {
     return rows.map((r) => ({ ...(JSON.parse(r.payload) as SessionEventPayload), sessionId, seq: r.seq, at: r.at }));
   }
 
+  lastSeq(sessionId: string): number {
+    const row = this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE session_id = ?').get(sessionId) as { seq: number };
+    return row.seq;
+  }
+
+  /** Fails tasks a crash left `running`, so they are never silently resumed. Returns them. */
+  failInterrupted(reason: string): TaskRecord[] {
+    const tasks = this.unfinishedTasks().filter((t) => t.status === 'running');
+    for (const t of tasks) {
+      t.status = 'failed';
+      t.reason = reason;
+      t.endedAt = nowIso();
+      this.updateTask(t);
+      this.append(t.sessionId, { type: 'task_status', taskId: t.id, status: 'failed', reason });
+    }
+    return tasks;
+  }
+
   createTask(sessionId: string, usage: Usage): TaskRecord {
     const task: TaskRecord = {
       id: newId('task'),

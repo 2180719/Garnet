@@ -23,6 +23,11 @@ export class LaneQueue {
     return next;
   }
 
+  /** Resolves when every queued and running job has settled. */
+  async idle(): Promise<void> {
+    while (this.tails.size > 0) await Promise.all([...this.tails.values()]);
+  }
+
   get pendingKeys(): number {
     return this.tails.size;
   }

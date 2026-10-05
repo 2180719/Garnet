@@ -1,0 +1,12 @@
+# gateway
+
+The single source of truth for who may talk to Ruby, which conversation a message belongs to, and whether a reply was delivered.
+
+- Public API: `Gateway` (start, stop, receive, chat, deliver, health, approvePairing), `approvePairing(store, code)` for other processes, `ApiKeys`/`RateLimiter`, `ApiServer`.
+- Inbound: channel → `receive` persists to the inbox (deduped on channel/account/chat/external ID) → `dispatch`: group chats ignored; unknown senders get one pairing code per code lifetime; `/start`, `/new`, `/stop`; otherwise queued on the conversation's lane.
+- Conversations: `routes` in config link chats into a shared conversation; otherwise each chat is its own. `/new` rebinds the conversation to a fresh session.
+- Outbound: every reply goes through the outbox. Delivery retries with backoff or `retryAfterMs`, then fails. A message caught mid-send by a restart is marked `uncertain` unless the channel dedupes sends; it is never blindly resent.
+- Recovery: tasks left `running` are failed and the sender is told, rather than replaying work that may have had effects.
+- HTTP API: off by default; `listen` refuses a non-loopback host without an active key. Every route but `/health` needs `Authorization: Bearer ruby_<id>_<secret>`. Scopes: `chat`, `read`, `admin` (admin implies all). Keys are stored as salted HMAC-SHA256 hashes and compared in constant time. Each request is rate-limited per key and written to `api_audit`.
+- `/v1/chat/completions` is OpenAI-compatible, but Ruby keeps state server-side: only the newest user message is used, in the conversation named by `X-Ruby-Conversation` (default `default`) for that key.
+- Must not: call models or tools directly (only through `Agent`), or log secrets.

@@ -35,6 +35,83 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX tasks_by_session ON tasks(session_id, started_at);
   `,
+  `
+  CREATE TABLE inbox (
+    id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    account TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT,
+    is_private INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    session_id TEXT,
+    task_id TEXT,
+    UNIQUE (channel, account, chat_id, external_id)
+  );
+  CREATE INDEX inbox_by_status ON inbox(status, received_at);
+  CREATE TABLE outbox (
+    delivery_id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    account TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    reply_to TEXT,
+    status TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    sent_at TEXT
+  );
+  CREATE INDEX outbox_due ON outbox(status, next_attempt_at);
+  CREATE TABLE identities (
+    channel TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    display_name TEXT,
+    role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (channel, sender_id)
+  );
+  CREATE TABLE pairing_codes (
+    code TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    account TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT,
+    chat_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+  CREATE TABLE conversations (
+    key TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE api_keys (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    last_used_at TEXT
+  );
+  CREATE TABLE api_audit (
+    at TEXT NOT NULL,
+    key_id TEXT,
+    ip TEXT,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    status INTEGER NOT NULL
+  );
+  CREATE INDEX api_audit_by_time ON api_audit(at);
+  `,
 ];
 
 export type Db = DatabaseSync;

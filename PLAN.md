@@ -108,7 +108,7 @@ Rules:
 Disabled by default. Enable it with `ruby api enable`.
 
 - Binds to `127.0.0.1` unless configured otherwise. Startup refuses a non-loopback bind unless at least one key exists; recommend Tailscale or a reverse proxy with TLS.
-- **API keys:** `ruby api key create --name laptop --scopes chat,read` prints the key once. Ruby stores only a salted hash (scrypt) and a short prefix for identification. Keys can be scoped (`chat`, `read`, `admin`), given an expiry, revoked, and rate-limited (token bucket). Every request is written to the audit log.
+- **API keys:** `ruby api key create --name laptop --scopes chat,read` prints the key once. Ruby stores only a salted HMAC-SHA256 hash (keys are high-entropy random secrets, so a slow password hash would add latency without adding security) and a short ID for identification. Keys can be scoped (`chat`, `read`, `admin`), given an expiry, revoked, and rate-limited (token bucket). Every request is written to the audit log.
 - **Endpoints:**
   - `POST /v1/chat/completions` and `GET /v1/models`: OpenAI-compatible, so any chat frontend works.
   - `/api/*`: native API for sessions, tasks, approvals, memory, schedules, config and usage. This is what the dashboard uses.

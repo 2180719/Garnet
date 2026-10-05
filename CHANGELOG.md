@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Phase 2: gateway, Telegram, API
+- Gateway: durable inbox with dedupe, per-conversation lanes, pairing codes for unknown senders, `/new` and `/stop`, routes that link chats, durable outbox with retries, and restart recovery that reports interrupted work instead of replaying it.
+- Telegram channel: long polling with at-least-once acknowledgement, message splitting, 409 conflict handling, clean shutdown, and the token redacted from errors.
+- Opt-in HTTP API: scoped, expiring, revocable keys (salted HMAC, constant-time check), per-key rate limits, an audit log, OpenAI-compatible `/v1/chat/completions` with streaming, and refusal to bind publicly without a key.
+- `ruby start`, `ruby pair`, `ruby api`, `ruby service` (systemd/launchd); secrets in `<RUBY_HOME>/env`.
+
 ### Phase 1: foundation
 - Core contracts, config with validation, migrations and redaction, and SQLite storage with an append-only event log.
 - Agent loop with budgets, cancellation, transient-error retries, and per-session lanes.
