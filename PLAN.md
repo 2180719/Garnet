@@ -33,7 +33,7 @@ Non-goals for v1: multi-agent orchestration inside Ruby, a public skill marketpl
 | --- | --- | --- |
 | Language | TypeScript on Node.js ≥ 22.18, run directly with Node's type stripping (erasable syntax only) | No build step for the core; fits the dashboard and site; strong provider SDK ecosystem |
 | Storage | SQLite via built-in `node:sqlite` (WAL), FTS5 for search | Transactions for inbox/outbox, dedupe and occurrences; zero native dependencies |
-| Validation | `zod` (the only planned runtime dependency for the core) | Runtime validation plus JSON Schema output for tool definitions |
+| Dependencies | `zod` (validation and tool JSON Schema) and the official `@anthropic-ai/sdk` (models only); everything else uses Node built-ins, enforced by `scripts/lint.ts` | Small, auditable dependency tree |
 | HTTP | `node:http` with a tiny internal router | Fewer dependencies, full control over auth and limits |
 | Tests | `node:test` + `tsc --noEmit` + a small lint script | Fast, offline, no framework lock-in |
 | First provider | Anthropic Messages API; then an OpenAI-compatible adapter (OpenRouter, local models) | Prompt caching and tool use first; broad coverage second |

@@ -1,0 +1,29 @@
+{
+  "name": "ruby-agent",
+  "version": "0.1.0",
+  "description": "A persistent personal agent you can actually read.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "ruby": "src/cli/bin.ts"
+  },
+  "scripts": {
+    "ruby": "node --disable-warning=ExperimentalWarning src/cli/bin.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/lint.ts",
+    "check": "npm run lint && npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}

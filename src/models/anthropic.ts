@@ -1,0 +1,179 @@
+import Anthropic from '@anthropic-ai/sdk';
+import type {
+  BetaContentBlock,
+  BetaContentBlockParam,
+  BetaMessageParam,
+  BetaToolUnion,
+  BetaUsage,
+} from '@anthropic-ai/sdk/resources/beta/messages/messages';
+import type {
+  ChatMessage,
+  ContentBlock,
+  ErrorCategory,
+  ModelAdapter,
+  ModelEvent,
+  ModelRequest,
+  StopReason,
+  Usage,
+} from '../contracts/index.ts';
+
+const PROVIDER = 'anthropic';
+const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export type AnthropicOptions = {
+  apiKey: string;
+  model: string;
+  baseUrl?: string;
+  effort?: Effort | undefined;
+  /** Server-side refusal fallback ("default" routing). On unless disabled. */
+  fallbacks?: boolean;
+  /** Custom fetch (tests, proxies). */
+  fetch?: typeof fetch;
+};
+
+/**
+ * Anthropic Messages API adapter (official SDK, streaming).
+ *
+ * History is append-only: blocks this adapter does not interpret (thinking,
+ * fallback markers) are stored as opaque provider blocks and sent back
+ * byte-for-byte in their original position, as the API requires.
+ */
+export class AnthropicModel implements ModelAdapter {
+  readonly id: string;
+  readonly capabilities = { streaming: true, promptCaching: true, contextWindow: 1_000_000 };
+  private readonly client: Anthropic;
+  private readonly options: AnthropicOptions;
+
+  constructor(options: AnthropicOptions) {
+    this.options = options;
+    this.id = `${PROVIDER}:${options.model}`;
+    // The runtime owns retries so it can avoid duplicating streamed output.
+    this.client = new Anthropic({
+      apiKey: options.apiKey,
+      maxRetries: 0,
+      ...(options.baseUrl ? { baseURL: options.baseUrl } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+    });
+  }
+
+  async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
+    const useFallbacks = this.options.fallbacks !== false;
+    const tools: BetaToolUnion[] = request.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.inputSchema as BetaToolUnion extends { input_schema: infer S } ? S : never,
+      // Inputs stream as generated; the executor validates every input against its schema.
+      eager_input_streaming: true,
+    }));
+    try {
+      const stream = this.client.beta.messages.stream(
+        {
+          model: this.options.model,
+          max_tokens: request.maxOutputTokens,
+          // Breakpoint on the stable prefix (tools + system) and automatic caching of the conversation.
+          system: [{ type: 'text', text: request.system, cache_control: { type: 'ephemeral' } }],
+          cache_control: { type: 'ephemeral' },
+          messages: request.messages.map(toParam),
+          ...(tools.length ? { tools } : {}),
+          ...(this.options.effort ? { output_config: { effort: this.options.effort } } : {}),
+          ...(useFallbacks ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
+        },
+        { signal: request.signal },
+      );
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          yield { type: 'text_delta', text: event.delta.text };
+        }
+      }
+      const final = await stream.finalMessage();
+      const message: ChatMessage = { role: 'assistant', content: final.content.map(fromBlock) };
+      for (const block of message.content) {
+        if (block.type === 'tool_call') yield { type: 'tool_call', call: block };
+      }
+      yield { type: 'done', message, stopReason: mapStop(final.stop_reason), usage: mapUsage(final.usage) };
+    } catch (e) {
+      yield toErrorEvent(e);
+    }
+  }
+}
+
+function toParam(message: ChatMessage): BetaMessageParam {
+  return { role: message.role, content: message.content.map(toBlockParam) };
+}
+
+function toBlockParam(block: ContentBlock): BetaContentBlockParam {
+  switch (block.type) {
+    case 'text':
+      return { type: 'text', text: block.text };
+    case 'tool_call':
+      return { type: 'tool_use', id: block.id, name: block.name, input: block.input as Record<string, unknown> };
+    case 'tool_result':
+      return { type: 'tool_result', tool_use_id: block.callId, content: block.content, is_error: block.isError };
+    case 'provider':
+      // Opaque blocks from this provider are replayed unchanged.
+      if (block.provider === PROVIDER) return block.data as BetaContentBlockParam;
+      return { type: 'text', text: '' };
+  }
+}
+
+function fromBlock(block: BetaContentBlock): ContentBlock {
+  if (block.type === 'text' && !('citations' in block && block.citations?.length)) return { type: 'text', text: block.text };
+  if (block.type === 'tool_use') return { type: 'tool_call', id: block.id, name: block.name, input: block.input };
+  return { type: 'provider', provider: PROVIDER, data: block };
+}
+
+function mapStop(reason: string | null): StopReason {
+  switch (reason) {
+    case 'end_turn':
+    case 'tool_use':
+    case 'max_tokens':
+    case 'refusal':
+      return reason;
+    default:
+      return 'other';
+  }
+}
+
+function mapUsage(u: BetaUsage): Usage {
+  return {
+    inputTokens: u.input_tokens ?? null,
+    outputTokens: u.output_tokens ?? null,
+    cacheReadTokens: u.cache_read_input_tokens ?? null,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? null,
+  };
+}
+
+function toErrorEvent(e: unknown): ModelEvent {
+  const fail = (category: ErrorCategory, message: string, retryAfterMs?: number): ModelEvent => ({
+    type: 'error',
+    category,
+    message,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+  });
+  if (e instanceof Anthropic.APIUserAbortError) return fail('cancelled', 'Request aborted.');
+  if (e instanceof Anthropic.APIConnectionError) return fail('provider_transient', `Connection error: ${e.message}`);
+  if (e instanceof Anthropic.AuthenticationError) return fail('provider_fatal', 'Anthropic rejected the API key.');
+  if (e instanceof Anthropic.PermissionDeniedError) return fail('provider_fatal', `Permission denied: ${e.message}`);
+  if (e instanceof Anthropic.NotFoundError) return fail('provider_fatal', `Not found (check the model name): ${e.message}`);
+  if (e instanceof Anthropic.BadRequestError) return fail('provider_fatal', `Bad request: ${e.message}`);
+  if (e instanceof Anthropic.RateLimitError) return fail('provider_transient', 'Rate limited.', retryAfter(e.headers));
+  if (e instanceof Anthropic.APIError) {
+    const status = e.status ?? 0;
+    if (status >= 500 || status === 408 || status === 409) {
+      return fail('provider_transient', `Provider error ${status}: ${e.message}`, retryAfter(e.headers));
+    }
+    return fail('provider_fatal', `Provider error ${status}: ${e.message}`);
+  }
+  return fail('internal', e instanceof Error ? e.message : String(e));
+}
+
+function retryAfter(headers: Headers | undefined): number | undefined {
+  const value = headers?.get('retry-after');
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
