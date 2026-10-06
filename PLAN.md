@@ -25,7 +25,7 @@ Ruby is a persistent personal agent you run on your own VPS or computer and reac
 5. **Token efficient.** Stable prompt prefix, bounded memory snapshot, a small fixed tool set per session (changing tools mid-session would break prompt caching and signed thinking), artifact handles for large outputs, recoverable compaction, and per-task usage accounting.
 6. **Premium, lightweight surfaces.** A no-tracking public website and an opt-in dashboard that ships in the repo, both fast and polished.
 
-Non-goals for v1: multi-agent orchestration inside Ruby, a public skill marketplace, vector search, voice.
+Non-goals: a public skill marketplace, vector search, realtime voice, and WhatsApp (for now: only unofficial bridges work for personal accounts). Delegation is in scope: the agent may spawn subagents up to two levels deep, each bounded by the parent's budget, permissions and untrusted-content state.
 
 ## Decisions
 
@@ -173,7 +173,7 @@ Static, no tracking, no cookies, no third-party requests, no frameworks; fast on
 | 3. Memory, skills, context, repair, artifacts | Done (tool schemas stay fixed per session instead of loading on demand; see Product goals) |
 | 4. Scheduler, chat approvals, Signal, OpenAI-compatible models, Docker sandbox | Done |
 | 5. Dashboard and website | Done: website, demo endpoint, dashboard (all pages including sessions, logs and routing, achievements, easter eggs). Keyboard navigation not yet checked by hand |
-| 6. Release hardening | Discord, importer, backup/restore, encrypted secret store, failure-injection tests, one-line installer, `ruby setup` and `ruby doctor` done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)), v1.0 tag |
+| 6. Release hardening | Discord, importer, backup/restore, encrypted secret store, failure-injection tests, one-line installer, `ruby setup` and `ruby doctor` done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)) |
 | Next | Missing features ranked from research into OpenClaw, Hermes and the wider field: [docs/FEATURE-GAPS.md](docs/FEATURE-GAPS.md) |
 
 ## Build phases
@@ -185,7 +185,7 @@ Each phase ends with passing `npm test` and a short entry in `CHANGELOG.md`.
 3. **Memory, skills, context:** bounded memory snapshot, session search, skills with locks, artifact store, compaction, tool-call repair and clean history, usage accounting. Exit: important constraints survive compaction; a locked skill cannot be overwritten; a fixed task suite shows lower input tokens than the full-history baseline with no loss in success.
 4. **Scheduler and Signal:** cron, heartbeats with pre-checks, approvals over chat, `signal-cli` adapter, OpenAI-compatible model adapter, Docker sandbox. Exit: a disabled heartbeat never calls the model; an ungranted write is denied; a restart does not duplicate an occurrence; the cross-channel demo (Telegram → restart → linked Signal chat) passes.
 5. **Dashboard and website:** dashboard with all config, achievements and easter eggs; public site; optional demo endpoint. Exit: every config key is editable and validated in the dashboard; the site scores ≥ 95 on Lighthouse in every category, with zero third-party requests.
-6. **Release hardening:** Discord, an OpenClaw/Hermes migration importer (workspace files, memory, skills), docs, failure-injection tests, an encrypted secret store, a backup/restore command, and the v1.0 tag.
+6. **Release hardening:** Discord, an OpenClaw/Hermes migration importer (workspace files, memory, skills), docs, failure-injection tests, an encrypted secret store, and a backup/restore command.
 
 ## Working agreements for contributors and agents
 
