@@ -45,7 +45,8 @@ export function staticFiles(root: string): (req: IncomingMessage, res: ServerRes
       'Content-Length': body.length,
       'Content-Security-Policy': CSP,
       'X-Frame-Options': 'DENY',
-      'Cache-Control': extname(file) === '.html' ? 'no-store' : 'max-age=300',
+      // Revalidate every time so an upgraded Ruby never serves stale modules; the files are small.
+      'Cache-Control': 'no-cache',
     });
     res.end(req.method === 'HEAD' ? undefined : body);
     return true;

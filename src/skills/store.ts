@@ -28,6 +28,7 @@ export type SkillInfo = {
   uses: number;
   lastUsedAt: string | null;
   hasProposal: boolean;
+  archived: boolean;
 };
 
 export type SkillProblem = { name: string; problem: string };
@@ -171,6 +172,7 @@ export class SkillStore {
       uses: s.meta.uses,
       lastUsedAt: s.meta.lastUsedAt,
       hasProposal: existsSync(this.proposalPath(s.name)),
+      archived: s.meta.archived,
     };
   }
 
@@ -213,6 +215,13 @@ export class SkillStore {
   list(): SkillInfo[] {
     return this.all()
       .filter((s) => !s.meta.archived)
+      .map((s) => this.info(s));
+  }
+
+  /** Archived skills, so the owner can find and restore them. */
+  archived(): SkillInfo[] {
+    return this.all()
+      .filter((s) => s.meta.archived)
       .map((s) => this.info(s));
   }
 

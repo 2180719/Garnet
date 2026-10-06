@@ -165,7 +165,7 @@ details.card[open]>summary{margin-bottom:12px}
 .login h1{font-size:2rem}
 
 /* chat */
-.chat{display:grid;grid-template-rows:minmax(0,1fr) auto;gap:12px;height:calc(100vh - 260px);min-height:420px}
+.chat{display:grid;grid-template-rows:minmax(0,1fr) auto;gap:12px;height:calc(100vh - 290px);min-height:420px}
 @media (max-width:899px){.chat{height:calc(100vh - 300px);height:calc(100dvh - 300px)}}
 .log{overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:18px}
 .msg{padding:10px 14px;border-radius:16px;max-width:min(85%,70ch);white-space:pre-wrap;overflow-wrap:anywhere}
@@ -264,3 +264,5 @@ a.card.stack{display:grid}
 .card>.fields{margin-top:14px}
 @media (max-width:899px){.side .brand,.side-foot .icon-btn{display:none}.side-foot .who{justify-content:flex-end}}
 .main:focus{outline:none}
+figure{margin:0}
+dialog .tablewrap{margin-top:14px}

@@ -74,9 +74,14 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
     }),
     writeMemory: (ns, file, content) => ruby.memory.write(ns, memFile(file), content),
     rollbackMemory: (ns, file, id) => ruby.memory.rollback(ns, memFile(file), id),
-    skills: () => ({ skills: ruby.skills.list(), problems: ruby.skills.problems(), stale: ruby.skills.stale().map((s) => s.name) }),
+    skills: () => ({
+      skills: ruby.skills.list(),
+      archived: ruby.skills.archived(),
+      problems: ruby.skills.problems(),
+      stale: ruby.skills.stale().map((s) => s.name),
+    }),
     skill: (name) => {
-      const info = ruby.skills.list().find((s) => s.name === name);
+      const info = [...ruby.skills.list(), ...ruby.skills.archived()].find((s) => s.name === name);
       if (!info) throw new RubyError('invalid_input', `No skill "${name}".`);
       // Read without counting a use: the owner looking is not the agent using it.
       return { ...info, proposal: ruby.skills.proposal(name), body: ruby.skills.read(name).body };

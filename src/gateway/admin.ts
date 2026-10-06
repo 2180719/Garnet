@@ -42,7 +42,8 @@ const str = (v: unknown, name: string): string => {
 /** Route table for /api/*. Reads need `read`; changes need `admin`. */
 export function adminRoutes(b: AdminBackend): AdminRoute[] {
   const r = (method: string, pattern: RegExp, scope: Scope, handle: Handler): AdminRoute => ({ method, pattern, scope, handle });
-  const NAME = '([A-Za-z0-9_.:+-]+)';
+  // Matched against the decoded path, so IDs with characters like @ work.
+  const NAME = '([^/]+)';
   return [
     r('GET', /^\/api\/overview$/, 'read', () => b.overview()),
     r('GET', /^\/api\/config$/, 'read', () => b.getConfig()),

@@ -4,7 +4,7 @@ A persistent personal agent you can actually read.
 
 Ruby runs on your own VPS or computer and is designed to be reached through Telegram, Signal, Discord, an opt-in dashboard, or a key-gated API. It is small enough to audit, secure by default, and careful with tokens.
 
-> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord, a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. The dashboard UI is in progress. See [PLAN.md](PLAN.md).
+> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord, a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
 
 ## Try it
 

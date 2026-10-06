@@ -122,7 +122,8 @@ export class ApiServer {
       if (status === 500) this.deps.log?.('error', `API ${req.method} ${url.pathname}: ${errorMessage(e)}`);
       if (!res.headersSent) {
         for (const [k, v] of Object.entries(e instanceof HttpError ? e.headers : {})) res.setHeader(k, v);
-        send(res, status, { error: { message: status === 500 ? 'Internal error.' : errorMessage(e), type: errorType(status) } });
+        const problems = isRubyError(e, 'config') && Array.isArray(e.detail?.problems) ? { issues: e.detail.problems } : {};
+        send(res, status, { error: { message: status === 500 ? 'Internal error.' : errorMessage(e), type: errorType(status), ...problems } });
       } else res.end();
     } finally {
       if (url.pathname !== '/health') {
@@ -179,12 +180,19 @@ export class ApiServer {
       if (!this.deps.sessions.getSession(id)) throw new HttpError(404, 'No such session.');
       return send(res, 200, { events: this.deps.sessions.events(id, Number(url.searchParams.get('after') ?? 0)) });
     }
+    // Match per decoded segment so encoded characters (e.g. %40) work but an encoded "/" cannot split a segment.
+    let decoded: string;
+    try {
+      decoded = path.split('/').map((seg) => decodeURIComponent(seg).replaceAll('/', '\u0000')).join('/');
+    } catch {
+      throw new HttpError(400, 'Malformed URL.');
+    }
     for (const route of this.adminRoutes) {
       if (route.method !== method) continue;
-      const m = route.pattern.exec(path);
+      const m = route.pattern.exec(decoded);
       if (!m) continue;
       this.require(ctx, route.scope);
-      const result = await route.handle({ params: m.slice(1).map(decodeURIComponent), query: url.searchParams, body: () => readJson(req) });
+      const result = await route.handle({ params: m.slice(1).map((p) => p.replaceAll('\u0000', '/')), query: url.searchParams, body: () => readJson(req) });
       return send(res, 200, result ?? { ok: true });
     }
     throw new HttpError(404, 'Not found.');

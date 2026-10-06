@@ -120,17 +120,17 @@ export class Gateway {
    * Decides an approval from a non-chat surface (dashboard, API) and resumes
    * the task. If the conversation is a chat, the outcome is also sent there.
    */
-  async resolveApproval(code: string, decision: 'approved' | 'denied'): Promise<{ status: string; text: string | null }> {
+  async resolveApproval(code: string, decision: 'approved' | 'denied'): Promise<{ status: string; text: string | null; resumed: boolean }> {
     const approvals = this.deps.approvals;
     if (!approvals) throw new RubyError('invalid_input', 'Approvals are not enabled.');
     const decided = approvals.decide(code, decision, this.now().toISOString());
     if (!decided) throw new RubyError('invalid_input', 'No pending approval with that code (it may have expired or been decided).');
     const key = this.deps.store.keyForSession(decided.sessionId);
-    if (!key) return { status: decision, text: null };
+    if (!key) return { status: decision, text: null, resumed: false };
     const result = await this.chat(key, approvalText(decided.code, decided.summary, decision === 'approved'), { source: 'dashboard' });
     const chat = chatOfKey(key);
     if (chat && this.channels.has(channelKey(chat.channel, chat.account))) this.notify(chat, result.text);
-    return { status: result.task.status, text: result.text };
+    return { status: result.task.status, text: result.text, resumed: true };
   }
 
   /** Queues a proactive message (scheduled results, alerts) to a chat. */

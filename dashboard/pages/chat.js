@@ -27,7 +27,7 @@ export default function mount(root) {
   const fresh = h('input', { id: 'newconv', placeholder: 'new-conversation', maxlength: '40', 'aria-label': 'New conversation name', autocomplete: 'off' });
   const log = h('div', { class: 'log', role: 'log', tabindex: '0', 'aria-label': 'Conversation with Ruby' });
   const status = h('div', { class: 'sr', role: 'status' });
-  const input = h('textarea', { id: 'msg', rows: '1', placeholder: 'Message Ruby (Enter to send, Shift+Enter for a new line)', 'aria-label': 'Message' });
+  const input = h('textarea', { id: 'msg', rows: '1', placeholder: 'Message Ruby', 'aria-label': 'Message (Enter sends, Shift+Enter adds a line)', title: 'Enter sends, Shift+Enter adds a line' });
   const send = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Send');
   const stop = h('button', { class: 'btn btn-ghost', type: 'button', hidden: true }, 'Stop');
 

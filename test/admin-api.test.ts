@@ -62,3 +62,19 @@ test('jobs run on demand, keys are shown once, achievements and easter eggs', as
   assert.ok(ach.achievements.find((a: any) => a.id === 'hello-ruby').unlockedAt, 'the job run completed a task');
   assert.ok(ach.achievements.find((a: any) => a.id === 'open-door').unlockedAt);
 });
+
+test('archived skills stay restorable; encoded ids route; config errors are structured', async () => {
+  const s = await boot();
+  s.ruby.skills.create('tidy', 'Tidy things', 'Steps.');
+  s.ruby.skills.archive('tidy');
+  const list = (await (await s.call('GET', '/api/skills', s.reader)).json()) as any;
+  assert.deepEqual(list.archived.map((x: any) => x.name), ['tidy']);
+  assert.equal((await s.call('GET', '/api/skills/tidy', s.reader)).status, 200);
+  assert.equal((await s.call('POST', '/api/skills/tidy/unarchive', s.admin)).status, 200);
+  s.ruby.gatewayStore.addIdentity('signal', 'ada@example', 'Ada');
+  const revoked = (await (await s.call('DELETE', `/api/identities/signal/${encodeURIComponent('ada@example')}`, s.admin)).json()) as any;
+  assert.equal(revoked.revoked, true);
+  const { config } = (await (await s.call('GET', '/api/config', s.reader)).json()) as any;
+  const bad = (await (await s.call('PUT', '/api/config', s.admin, { ...config, api: { ...config.api, port: 0 } })).json()) as any;
+  assert.ok(bad.error.issues.some((i: string) => i.startsWith('api.port')));
+});

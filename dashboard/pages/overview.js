@@ -31,7 +31,7 @@ function render(o) {
         h('dl', { class: 'kv' }, h('dt', null, 'Last success'), h('dd', null, ch.lastSuccessAt ? `${ago(ch.lastSuccessAt)} (${fmtDate(ch.lastSuccessAt)})` : 'never'),
           ch.lastError ? [h('dt', null, 'Last error'), h('dd', null, ch.lastError)] : null));
     }))
-    : h('p', { class: 'muted' }, 'No chat channels are running. Enable Telegram or Signal in ', link('#/settings', 'Settings'), '.');
+    : h('p', { class: 'muted' }, 'No chat channels are running. Enable Telegram, Signal or Discord in ', link('#/settings', 'Settings'), '.');
   return [cards, h('section', { class: 'stack', 'aria-labelledby': 'ch-h' }, h('h2', { id: 'ch-h' }, 'Channel health'), channels)];
 }
 

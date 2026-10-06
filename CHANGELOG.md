@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-### Phase 5–6 (in progress)
+### Phase 5–6
+- Dashboard: overview, chat, approvals, memory, skills (with proposal diffs), schedules, channels and pairing, API keys, usage, settings generated from the config schema with review-before-save, achievements and easter eggs. Static ES modules, no build, strict CSP.
 - Admin API for the dashboard (`/api/*`, read vs admin scopes), static serving with a strict CSP, `ruby dashboard` login links (key in the URL fragment).
 - Achievements and easter eggs (Konami code, `ruby --sparkle`), stored locally.
 - `run_command` in a Docker sandbox: no network, read-only root, all capabilities dropped, resource limits, host uid, killed on timeout or cancel, never silently downgraded. Only registered when the owner allows `exec`; approval prompts show the full command.

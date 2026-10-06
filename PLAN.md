@@ -172,7 +172,7 @@ Static, no tracking, no cookies, no third-party requests, no frameworks; fast on
 | 2. Gateway, Telegram, API, service install | Done |
 | 3. Memory, skills, context, repair, artifacts | Done (tool schemas stay fixed per session instead of loading on demand; see Product goals) |
 | 4. Scheduler, chat approvals, Signal, OpenAI-compatible models, Docker sandbox | Done |
-| 5. Dashboard and website | Website, demo endpoint and dashboard API done; dashboard UI in progress |
+| 5. Dashboard and website | Done: website, demo endpoint, dashboard (all pages, achievements, easter eggs). No logs, sessions or routing-profile pages yet |
 | 6. Release hardening | Discord, importer and backup/restore done. Still open: encrypted secret store (secrets live in a 0600 env file today), failure-injection tests, docs site, live tests against real providers and channels, v1.0 tag |
 
 ## Build phases
