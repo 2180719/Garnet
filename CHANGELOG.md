@@ -7,6 +7,18 @@
 - Existing installs keep working: `RUBY_*` variables are read when the `GARNET_*` one is unset (`doctor` warns); `~/.ruby` is used when `~/.garnet` does not exist (`doctor` suggests `mv ~/.ruby ~/.garnet`); `ruby_` API keys and `X-Ruby-Conversation` are still accepted; `ruby.db`, `ruby-secrets` stores and `.ruby.json` skill sidecars are still read.
 - `garnet service install` stops and removes the old `ruby` systemd unit / `dev.ruby` launchd agent when we wrote it and it runs the same home; `doctor` reports a leftover one. `install.sh` moves `~/.local/share/ruby` to `.../garnet` and removes the old `ruby` shim only when it is ours.
 
+### Polish
+- Garnet loads the workspace `AGENTS.md` into its prompt as your project instructions (8,000 character cap; changes apply after `/new`).
+- Skills can bundle `references/`, `scripts/` and other text files; `skill_view` lists them and can read one on request, contained to the skill folder.
+- `retention.*Days` (default 90) prunes finished inbox, outbox, job-run, approval and sent-message rows and unreferenced media at start and daily. The event log is never pruned.
+- Security: `run_command` output marks the conversation as having read untrusted content when the sandbox has network access (Docker with a network, or the local backend).
+- The channel `/start` greeting uses the configured assistant name.
+- `garnet doctor` checks the voice transcription backend and the PDF text command.
+- The channel `/start` greeting uses the configured assistant name.
+- `garnet doctor` checks the voice transcription backend and the PDF text command.
+- Dollar cost beside token usage in chat, dashboard and API: built-in Anthropic prices (checked 2026-10-06) or `model.pricing`; unknown shows `?`, never $0.
+- `budgets.dailyUsd`: optional daily spending cap that refuses new model tasks; reminders and script jobs still run.
+
 ### New capabilities
 
 #### Tier 0 (gateway/channels)
