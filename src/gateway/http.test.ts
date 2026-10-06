@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { setup } from '../../test/fixtures.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tempDir } from '../../test/helpers.ts';
+import type { AttachmentBlock } from '../contracts/index.ts';
+import { MediaIngest, MediaStore } from '../media/index.ts';
 import { KeyStore } from '../store/index.ts';
 import { ApiKeys, ApiServer } from './index.ts';
 
@@ -261,4 +266,58 @@ test('a conflict (job already running) is a 409, not a 500', async () => {
   const res = await fetch(`http://127.0.0.1:${port}/api/jobs/tea/run`, { method: 'POST', headers: { authorization: `Bearer ${key}` } });
   assert.equal(res.status, 409);
   assert.match(((await res.json()) as any).error.message, /already running/);
+});
+
+async function mediaServer(script: Parameters<typeof setup>[0], images: boolean) {
+  const store = new MediaStore(join(tempDir(), 'media'), 100_000);
+  const media = new MediaIngest({ store, maxTextChars: 10_000, modelMedia: { images, pdf: false, maxImageBytes: 5_000_000, maxPdfBytes: 0 } });
+  const t = setup(script, { gateway: { media }, agent: { loadAttachment: (r) => store.read(r.id) } });
+  const keyStore = new KeyStore(t.db);
+  const keys = new ApiKeys(keyStore);
+  const api = new ApiServer({ gateway: t.gateway, keys, keyStore, sessions: t.sessions, rateLimitPerMinute: 100, version: 'test', maxChatBodyBytes: 200_000 });
+  const addr = await api.listen('127.0.0.1', 0);
+  after(() => api.close(0));
+  const { key } = keys.create('k', ['chat']);
+  const post = (content: unknown, extra: object = {}) =>
+    fetch(`http://127.0.0.1:${addr.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: 'ruby', messages: [{ role: 'user', content }], ...extra }),
+    });
+  return { t, post };
+}
+
+const PNG = readFileSync(join(import.meta.dirname, '..', '..', 'test', 'media', 'pixel.png')).toString('base64');
+
+test('chat completions accept image_url parts as data URLs and pass the image to the model', async () => {
+  const s = await mediaServer([{ text: 'A pixel.' }], true);
+  const res = await s.post([{ type: 'text', text: 'what is it?' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}`, detail: 'auto' } }]);
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as any).choices[0].message.content, 'A pixel.');
+  const native = s.t.model.requests[0]!.messages.at(-1)!.content.find((b) => b.type === 'attachment') as AttachmentBlock;
+  assert.equal(native.data, PNG);
+  const imageOnly = await s.post([{ type: 'image_url', image_url: `data:image/png;base64,${PNG}` }]);
+  assert.equal(imageOnly.status, 200, 'an image alone is a valid message');
+});
+
+test('remote image URLs, unknown parts and oversize bodies are refused; text-only models say so', async () => {
+  const s = await mediaServer([], true);
+  const remote = await s.post([{ type: 'image_url', image_url: { url: 'http://169.254.169.254/latest/meta-data' } }]);
+  assert.equal(remote.status, 400);
+  assert.match(((await remote.json()) as any).error.message, /URLs are not fetched; send the image inline as a base64 data URL/);
+  const audio = await s.post([{ type: 'input_audio', input_audio: { data: 'AAAA', format: 'wav' } }]);
+  assert.equal(audio.status, 400);
+  assert.match(((await audio.json()) as any).error.message, /unsupported_content_type: "input_audio"/);
+  const big = await s.post([{ type: 'image_url', image_url: { url: `data:image/png;base64,${'A'.repeat(1_200_000)}` } }]);
+  assert.equal(big.status, 413);
+  assert.equal(s.t.model.requests.length, 0);
+
+  const blind = await mediaServer([], false);
+  const res = await blind.post([{ type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}` } }]);
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as any).error.message, /can't view images/);
+  const streamed = await blind.post([{ type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}` } }], { stream: true });
+  assert.equal(streamed.status, 200);
+  assert.match(await streamed.text(), /can't view images[\s\S]*\[DONE\]/);
+  assert.equal(blind.t.model.requests.length, 0);
 });

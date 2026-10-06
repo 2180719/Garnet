@@ -10,12 +10,13 @@ import {
   type ChannelAdapter,
   type ChannelCapabilities,
   type ChannelHealth,
+  type InboundAttachment,
   type InboundMessage,
   type InboundSink,
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, fileBlob, mayHaveReachedServer, readCapped, sendChunks, sendUnits, type ChunkFailure } from './delivery.ts';
 
 export type DiscordOptions = {
   token: string;
@@ -64,7 +65,14 @@ type DiscordMessage = {
   timestamp?: string;
   webhook_id?: string;
   author?: { id?: string; username?: string; global_name?: string | null; bot?: boolean };
+  attachments?: { id?: string; filename?: string; content_type?: string; size?: number; url?: string; duration_secs?: number }[];
+  sticker_items?: unknown[];
 };
+
+/** Bots without a boosted server can upload 10 MiB per file. */
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+/** Attachment downloads only ever go to Discord's CDN, whatever URL a payload carries. */
+const CDN_HOSTS = new Set(['cdn.discordapp.com', 'media.discordapp.net']);
 
 /** A REST call that failed. `status` is 0 for network failures. */
 class DiscordApiError extends Error {
@@ -86,7 +94,7 @@ export class DiscordChannel implements ChannelAdapter {
   readonly account: string;
   // dedupesSends stays false: Discord documents `nonce` (<= 25 chars) + `enforce_nonce` as a uniqueness check
   // over "recent minutes" only (developers/resources/message), so it is best effort, not a durable guarantee.
-  readonly capabilities: ChannelCapabilities = { maxMessageChars: MAX_CHARS, dedupesSends: false, typingIndicator: true };
+  readonly capabilities: ChannelCapabilities = { maxMessageChars: MAX_CHARS, dedupesSends: false, typingIndicator: true, maxUploadBytes: MAX_UPLOAD_BYTES };
 
   #token: string;
   #fetch: typeof fetch;
@@ -179,17 +187,28 @@ export class DiscordChannel implements ChannelAdapter {
     if (!/^\d+$/.test(message.chatId)) return { status: 'failed', retryable: false, error: 'Invalid Discord channel id' };
     const replyTo = message.replyToExternalId !== undefined && /^\d+$/.test(message.replyToExternalId) ? message.replyToExternalId : undefined;
     return sendChunks(
-      splitText(message.text, MAX_CHARS),
-      async (content, i) => {
+      sendUnits(message, MAX_CHARS, MAX_CHARS),
+      async (unit, i) => {
         const body: Record<string, unknown> = {
-          content,
+          content: unit.kind === 'text' ? unit.text : (unit.caption ?? ''),
           // Never let model output ping @everyone, roles or users.
           allowed_mentions: { parse: [] },
           nonce: createHash('sha256').update(`${message.deliveryId}:${i}`).digest('base64url').slice(0, 25),
           enforce_nonce: true,
         };
         if (i === 0 && replyTo) body.message_reference = { message_id: replyTo, fail_if_not_exists: false };
-        const sent = (await this.#api('POST', `/channels/${message.chatId}/messages`, body, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { id?: string } | null;
+        let payload: Record<string, unknown> | FormData = body;
+        if (unit.kind === 'file') {
+          if (unit.file.size > MAX_UPLOAD_BYTES) throw new DiscordApiError(413, `Discord bots can upload files up to 10 MB; ${unit.file.name} is larger`);
+          // Multipart: the JSON goes in payload_json and refers to files[0] by its index.
+          body.attachments = [{ id: 0, filename: unit.file.name }];
+          const form = new FormData();
+          form.append('payload_json', JSON.stringify(body));
+          form.append('files[0]', await fileBlob(unit.file.path, unit.file.mimeType), unit.file.name);
+          payload = form;
+        }
+        const timeout = AbortSignal.timeout(unit.kind === 'file' ? REQUEST_TIMEOUT_MS * 4 : REQUEST_TIMEOUT_MS);
+        const sent = (await this.#api('POST', `/channels/${message.chatId}/messages`, payload, timeout)) as { id?: string } | null;
         if (typeof sent?.id !== 'string') throw new DiscordApiError(502, 'Discord returned no message id', undefined, true);
         this.#lastSuccessAt = Date.now();
         return sent.id;
@@ -197,6 +216,28 @@ export class DiscordChannel implements ChannelAdapter {
       (e) => this.#classify(e),
       (ms) => this.#sleep(ms, new AbortController().signal),
     );
+  }
+
+  async fetchAttachment(ref: string, options: { maxBytes: number; signal: AbortSignal }): Promise<{ data: Uint8Array; mimeType?: string }> {
+    let url: URL;
+    try {
+      url = new URL(ref);
+    } catch {
+      throw new Error('not a Discord attachment URL');
+    }
+    if (url.protocol !== 'https:' || !CDN_HOSTS.has(url.hostname)) throw new Error('not a Discord CDN URL');
+    let res: Response;
+    try {
+      // No redirects: the host check above must hold for the URL actually fetched.
+      res = await this.#fetch(url, { signal: AbortSignal.any([options.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4)]), headers: { 'user-agent': USER_AGENT }, redirect: 'error' });
+    } catch (e) {
+      throw new Error(`download failed: ${this.#redact(errorMessage(e))}`);
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`download failed with HTTP ${res.status}${res.status === 403 || res.status === 404 ? ' (the link may have expired)' : ''}`);
+    }
+    return { data: await readCapped(res, options.maxBytes, 'The file') };
   }
 
   #classify(e: unknown): ChunkFailure {
@@ -408,7 +449,24 @@ export class DiscordChannel implements ChannelAdapter {
     const author = m?.author;
     if (!author || typeof author.id !== 'string' || typeof m.id !== 'string' || typeof m.channel_id !== 'string') return null;
     if (author.bot || m.webhook_id || author.id === this.#botId) return null;
-    if (typeof m.content !== 'string' || m.content === '') return null;
+    const text = typeof m.content === 'string' ? m.content : '';
+    const attachments: InboundAttachment[] = (Array.isArray(m.attachments) ? m.attachments : []).flatMap((a) => {
+      if (typeof a?.url !== 'string') return [];
+      const mime = typeof a.content_type === 'string' ? a.content_type.split(';')[0]!.trim() : undefined;
+      const kind: InboundAttachment['kind'] = !mime ? 'file' : mime.startsWith('image/') ? 'image' : mime.startsWith('audio/') ? 'audio' : mime.startsWith('video/') ? 'video' : mime === 'application/pdf' || mime.startsWith('text/') ? 'document' : 'file';
+      return [
+        {
+          kind,
+          ref: a.url,
+          ...(typeof a.filename === 'string' ? { name: a.filename } : {}),
+          ...(mime ? { mimeType: mime } : {}),
+          ...(typeof a.size === 'number' ? { size: a.size } : {}),
+          ...(typeof a.duration_secs === 'number' ? { durationSec: a.duration_secs } : {}),
+        },
+      ];
+    });
+    const unsupported = !text && attachments.length === 0 && Array.isArray(m.sticker_items) && m.sticker_items.length ? 'a sticker' : undefined;
+    if (text === '' && attachments.length === 0 && !unsupported) return null;
     const name = author.global_name ?? author.username;
     const ts = m.timestamp ? Date.parse(m.timestamp) : NaN;
     return {
@@ -417,7 +475,9 @@ export class DiscordChannel implements ChannelAdapter {
       chatId: m.channel_id,
       externalId: m.id,
       sender: { id: author.id, ...(name ? { displayName: name } : {}) },
-      text: m.content,
+      text,
+      ...(attachments.length ? { attachments } : {}),
+      ...(unsupported ? { unsupported } : {}),
       isPrivate: m.guild_id === undefined || m.guild_id === null,
       receivedAt: new Date(Number.isNaN(ts) ? Date.now() : ts).toISOString(),
     };
@@ -436,9 +496,10 @@ export class DiscordChannel implements ChannelAdapter {
         headers: {
           authorization: `Bot ${this.#token}`,
           'user-agent': USER_AGENT,
-          ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+          // FormData sets its own multipart content type with the boundary.
+          ...(body !== undefined && !(body instanceof FormData) ? { 'content-type': 'application/json' } : {}),
         },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        ...(body !== undefined ? { body: body instanceof FormData ? body : JSON.stringify(body) } : {}),
         signal,
       });
     } catch (e) {

@@ -47,7 +47,12 @@ async function collect(m: OpenAICompatibleModel, messages: ChatMessage[] = [user
 test('id and capabilities', () => {
   const m = new OpenAICompatibleModel({ baseUrl: 'http://x/v1', model: 'm' });
   assert.equal(m.id, 'openai-compatible:m');
-  assert.deepEqual(m.capabilities, { streaming: true, promptCaching: false, contextWindow: 128_000 });
+  assert.deepEqual(m.capabilities, {
+    streaming: true,
+    promptCaching: false,
+    contextWindow: 128_000,
+    media: { images: false, pdf: false, maxImageBytes: 20 * 1024 * 1024, maxPdfBytes: 20 * 1024 * 1024 },
+  });
 });
 
 test('streams text with usage, subtracting cached tokens, across mid-line chunk splits', async () => {
@@ -279,4 +284,32 @@ test('abort maps to cancelled', async () => {
   const ac2 = new AbortController();
   const slow = model(() => new Response(new ReadableStream({ pull() { ac2.abort(); throw new DOMException('aborted', 'AbortError'); } })));
   assert.equal(last(await collect(slow, undefined, { signal: ac2.signal })).category, 'cancelled');
+});
+
+test('attachments: image_url and file parts with data URLs, in order; text-only turns stay plain strings', async () => {
+  const seen: Seen[] = [];
+  const ok = () => sseResponse([delta({ content: 'ok' }, 'stop'), 'data: [DONE]\n\n']);
+  const m = model(ok, seen, { vision: true, pdf: true });
+  assert.equal(m.capabilities.media.images, true);
+  const img = { id: 'med_1', kind: 'image' as const, mimeType: 'image/jpeg', size: 3, name: 'p.jpg' };
+  const pdf = { id: 'med_2', kind: 'document' as const, mimeType: 'application/pdf', size: 3, name: 'r.pdf' };
+  await collect(m, [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'compare' },
+        { type: 'attachment', attachment: img, data: '/9j/' },
+        { type: 'attachment', attachment: pdf, data: 'JVBE' },
+        { type: 'attachment', attachment: { ...img, id: 'med_9' } },
+      ],
+    },
+  ]);
+  assert.deepEqual(seen[0]!.body.messages[1].content, [
+    { type: 'text', text: 'compare' },
+    { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,/9j/' } },
+    { type: 'file', file: { filename: 'r.pdf', file_data: 'data:application/pdf;base64,JVBE' } },
+    { type: 'text', text: '[Image attached: "p.jpg", image/jpeg, 3 B; id med_9]' },
+  ]);
+  await collect(model(ok, seen), [{ role: 'user', content: [{ type: 'text', text: 'a' }, { type: 'attachment', attachment: { id: 'med_3', kind: 'audio', mimeType: 'audio/ogg', size: 3 }, text: 'Transcript:\nb' }] }]);
+  assert.equal(seen[1]!.body.messages[1].content, 'a\n\n[Audio attached: audio/ogg, 3 B; id med_3]\nTranscript:\nb');
 });

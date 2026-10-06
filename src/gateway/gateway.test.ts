@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { msg, setup } from '../../test/fixtures.ts';
 import { tempDir } from '../../test/helpers.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AttachmentBlock } from '../contracts/index.ts';
+import { MediaIngest, MediaStore, type Transcriber } from '../media/index.ts';
 import { openDb } from '../store/index.ts';
 import { approvePairing } from './index.ts';
 
@@ -205,4 +209,96 @@ test('after a restart the inbox backlog runs before messages that arrive during 
   assert.deepEqual(order, ['older', 'newer']);
   await second.gateway.stop(0);
   second.db.close();
+});
+
+const FIX = join(import.meta.dirname, '..', '..', 'test', 'media');
+const fixture = (name: string) => new Uint8Array(readFileSync(join(FIX, name)));
+
+function withMedia(script: Parameters<typeof setup>[0] = [], transcriber: Transcriber | null = null) {
+  const store = new MediaStore(join(tempDir(), 'media'), 100_000);
+  const media = new MediaIngest({ store, transcriber, maxTextChars: 10_000, modelMedia: { images: true, pdf: true, maxImageBytes: 5_000_000, maxPdfBytes: 5_000_000 } });
+  const t = setup(script, { gateway: { media }, agent: { loadAttachment: (r) => store.read(r.id) } });
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  return { ...t, mediaStore: store };
+}
+
+test('a photo is downloaded for a paired sender, stored, and shown to the model; the event log holds only a reference', async () => {
+  const t = withMedia([{ text: 'A tiny green pixel.' }]);
+  t.channel.files.set('ph1', fixture('pixel.png'));
+  await t.gateway.start();
+  await t.channel.sink!(msg('what is this?', { attachments: [{ kind: 'image', ref: 'ph1', mimeType: 'image/jpeg', name: 'photo.jpg', size: 69 }] }));
+  await settle(t);
+  assert.deepEqual(t.channel.fetched, ['ph1']);
+  const sent = t.model.requests[0]!.messages.at(-1)!.content;
+  const native = sent.find((b) => b.type === 'attachment') as AttachmentBlock;
+  assert.equal(native.attachment.mimeType, 'image/png', 'type sniffed from the bytes, not the claim');
+  assert.equal(native.data, Buffer.from(fixture('pixel.png')).toString('base64'));
+  assert.equal(t.channel.sent[0]!.text, 'A tiny green pixel.');
+  const stored = t.sessions.events(t.sessions.listSessions(1)[0]!.id).find((e) => e.type === 'user_message')!;
+  assert.ok(stored.type === 'user_message');
+  const ref = stored.message.content.find((b) => b.type === 'attachment') as AttachmentBlock;
+  assert.equal(ref.data, undefined, 'no bytes in the event log');
+  assert.ok(t.mediaStore.read(ref.attachment.id));
+  await t.gateway.stop(0);
+});
+
+test('a voice note with no transcription gets an honest reply without calling the model', async () => {
+  const t = withMedia();
+  t.channel.files.set('v1', fixture('voice.ogg'));
+  await t.gateway.start();
+  await t.channel.sink!(msg('', { attachments: [{ kind: 'audio', ref: 'v1', mimeType: 'audio/ogg', durationSec: 3 }] }));
+  await settle(t);
+  assert.equal(t.model.requests.length, 0);
+  assert.match(t.channel.sent[0]!.text, /voice note, but I can't listen to audio: no transcription backend is set up/);
+  await t.gateway.stop(0);
+});
+
+test('a transcribed voice note reaches the model as text and is recorded', async () => {
+  const transcriber: Transcriber = { label: 'test', transcribe: async () => 'remind me to call mum' };
+  const t = withMedia([{ text: 'Will do.' }], transcriber);
+  t.channel.files.set('v1', fixture('voice.ogg'));
+  await t.gateway.start();
+  await t.channel.sink!(msg('', { attachments: [{ kind: 'audio', ref: 'v1', mimeType: 'audio/ogg', durationSec: 3 }] }));
+  await settle(t);
+  const text = t.model.requests[0]!.messages.at(-1)!.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
+  assert.match(text, /\[Audio attached: audio\/ogg, 47 B, 3s; id med_[a-f0-9]+\]\nTranscript:\nremind me to call mum/);
+  assert.equal(t.channel.sent[0]!.text, 'Will do.');
+  await t.gateway.stop(0);
+});
+
+test('files from unpaired senders are never downloaded; oversize files are refused before downloading', async () => {
+  const t = withMedia();
+  t.channel.files.set('x', fixture('pixel.png'));
+  await t.gateway.start();
+  await t.channel.sink!(msg('', { sender: { id: 'stranger' }, attachments: [{ kind: 'image', ref: 'x' }] }));
+  await t.channel.sink!(msg('', { attachments: [{ kind: 'video', ref: 'big', name: 'clip.mp4', size: 50_000_000 }] }));
+  await settle(t);
+  assert.deepEqual(t.channel.fetched, []);
+  assert.match(t.channel.sent[0]!.text, /ruby pair approve/);
+  assert.match(t.channel.sent[1]!.text, /couldn't receive your video "clip.mp4": it is 47.7 MB, over the 0.1 MB limit/);
+  assert.equal(t.model.requests.length, 0);
+  await t.gateway.stop(0);
+});
+
+test('unsupported content gets a reply; with media off, files get an honest reply too', async () => {
+  const t = setup();
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('', { unsupported: 'a sticker' }));
+  await t.channel.sink!(msg('', { attachments: [{ kind: 'image', ref: 'p' }] }));
+  await settle(t);
+  assert.equal(t.model.requests.length, 0);
+  assert.equal(t.channel.sent[0]!.text, "I can't read a sticker. Send me text, a photo, a voice note or a file instead.");
+  assert.match(t.channel.sent[1]!.text, /can't receive files here: media handling is turned off/);
+  await t.gateway.stop(0);
+});
+
+test('outbound files survive the outbox and reach the channel', async () => {
+  const t = setup();
+  await t.gateway.start();
+  t.gateway.notify({ channel: 'fake', account: 'default', chatId: 'chat1' }, 'caption', [{ path: '/m/med_x.bin', name: 'a.png', mimeType: 'image/png', kind: 'image', size: 3 }]);
+  await t.gateway.deliver();
+  assert.deepEqual(t.channel.sent[0]!.attachments, [{ path: '/m/med_x.bin', name: 'a.png', mimeType: 'image/png', kind: 'image', size: 3 }]);
+  assert.equal(t.channel.sent[0]!.text, 'caption');
+  await t.gateway.stop(0);
 });

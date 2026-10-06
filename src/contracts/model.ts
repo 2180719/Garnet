@@ -27,10 +27,22 @@ export type ModelEvent =
   | { type: 'done'; message: ChatMessage; stopReason: StopReason; usage: Usage }
   | { type: 'error'; category: ErrorCategory; message: string; retryAfterMs?: number };
 
+/** What a model can read natively besides text. Absent means text only. */
+export type MediaCapabilities = {
+  /** image/jpeg, image/png, image/gif and image/webp as image blocks. */
+  images: boolean;
+  /** application/pdf as a document block. */
+  pdf: boolean;
+  /** Largest single image or PDF the provider accepts inline. */
+  maxImageBytes: number;
+  maxPdfBytes: number;
+};
+
 export type ModelCapabilities = {
   streaming: boolean;
   promptCaching: boolean;
   contextWindow: number;
+  media?: MediaCapabilities;
 };
 
 export interface ModelAdapter {

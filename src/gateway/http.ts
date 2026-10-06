@@ -37,6 +37,8 @@ export type ApiServerDeps = {
   trustProxy?: boolean;
   /** Deadline for reading a request body (default 30 s). */
   bodyTimeoutMs?: number;
+  /** Body cap for /v1/chat/completions, which may carry images as data URLs. Default 1 MB (no files). */
+  maxChatBodyBytes?: number;
 };
 
 type Ctx = { req: IncomingMessage; res: ServerResponse; url: URL; keyId: string | null; scopes: string[]; ip: string | null; authAttempted: boolean };
@@ -115,7 +117,7 @@ export class ApiServer {
     // The rightmost X-Forwarded-For entry is the one the trusted proxy appended; anything left of it is client-controlled.
     const forwarded = this.deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1)?.trim() : '';
     const ctx: Ctx = { req, res, url, keyId: null, scopes: [], ip: forwarded || req.socket.remoteAddress || null, authAttempted: false };
-    const readBody = () => readJson(req, this.deps.bodyTimeoutMs ?? BODY_TIMEOUT_MS);
+    const readBody = (maxBytes = MAX_BODY) => readJson(req, this.deps.bodyTimeoutMs ?? BODY_TIMEOUT_MS, maxBytes);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -193,7 +195,7 @@ export class ApiServer {
     if (!ctx.scopes.includes(scope) && !ctx.scopes.includes('admin')) throw new HttpError(403, `This key lacks the "${scope}" scope.`);
   }
 
-  private async route(ctx: Ctx, readBody: () => Promise<unknown>): Promise<void> {
+  private async route(ctx: Ctx, readBody: (maxBytes?: number) => Promise<unknown>): Promise<void> {
     const { req, res, url } = ctx;
     const method = req.method ?? 'GET';
     const path = url.pathname;
@@ -243,14 +245,15 @@ export class ApiServer {
     throw new HttpError(404, 'Not found.');
   }
 
-  private async chatCompletions(ctx: Ctx, readBody: () => Promise<unknown>): Promise<void> {
+  private async chatCompletions(ctx: Ctx, readBody: (maxBytes?: number) => Promise<unknown>): Promise<void> {
     const { req, res } = ctx;
-    const parsed = chatBody.safeParse(await readBody());
+    const parsed = chatBody.safeParse(await readBody(Math.max(MAX_BODY, this.deps.maxChatBodyBytes ?? MAX_BODY)));
     if (!parsed.success) throw new HttpError(400, `Invalid request: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
     const last = parsed.data.messages.at(-1)!;
     if (last.role !== 'user') throw new HttpError(400, 'The last message must have role "user".');
     const text = typeof last.content === 'string' ? last.content : last.content.flatMap((p) => (p.type === 'text' && 'text' in p ? [String(p.text)] : [])).join('\n');
-    if (!text.trim()) throw new HttpError(400, 'The last user message has no text.');
+    const files = typeof last.content === 'string' ? [] : last.content.flatMap((p) => filePart(p));
+    if (!text.trim() && files.length === 0) throw new HttpError(400, 'The last user message has no text.');
     // Ruby keeps conversation state server-side: only the newest user message is used.
     const conversation = String(req.headers['x-ruby-conversation'] ?? 'default');
     if (!/^[a-z0-9-]{1,40}$/.test(conversation)) throw new HttpError(400, 'X-Ruby-Conversation must match [a-z0-9-]{1,40}.');
@@ -262,6 +265,7 @@ export class ApiServer {
     const id = `chatcmpl-${newId('r')}`;
     const created = Math.floor(Date.now() / 1000);
     const key = `api:${ctx.keyId}:${conversation}`;
+    const input = files.length ? { text, files } : text;
 
     if (parsed.data.stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
@@ -269,16 +273,26 @@ export class ApiServer {
         res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'ruby', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
       chunk({ role: 'assistant' });
       let streamed = false;
-      const result = await this.deps.gateway.chat(key, text, {
-        signal: abort.signal,
-        source: 'api',
-        onEvent: (e) => {
-          if (e.type === 'text') {
-            streamed = true;
-            chunk({ content: e.text });
-          }
-        },
-      });
+      let result: Awaited<ReturnType<Gateway['chat']>>;
+      try {
+        result = await this.deps.gateway.chat(key, input, {
+          signal: abort.signal,
+          source: 'api',
+          onEvent: (e) => {
+            if (e.type === 'text') {
+              streamed = true;
+              chunk({ content: e.text });
+            }
+          },
+        });
+      } catch (e) {
+        // Headers are out: an attachment nobody can read (e.g. an image for a text-only model) is answered in the stream.
+        if (!isRubyError(e, 'invalid_input') || streamed) throw e;
+        chunk({ content: errorMessage(e) });
+        chunk({}, 'stop');
+        res.end('data: [DONE]\n\n');
+        return;
+      }
       // Status notes (approval needed, stopped early) are not part of the streamed text.
       if (!streamed || result.task.status !== 'completed') chunk({ content: streamed ? `\n\n${statusNote(result.task)}` : result.text });
       chunk({}, finishReason(result.task));
@@ -286,7 +300,7 @@ export class ApiServer {
       return;
     }
 
-    const result = await this.deps.gateway.chat(key, text, { signal: abort.signal, source: 'api' });
+    const result = await this.deps.gateway.chat(key, input, { signal: abort.signal, source: 'api' });
     const u = result.task.usage;
     const prompt = (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
     send(res, 200, {
@@ -328,16 +342,50 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
-/** Reads a JSON body of at most MAX_BODY bytes that must arrive within `timeoutMs`. */
-async function readJson(req: IncomingMessage, timeoutMs: number): Promise<unknown> {
+/**
+ * Files in an OpenAI-style content part: `image_url` and `file` parts, as
+ * base64 data URLs only. Ruby never fetches a client-supplied URL (that would
+ * let any chat key make the host request internal addresses). Other part
+ * types are refused rather than silently dropped.
+ */
+function filePart(p: { type: string } & Record<string, unknown>): { data: Uint8Array; mimeType?: string; name?: string }[] {
+  if (p.type === 'text') return [];
+  if (p.type === 'image_url') {
+    const v = p.image_url as { url?: unknown } | string | undefined;
+    const url = typeof v === 'string' ? v : v?.url;
+    if (typeof url !== 'string') throw new HttpError(400, 'image_url parts need image_url.url.');
+    return [decodeDataUrl(url, 'image')];
+  }
+  if (p.type === 'file') {
+    const f = p.file as { file_data?: unknown; filename?: unknown } | undefined;
+    if (typeof f?.file_data !== 'string') throw new HttpError(400, 'unsupported_content_type: file parts need file.file_data as a data URL (file_id uploads are not supported).');
+    const decoded = decodeDataUrl(f.file_data, 'file');
+    return [{ ...decoded, ...(typeof f.filename === 'string' ? { name: f.filename } : {}) }];
+  }
+  throw new HttpError(400, `unsupported_content_type: "${String(p.type).slice(0, 40)}" parts are not supported (use text, image_url or file with data URLs).`);
+}
+
+function decodeDataUrl(url: string, what: string): { data: Uint8Array; mimeType?: string } {
+  const m = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)?((?:;[a-z0-9-]+=[^;,]*)*);base64,([A-Za-z0-9+/=\s]*)$/i.exec(url);
+  if (!m) {
+    const remote = /^https?:/i.test(url);
+    throw new HttpError(400, remote ? `unsupported_content_type: ${what} URLs are not fetched; send the ${what} inline as a base64 data URL.` : `Malformed ${what} data URL (expected data:<type>;base64,<data>).`);
+  }
+  const data = new Uint8Array(Buffer.from(m[3]!, 'base64'));
+  if (data.byteLength === 0) throw new HttpError(400, `Empty ${what} data URL.`);
+  return { data, ...(m[1] ? { mimeType: m[1].toLowerCase() } : {}) };
+}
+
+/** Reads a JSON body of at most `maxBytes` that must arrive within `timeoutMs`. */
+async function readJson(req: IncomingMessage, timeoutMs: number, maxBytes = MAX_BODY): Promise<unknown> {
   const declared = Number(req.headers['content-length']);
-  if (declared > MAX_BODY) throw new HttpError(413, 'Request body too large.', { Connection: 'close' });
+  if (declared > maxBytes) throw new HttpError(413, 'Request body too large.', { Connection: 'close' });
   const read = (async () => {
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req as AsyncIterable<Buffer>) {
       size += chunk.length;
-      if (size > MAX_BODY) throw new HttpError(413, 'Request body too large.', { Connection: 'close' });
+      if (size > maxBytes) throw new HttpError(413, 'Request body too large.', { Connection: 'close' });
       chunks.push(chunk);
     }
     return Buffer.concat(chunks);

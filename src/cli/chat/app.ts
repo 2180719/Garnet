@@ -6,7 +6,7 @@ import { errorMessage } from '../../contracts/index.ts';
 import type { Ruby } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
-import { executeCommand } from './actions.ts';
+import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
 import { complete, matchingCommands, messageText, parseSlash } from './commands.ts';
 import { applyKey, emptyEditor, layoutEditor, type EditorState } from './editor.ts';
 import type { InputHistory } from './history.ts';
@@ -63,6 +63,8 @@ export class InteractiveChat {
   private readonly alwaysAllowed = new Set<string>();
   private readonly queue: string[] = [];
   private readonly toolLog: { call: ToolCallBlock; result: ToolResult }[] = [];
+  /** Files attached with /attach, sent with the next message. */
+  private readonly attachments: PendingFile[] = [];
   private totals: SessionTotals;
   private notice: { text: string; until: number } | null = null;
   private exitArmedUntil = 0;
@@ -314,10 +316,17 @@ export class InteractiveChat {
   }
 
   private turn(text: string): Promise<void> {
-    this.commit((w) => userBlock(text, this.theme, w));
-    return this.busy('thinking', async (signal) => {
+    const files = this.attachments.splice(0);
+    const names = files.map((f) => f.name).join(', ');
+    this.commit((w) => [...userBlock(text, this.theme, w), ...(files.length ? wrapText(this.theme.muted(`  + ${sanitize(names)}`), w) : [])]);
+    return this.busy(files.length ? 'reading files' : 'thinking', async (signal) => {
       const started = Date.now();
-      const task: TaskRecord = await this.o.ruby.agent.run(this.sessionId, text, { signal, onEvent: (e) => this.onEvent(e), source: 'cli' });
+      const prepared = await prepareTurn(this.o.ruby, this.sessionId, text, files, signal);
+      if ('reply' in prepared) {
+        this.commit((w) => ['', ...wrapText(`  ${sanitize(prepared.reply)}`, w), '']);
+        return;
+      }
+      const task: TaskRecord = await this.o.ruby.agent.run(this.sessionId, prepared.turn, { signal, onEvent: (e) => this.onEvent(e), source: 'cli' });
       this.finishStream();
       this.refreshTotals();
       const elapsed = Date.now() - started;
@@ -407,6 +416,7 @@ export class InteractiveChat {
         theme: this.theme,
         width: this.width,
         toolLog: this.toolLog,
+        attachments: this.attachments,
         switchTo: (id) => this.switchTo(id),
         ...(signal ? { signal } : {}),
       });

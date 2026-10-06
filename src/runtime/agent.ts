@@ -7,7 +7,9 @@ import {
   toolCallsOf,
   unknownUsage,
   type Budget,
+  type AttachmentRef,
   type ChatMessage,
+  type ContentBlock,
   type ErrorCategory,
   type ModelAdapter,
   type ModelEvent,
@@ -20,7 +22,7 @@ import {
   type ToolSchema,
   type Usage,
 } from '../contracts/index.ts';
-import { extractSummary, frozenContext, messagesFromEvents, planCompaction, systemPrompt, type FrozenContext } from '../context/index.ts';
+import { extractSummary, frozenContext, messagesFromEvents, planCompaction, prepareAttachments, systemPrompt, type FrozenContext } from '../context/index.ts';
 import type { SessionStore } from '../store/index.ts';
 import type { ToolExecutor, ToolRegistry } from '../tools/index.ts';
 
@@ -56,6 +58,10 @@ export type AgentDeps = {
   /** Transient provider failures retried per model call. */
   maxRetries?: number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Stored attachment bytes (the media store). Without it every attachment reaches the model as text. */
+  loadAttachment?: (ref: AttachmentRef) => Uint8Array | null;
+  /** Most images/PDFs sent as bytes per request; older ones become placeholders. Default 8. */
+  maxAttachmentsInContext?: number;
 };
 
 export type CompactionOutcome = {
@@ -82,7 +88,11 @@ export class Agent {
     this.deps = deps;
   }
 
-  async run(sessionId: string, userText: string, options: RunOptions = {}): Promise<TaskRecord> {
+  /**
+   * `input` is the user's text, or the turn's content blocks (text plus
+   * attachments already stored and described by the media ingest).
+   */
+  async run(sessionId: string, input: string | ContentBlock[], options: RunOptions = {}): Promise<TaskRecord> {
     const { store } = this.deps;
     const signal = options.signal ?? new AbortController().signal;
     const emit = options.onEvent ?? (() => {});
@@ -91,7 +101,7 @@ export class Agent {
     if (!cancelledEarly) {
       store.append(sessionId, {
         type: 'user_message',
-        message: { role: 'user', content: [{ type: 'text', text: userText }] },
+        message: { role: 'user', content: typeof input === 'string' ? [{ type: 'text', text: input }] : input.map((b) => (b.type === 'attachment' ? withoutData(b) : b)) },
         source: options.source ?? 'cli',
       });
     }
@@ -144,7 +154,7 @@ export class Agent {
       const exhausted = this.budgetProblem(task, started);
       if (exhausted) return finish('budget_exhausted', exhausted);
 
-      const messages = messagesFromEvents(store.events(sessionId));
+      const messages = this.view(messagesFromEvents(store.events(sessionId)));
       const turn = await this.callModel({ system, messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, emit, deadline);
       task.modelCalls += 1;
       if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
@@ -267,7 +277,7 @@ export class Agent {
     emit({ type: 'compacting' });
     // Summarize with the current frozen prefix so the request can hit the cache.
     const { system, tools } = this.frozenFor(sessionId);
-    const turn = await this.callModel({ system, messages: plan.messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, () => {}, deadline);
+    const turn = await this.callModel({ system, messages: this.view(plan.messages), tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, () => {}, deadline);
     // A summary cut off at the output limit would silently drop whatever it did not reach.
     const summary = turn.kind === 'done' && turn.stopReason !== 'max_tokens' ? extractSummary(textOf(turn.message)) : '';
     if (turn.kind === 'error' || !summary) {
@@ -277,6 +287,15 @@ export class Agent {
     this.deps.store.append(sessionId, { type: 'checkpoint', summary, throughSeq: plan.throughSeq, usage: turn.usage });
     this.freeze(sessionId, this.freshSystem());
     return { status: 'compacted', usage: turn.usage, modelCalls: 1 };
+  }
+
+  /** Attachments as the model can take them: bytes for what it reads natively (newest first, capped), text otherwise. */
+  private view(messages: ChatMessage[]): ChatMessage[] {
+    return prepareAttachments(messages, {
+      media: this.deps.model.capabilities.media,
+      maxInContext: this.deps.maxAttachmentsInContext ?? 8,
+      load: this.deps.loadAttachment,
+    });
   }
 
   private budgetProblem(task: TaskRecord, started: number): string | null {
@@ -339,6 +358,12 @@ export class Agent {
 }
 
 type ModelError = Extract<ModelEvent, { type: 'error' }>;
+
+/** Bytes never enter the event log; only the reference and derived text do. */
+function withoutData<T extends { data?: string }>(block: T): T {
+  const { data: _data, ...rest } = block;
+  return rest as T;
+}
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

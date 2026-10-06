@@ -1,4 +1,4 @@
-import { newId, nowIso, type InboundMessage, type OutboundMessage } from '../contracts/index.ts';
+import { newId, nowIso, type InboundAttachment, type InboundMessage, type OutboundAttachment, type OutboundMessage } from '../contracts/index.ts';
 import { transaction, type Db } from './db.ts';
 
 export type InboxStatus = 'pending' | 'processing' | 'done' | 'ignored' | 'interrupted';
@@ -36,6 +36,8 @@ const inboxFrom = (r: Row): InboxRow => ({
   sender: { id: r.sender_id as string, ...(r.sender_name ? { displayName: r.sender_name as string } : {}) },
   isPrivate: r.is_private === 1,
   text: r.text as string,
+  ...(r.attachments ? { attachments: JSON.parse(r.attachments as string) as InboundAttachment[] } : {}),
+  ...(r.unsupported ? { unsupported: r.unsupported as string } : {}),
   receivedAt: r.received_at as string,
   status: r.status as InboxStatus,
   sessionId: (r.session_id as string | null) ?? null,
@@ -49,6 +51,7 @@ const outboxFrom = (r: Row): OutboxRow => ({
   chatId: r.chat_id as string,
   text: r.text as string,
   ...(r.reply_to ? { replyToExternalId: r.reply_to as string } : {}),
+  ...(r.attachments ? { attachments: JSON.parse(r.attachments as string) as OutboundAttachment[] } : {}),
   status: r.status as OutboxStatus,
   attempts: r.attempts as number,
   nextAttemptAt: r.next_attempt_at as string,
@@ -70,10 +73,23 @@ export class GatewayStore {
     const id = newId('in');
     const result = this.db
       .prepare(
-        `INSERT OR IGNORE INTO inbox (id, channel, account, chat_id, external_id, sender_id, sender_name, is_private, text, received_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        `INSERT OR IGNORE INTO inbox (id, channel, account, chat_id, external_id, sender_id, sender_name, is_private, text, attachments, unsupported, received_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       )
-      .run(id, m.channel, m.account, m.chatId, m.externalId, m.sender.id, m.sender.displayName ?? null, m.isPrivate ? 1 : 0, m.text, m.receivedAt);
+      .run(
+        id,
+        m.channel,
+        m.account,
+        m.chatId,
+        m.externalId,
+        m.sender.id,
+        m.sender.displayName ?? null,
+        m.isPrivate ? 1 : 0,
+        m.text,
+        m.attachments?.length ? JSON.stringify(m.attachments) : null,
+        m.unsupported ?? null,
+        m.receivedAt,
+      );
     return result.changes === 0 ? null : this.inbox(id)!;
   }
 
@@ -84,6 +100,14 @@ export class GatewayStore {
 
   inboxByStatus(status: InboxStatus): InboxRow[] {
     return (this.db.prepare('SELECT * FROM inbox WHERE status = ? ORDER BY received_at, rowid').all(status) as Row[]).map(inboxFrom);
+  }
+
+  /** The chat a session last heard from (where a file it sends should go), if any. */
+  lastChatForSession(sessionId: string): { channel: string; account: string; chatId: string } | undefined {
+    const r = this.db
+      .prepare('SELECT channel, account, chat_id FROM inbox WHERE session_id = ? ORDER BY received_at DESC, rowid DESC LIMIT 1')
+      .get(sessionId) as Row | undefined;
+    return r && { channel: r.channel as string, account: r.account as string, chatId: r.chat_id as string };
   }
 
   setInbox(id: string, status: InboxStatus, link: { sessionId?: string; taskId?: string } = {}): void {
@@ -97,10 +121,10 @@ export class GatewayStore {
     const at = nowIso();
     this.db
       .prepare(
-        `INSERT INTO outbox (delivery_id, channel, account, chat_id, text, reply_to, status, next_attempt_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        `INSERT INTO outbox (delivery_id, channel, account, chat_id, text, reply_to, attachments, status, next_attempt_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
       )
-      .run(deliveryId, m.channel, m.account, m.chatId, m.text, m.replyToExternalId ?? null, at, at);
+      .run(deliveryId, m.channel, m.account, m.chatId, m.text, m.replyToExternalId ?? null, m.attachments?.length ? JSON.stringify(m.attachments) : null, at, at);
     return this.outbox(deliveryId)!;
   }
 

@@ -1,7 +1,7 @@
 // End-to-end: drives `ruby chat` with a scripted model through a fake TTY and
 // checks what a person would see on the screen.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
@@ -313,4 +313,27 @@ test('without a terminal, chat is plain: replies on stdout, everything else on s
   assert.match(e, /Budget per task/);
   assert.ok(!/\x1b\[/.test(out.join('') + e), 'no escape sequences');
   assert.ok(existsSync(join(home, 'workspace', 'p.md')));
+});
+
+test('plain chat: /attach sends a file with the next message; unreadable files get an honest answer', async () => {
+  const home = tempDir();
+  const files = tempDir();
+  writeFileSync(join(files, 'my notes.md'), '# Notes\n- buy milk\n');
+  writeFileSync(join(files, 'voice.ogg'), readFileSync(join(import.meta.dirname, '..', '..', '..', 'test', 'media', 'voice.ogg')));
+  const stdin = new PassThrough();
+  const out: string[] = [];
+  const err: string[] = [];
+  const show = (req: ModelRequest) => ({ text: JSON.stringify(req.messages.at(-1)!.content.map((b) => (b.type === 'text' ? b.text : b.type))) });
+  const model = new FakeModel([show, show]);
+  const done = chat([], { out: (t) => out.push(t), err: (t) => err.push(t), stdin, stdout: null, env: {} }, { createRuby: (o) => createRuby({ ...o, home, env: {}, model }) });
+  stdin.end(`/attach '${join(files, 'my notes.md')}'\n/attach\nsummarize\n/attach ${join(files, 'voice.ogg')}\nlisten\n/attach /nope/missing.txt\n`);
+  assert.equal(await done, 0);
+  const e = err.join('');
+  assert.match(e, /Attached my notes\.md \(text\/markdown, 19 B\)\. It goes with your next message\./);
+  assert.match(e, /· my notes\.md text\/markdown, 19 B/);
+  assert.match(e, /Cannot read \/nope\/missing\.txt/);
+  const o = out.join('');
+  assert.match(o, /summarize/);
+  assert.match(o, /\[Document attached: \\"my notes.md\\", text\/markdown, 19 B; id med_[a-f0-9]+\]\\n# Notes\\n- buy milk/);
+  assert.match(o, /"listen","\[Audio attached: \\"voice.ogg\\", audio\/ogg, 47 B; id med_[a-f0-9]+\]\\n\(No transcription backend is configured/, 'with text, the model runs and is told why it cannot hear the audio');
 });

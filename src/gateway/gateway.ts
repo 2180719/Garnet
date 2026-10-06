@@ -4,12 +4,14 @@ import {
   RubyError,
   textOf,
   type ChannelAdapter,
+  type ContentBlock,
   type InboundMessage,
   type OutboundMessage,
   type SendResult,
   type TaskRecord,
 } from '../contracts/index.ts';
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
+import type { FailedFile, MediaIngest, MediaInput } from '../media/index.ts';
 import type { ApprovalStore, GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
 
 export type Route = { match: { channel: string; chatId?: string | undefined }; conversation: string };
@@ -36,7 +38,12 @@ export type GatewayDeps = {
   deliveryEnabled?: boolean;
   /** A send still pending after this long is treated as possibly delivered (`uncertain`). Default 60 s. */
   sendTimeoutMs?: number;
+  /** Stores, transcribes and describes inbound files. Without it, files get an honest "can't receive files" reply. */
+  media?: MediaIngest;
 };
+
+/** A turn for a non-channel surface: text plus files already in memory (e.g. data URLs from the HTTP API). */
+export type ChatInput = string | { text: string; files: (MediaInput | FailedFile)[] };
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -118,7 +125,7 @@ export class Gateway {
    */
   chat(
     conversationKey: string,
-    text: string,
+    input: ChatInput,
     options: { signal?: AbortSignal; onEvent?: (e: RuntimeEvent) => void; source: string },
   ): Promise<{ task: TaskRecord; text: string; sessionId: string }> {
     return this.deps.lanes.run(conversationKey, async () => {
@@ -132,7 +139,16 @@ export class Gateway {
       else options.signal?.addEventListener('abort', onAbort, { once: true });
       this.active.set(conversationKey, controller);
       try {
-        const task = await agent.run(sessionId, text, { ...options, signal: controller.signal });
+        let turn: string | ContentBlock[] = typeof input === 'string' ? input : input.text;
+        if (typeof input !== 'string' && input.files.length) {
+          const media = this.deps.media;
+          if (!media) throw new RubyError('invalid_input', 'Files are not accepted: media handling is off (media.enabled in config.json).');
+          const blocks = [...(input.text.trim() ? [{ type: 'text' as const, text: input.text }] : []), ...(await media.ingest(input.files, { sessionId, signal: controller.signal }))];
+          const unreadable = media.unreadableReply(blocks);
+          if (unreadable) throw new RubyError('invalid_input', unreadable);
+          turn = blocks;
+        }
+        const task = await agent.run(sessionId, turn, { ...options, signal: controller.signal });
         return { task, text: this.replyText(sessionId, before, task), sessionId };
       } finally {
         options.signal?.removeEventListener('abort', onAbort);
@@ -158,9 +174,9 @@ export class Gateway {
     return { status: result.task.status, text: result.text, resumed: true };
   }
 
-  /** Queues a proactive message (scheduled results, alerts) to a chat. */
-  notify(target: { channel: string; account: string; chatId: string }, text: string): void {
-    this.deps.store.enqueue({ ...target, text });
+  /** Queues a proactive message (scheduled results, alerts, files a tool sends) to a chat. */
+  notify(target: { channel: string; account: string; chatId: string }, text: string, attachments?: OutboundMessage['attachments']): void {
+    this.deps.store.enqueue({ ...target, text, ...(attachments?.length ? { attachments } : {}) });
     void this.deliver();
   }
 
@@ -227,7 +243,54 @@ export class Gateway {
       this.reply(row, "Hi! I'm Ruby. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task.");
       return;
     }
+    if (row.unsupported && !row.text.trim() && !row.attachments?.length) {
+      store.setInbox(row.id, 'done');
+      this.reply(row, `I can't read ${row.unsupported}. Send me text, a photo, a voice note or a file instead.`);
+      return;
+    }
     void this.deps.lanes.run(key, () => this.process(row, key)).catch((e) => this.log('error', `processing ${row.id}: ${errorMessage(e)}`));
+  }
+
+  /**
+   * The turn for an inbound message: its text plus its files, downloaded from
+   * the channel (only now, for a paired sender), stored and described. Returns
+   * a direct reply instead when nothing in it is readable (a voice note with
+   * no transcription set up, an image for a text-only model).
+   */
+  private async inboundTurn(row: InboxRow, sessionId: string, channel: ChannelAdapter | undefined, signal: AbortSignal): Promise<{ turn: string | ContentBlock[] } | { reply: string }> {
+    const files = row.attachments ?? [];
+    const text: ContentBlock[] = row.text.trim() ? [{ type: 'text', text: row.text }] : [];
+    if (row.unsupported) text.push({ type: 'text', text: `[The owner also sent ${row.unsupported}, which cannot be shown to you.]` });
+    if (files.length === 0) return { turn: row.unsupported ? text : row.text };
+    const media = this.deps.media;
+    if (!media) {
+      const note = `I can't receive files here: media handling is turned off (media.enabled in config.json).`;
+      if (!row.text.trim()) return { reply: note };
+      return { turn: [...text, { type: 'text', text: `[The owner also sent ${files.length} file(s), which could not be received: media handling is off.]` }] };
+    }
+    const received: (MediaInput | FailedFile)[] = [];
+    for (const f of files) {
+      const base = { name: f.name, kind: f.kind };
+      if (f.size !== undefined && f.size > media.maxBytes) {
+        received.push({ ...base, error: `it is ${(f.size / 1048576).toFixed(1)} MB, over the ${(media.maxBytes / 1048576).toFixed(1)} MB limit (media.maxBytes)` });
+        continue;
+      }
+      if (!channel?.fetchAttachment) {
+        received.push({ ...base, error: `the ${row.channel} channel cannot download files` });
+        continue;
+      }
+      try {
+        const got = await channel.fetchAttachment(f.ref, { maxBytes: media.maxBytes, signal });
+        received.push({ data: got.data, name: f.name, mimeType: got.mimeType ?? f.mimeType, durationSec: f.durationSec });
+      } catch (e) {
+        if (signal.aborted) throw e;
+        this.log('warn', `${row.channel} attachment download failed: ${errorMessage(e)}`);
+        received.push({ ...base, error: errorMessage(e) });
+      }
+    }
+    const blocks = [...text, ...(await media.ingest(received, { sessionId, signal }))];
+    const unreadable = media.unreadableReply(blocks);
+    return unreadable ? { reply: unreadable } : { turn: blocks };
   }
 
   private async process(row: InboxRow, key: string): Promise<void> {
@@ -242,12 +305,23 @@ export class Gateway {
     const typing = setInterval(() => void channel?.typing?.(row.chatId), 4500);
     typing.unref();
     try {
+      const prepared = await this.inboundTurn(row, sessionId, channel, controller.signal);
+      if ('reply' in prepared) {
+        store.setInbox(row.id, 'done');
+        this.reply(row, prepared.reply);
+        return;
+      }
       const before = sessions.lastSeq(sessionId);
-      const task = await agent.run(sessionId, row.text, { signal: controller.signal, source: row.channel });
+      const task = await agent.run(sessionId, prepared.turn, { signal: controller.signal, source: row.channel });
       store.setInbox(row.id, 'done', { taskId: task.id });
       this.reply(row, this.replyText(sessionId, before, task));
     } catch (e) {
       store.setInbox(row.id, 'done');
+      if (controller.signal.aborted) {
+        // /stop while files were still downloading or being transcribed.
+        this.reply(row, 'Stopped.');
+        return;
+      }
       this.log('error', `task for ${row.id} crashed: ${errorMessage(e)}`);
       this.reply(row, 'Sorry, something went wrong on my side. The error has been logged.');
     } finally {

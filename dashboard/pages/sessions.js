@@ -54,6 +54,13 @@ function renderEvent(e, names) {
     if (b.type === 'tool_call') { names.set(b.id, b.name); return details(`Tool call: ${b.name}`, json(b.input)); }
     if (b.type === 'tool_result') return details(`Tool result${b.isError ? ' (error)' : ''}`, b.content);
     if (b.type === 'provider') return h('p', { class: 'small muted' }, `Reasoning from ${b.provider} is hidden.`);
+    if (b.type === 'attachment') {
+      const a = b.attachment || {};
+      const kb = typeof a.size === 'number' ? ` · ${Math.max(1, Math.round(a.size / 1024))} KB` : '';
+      const title = `${a.kind || 'file'}: ${a.name || a.id} (${a.mimeType}${kb})`;
+      const body = [b.note ? `(${b.note})` : '', b.text || ''].filter(Boolean).join('\n\n');
+      return body ? details(`Attachment ${title}`, body) : h('p', { class: 'small muted' }, `Attachment ${title}`);
+    }
     return null;
   });
   switch (e.type) {

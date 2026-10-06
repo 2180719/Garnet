@@ -1,5 +1,6 @@
 // Helpers shared by the channel adapters: send-outcome classification, chunked sends, text splitting.
-import type { SendResult } from '../contracts/index.ts';
+import { readFile } from 'node:fs/promises';
+import type { OutboundAttachment, SendResult } from '../contracts/index.ts';
 
 /**
  * Error codes that mean the request never left this machine or never reached
@@ -104,19 +105,19 @@ const PARTIAL_ATTEMPTS = 4;
  * here within a bounded wait; if that does not succeed, the result is a
  * non-retryable failure that says how much was delivered.
  */
-export async function sendChunks(
-  chunks: string[],
-  sendOne: (text: string, index: number) => Promise<string>,
+export async function sendChunks<T = string>(
+  chunks: T[],
+  sendOne: (chunk: T, index: number) => Promise<string>,
   classify: (e: unknown) => ChunkFailure,
   sleep: (ms: number) => Promise<void>,
 ): Promise<SendResult> {
   if (chunks.length === 0) return { status: 'failed', retryable: false, error: 'Cannot send an empty message' };
   const externalIds: string[] = [];
   let waited = 0;
-  for (const [i, text] of chunks.entries()) {
+  for (const [i, chunk] of chunks.entries()) {
     for (let attempt = 1; ; attempt++) {
       try {
-        externalIds.push(await sendOne(text, i));
+        externalIds.push(await sendOne(chunk, i));
         break;
       } catch (e) {
         const f = classify(e);
@@ -137,4 +138,63 @@ export async function sendChunks(
     }
   }
   return { status: 'sent', externalIds };
+}
+
+/**
+ * Reads a response body, failing as soon as it exceeds `maxBytes` (a size
+ * header can lie or be missing), so a large download never fills memory.
+ */
+export async function readCapped(res: Response, maxBytes: number, what = 'File'): Promise<Uint8Array> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`${what} is too large (${tooLarge(declared, maxBytes)})`);
+  }
+  if (!res.body) return new Uint8Array(await res.arrayBuffer());
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`${what} is too large (over ${tooLarge(size, maxBytes)})`);
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.byteLength;
+  }
+  return out;
+}
+
+const mb = (n: number) => `${(n / (1024 * 1024)).toFixed(1)} MB`;
+const tooLarge = (size: number, max: number) => `${mb(size)}; the limit is ${mb(max)}`;
+
+/** A file part for multipart uploads (FormData), read from the media store. */
+export async function fileBlob(path: string, mimeType: string): Promise<Blob> {
+  return new Blob([await readFile(path)], { type: mimeType });
+}
+
+/** What one outbound unit is: a file (with an optional caption) or a chunk of text. */
+export type SendUnit = { kind: 'file'; file: OutboundAttachment; caption?: string } | { kind: 'text'; text: string };
+
+/**
+ * Orders a message with files: each file in turn, then the text. When the
+ * text fits in a caption it rides on the last file instead of a separate
+ * message (a lone caption reads better and costs one request less).
+ */
+export function sendUnits(message: { text: string; attachments?: OutboundAttachment[] | undefined }, maxChars: number, maxCaption: number): SendUnit[] {
+  const files = message.attachments ?? [];
+  const text = message.text.trim();
+  if (files.length === 0) return splitText(message.text, maxChars).map((t) => ({ kind: 'text', text: t }));
+  const units: SendUnit[] = files.map((file) => ({ kind: 'file', file }));
+  if (text && text.length <= maxCaption) (units[units.length - 1] as { caption?: string }).caption = text;
+  else if (text) units.push(...splitText(text, maxChars).map((t): SendUnit => ({ kind: 'text', text: t })));
+  return units;
 }

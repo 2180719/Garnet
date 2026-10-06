@@ -2,7 +2,9 @@ import type {
   ChatMessage,
   ContentBlock,
   ErrorCategory,
+  MediaCapabilities,
   ModelAdapter,
+  ModelCapabilities,
   ModelEvent,
   ModelRequest,
   StopReason,
@@ -26,14 +28,21 @@ export type FakeScript = (FakeStep | ((request: ModelRequest) => FakeStep))[];
  */
 export class FakeModel implements ModelAdapter {
   readonly id = 'fake:scripted';
-  readonly capabilities = { streaming: true, promptCaching: false, contextWindow: 200_000 };
+  readonly capabilities: ModelCapabilities;
   readonly requests: ModelRequest[] = [];
   private readonly script: FakeScript;
   private step = 0;
   private callCounter = 0;
 
-  constructor(script: FakeScript = []) {
+  /** `media` says what it pretends to read natively (default: images and PDFs, so tests see native blocks). */
+  constructor(script: FakeScript = [], options: { media?: MediaCapabilities | undefined } = {}) {
     this.script = script;
+    this.capabilities = {
+      streaming: true,
+      promptCaching: false,
+      contextWindow: 200_000,
+      media: options.media ?? { images: true, pdf: true, maxImageBytes: 5 * 1024 * 1024, maxPdfBytes: 20 * 1024 * 1024 },
+    };
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
@@ -73,6 +82,8 @@ export class FakeModel implements ModelAdapter {
 
 function echo(request: ModelRequest): string {
   const last = [...request.messages].reverse().find((m) => m.role === 'user');
+  const files = last?.content.filter((b) => b.type === 'attachment' && b.data).length ?? 0;
   const text = last?.content.find((b) => b.type === 'text');
-  return text && text.type === 'text' ? `You said: ${text.text}` : 'Done.';
+  const said = text && text.type === 'text' ? `You said: ${text.text}` : 'Done.';
+  return files ? `${said}\n(${files} file(s) arrived as native blocks.)` : said;
 }

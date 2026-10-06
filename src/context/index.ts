@@ -9,3 +9,4 @@ export {
   type CompactionPlan,
   type FrozenContext,
 } from './builder.ts';
+export { prepareAttachments, type AttachmentView } from './attachments.ts';

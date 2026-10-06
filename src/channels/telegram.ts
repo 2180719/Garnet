@@ -5,12 +5,13 @@ import {
   type ChannelAdapter,
   type ChannelCapabilities,
   type ChannelHealth,
+  type InboundAttachment,
   type InboundMessage,
   type InboundSink,
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, fileBlob, mayHaveReachedServer, readCapped, sendChunks, sendUnits, type ChunkFailure, type SendUnit } from './delivery.ts';
 
 export type TelegramOptions = {
   token: string;
@@ -30,7 +31,35 @@ const CONFLICT_BACKOFF_MS = 5000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 type TgUser = { id: number; first_name?: string; last_name?: string; username?: string };
-type TgMessage = { message_id: number; date: number; text?: string; from?: TgUser; chat: { id: number; type: string } };
+type TgFile = { file_id: string; file_size?: number; mime_type?: string; file_name?: string; duration?: number };
+type TgMessage = {
+  message_id: number;
+  date: number;
+  text?: string;
+  caption?: string;
+  from?: TgUser;
+  chat: { id: number; type: string };
+  photo?: (TgFile & { width: number; height: number })[];
+  document?: TgFile;
+  voice?: TgFile;
+  audio?: TgFile;
+  video?: TgFile;
+  video_note?: TgFile;
+  animation?: TgFile;
+  sticker?: unknown;
+  location?: unknown;
+  venue?: unknown;
+  contact?: unknown;
+  poll?: unknown;
+  dice?: unknown;
+};
+
+/** Bot API limits: bots download files up to 20 MB, upload photos up to 10 MB and other files up to 50 MB; captions hold 1024 characters. */
+const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_CAPTION = 1024;
+const PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 type TgUpdate = { update_id: number; message?: TgMessage };
 
 /** A Bot API call that did not produce `ok: true`. `status` is 0 for network failures. */
@@ -51,7 +80,7 @@ class TelegramApiError extends Error {
 export class TelegramChannel implements ChannelAdapter {
   readonly channel = 'telegram';
   readonly account: string;
-  readonly capabilities: ChannelCapabilities = { maxMessageChars: MAX_CHARS, dedupesSends: false, typingIndicator: true };
+  readonly capabilities: ChannelCapabilities = { maxMessageChars: MAX_CHARS, dedupesSends: false, typingIndicator: true, maxUploadBytes: MAX_UPLOAD_BYTES };
 
   #token: string;
   #fetch: typeof fetch;
@@ -133,17 +162,73 @@ export class TelegramChannel implements ChannelAdapter {
     const replyTo = Number(message.replyToExternalId);
     const replyParameters = message.replyToExternalId !== undefined && Number.isInteger(replyTo) ? { message_id: replyTo, allow_sending_without_reply: true } : undefined;
     return sendChunks(
-      splitText(message.text, MAX_CHARS),
-      async (text, i) => {
-        const body: Record<string, unknown> = { chat_id: message.chatId, text };
-        if (i === 0 && replyParameters) body.reply_parameters = replyParameters;
-        const sent = (await this.#call('sendMessage', body, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { message_id: number };
+      sendUnits(message, MAX_CHARS, MAX_CAPTION),
+      async (unit, i) => {
+        const sent = (await this.#sendUnit(message.chatId, unit, i === 0 ? replyParameters : undefined)) as { message_id: number };
         this.#lastSuccessAt = Date.now();
         return String(sent.message_id);
       },
       (e) => this.#classify(e),
       (ms) => this.#sleep(ms, new AbortController().signal),
     );
+  }
+
+  async #sendUnit(chatId: string, unit: SendUnit, replyParameters: Record<string, unknown> | undefined): Promise<unknown> {
+    if (unit.kind === 'text') {
+      const body: Record<string, unknown> = { chat_id: chatId, text: unit.text };
+      if (replyParameters) body.reply_parameters = replyParameters;
+      return this.#call('sendMessage', body, AbortSignal.timeout(REQUEST_TIMEOUT_MS));
+    }
+    const f = unit.file;
+    if (f.size > MAX_UPLOAD_BYTES) throw new TelegramApiError(413, `Telegram bots can send files up to 50 MB; ${f.name} is larger`);
+    // Photos are recompressed and shown inline; voice notes play inline; everything else goes as a document.
+    const [method, field] =
+      f.kind === 'image' && PHOTO_TYPES.has(f.mimeType) && f.size <= MAX_PHOTO_BYTES
+        ? ['sendPhoto', 'photo']
+        : f.mimeType === 'audio/ogg'
+          ? ['sendVoice', 'voice']
+          : f.mimeType === 'audio/mpeg' || f.mimeType === 'audio/mp4'
+            ? ['sendAudio', 'audio']
+            : ['sendDocument', 'document'];
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append(field, await fileBlob(f.path, f.mimeType), f.name);
+    if (unit.caption) form.append('caption', unit.caption);
+    if (replyParameters) form.append('reply_parameters', JSON.stringify(replyParameters));
+    // Uploads take longer than a text message; still bounded so the gateway never waits forever.
+    return this.#call(method, form, AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4));
+  }
+
+  async fetchAttachment(ref: string, options: { maxBytes: number; signal: AbortSignal }): Promise<{ data: Uint8Array; mimeType?: string }> {
+    const max = Math.min(options.maxBytes, MAX_DOWNLOAD_BYTES);
+    const signal = AbortSignal.any([options.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4)]);
+    let file: { file_path?: string; file_size?: number };
+    try {
+      file = (await this.#call('getFile', { file_id: ref }, signal)) as typeof file;
+    } catch (e) {
+      // getFile refuses files over the bot download limit.
+      if (e instanceof TelegramApiError && e.status === 400 && /too big/i.test(e.message)) throw new Error('the file is larger than the 20 MB Telegram lets bots download');
+      throw new Error(this.#redact(errorMessage(e)));
+    }
+    if (typeof file.file_size === 'number' && file.file_size > max) {
+      throw new Error(`the file is too large (${(file.file_size / 1048576).toFixed(1)} MB; the limit is ${(max / 1048576).toFixed(1)} MB)`);
+    }
+    if (!file.file_path) throw new Error('Telegram did not provide a download path for the file');
+    let res: Response;
+    try {
+      res = await this.#fetch(`${this.#base}/file/bot${this.#token}/${file.file_path.split('/').map(encodeURIComponent).join('/')}`, { signal });
+    } catch (e) {
+      throw new Error(`download failed: ${this.#redact(errorMessage(e))}`);
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`download failed with HTTP ${res.status}`);
+    }
+    try {
+      return { data: await readCapped(res, max, 'The file') };
+    } catch (e) {
+      throw new Error(this.#redact(errorMessage(e)));
+    }
   }
 
   #classify(e: unknown): ChunkFailure {
@@ -211,7 +296,11 @@ export class TelegramChannel implements ChannelAdapter {
 
   #toInbound(update: TgUpdate): InboundMessage | null {
     const m = update.message;
-    if (!m || typeof m.text !== 'string' || !m.from) return null;
+    if (!m || !m.from) return null;
+    const text = typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : '';
+    const attachments = this.#attachments(m);
+    const unsupported = attachments.length ? undefined : unsupportedOf(m);
+    if (text === '' && attachments.length === 0 && !unsupported) return null;
     const name = [m.from.first_name, m.from.last_name].filter(Boolean).join(' ') || m.from.username;
     return {
       channel: this.channel,
@@ -219,23 +308,48 @@ export class TelegramChannel implements ChannelAdapter {
       chatId: String(m.chat.id),
       externalId: String(m.message_id),
       sender: { id: String(m.from.id), ...(name ? { displayName: name } : {}) },
-      text: m.text,
+      text,
+      ...(attachments.length ? { attachments } : {}),
+      ...(unsupported ? { unsupported } : {}),
       isPrivate: m.chat.type === 'private',
       receivedAt: new Date(m.date * 1000).toISOString(),
     };
+  }
+
+  #attachments(m: TgMessage): InboundAttachment[] {
+    const out: InboundAttachment[] = [];
+    const add = (f: TgFile | undefined, kind: InboundAttachment['kind'], fallbackName: string, mimeType?: string) => {
+      if (!f || typeof f.file_id !== 'string') return;
+      const mime = f.mime_type ?? mimeType;
+      out.push({
+        kind,
+        ref: f.file_id,
+        name: f.file_name ?? fallbackName,
+        ...(mime ? { mimeType: mime } : {}),
+        ...(typeof f.file_size === 'number' ? { size: f.file_size } : {}),
+        ...(typeof f.duration === 'number' ? { durationSec: f.duration } : {}),
+      });
+    };
+    // Photo sizes come smallest first; the largest is the original resolution (Telegram's own JPEG).
+    if (Array.isArray(m.photo) && m.photo.length) add(m.photo.at(-1), 'image', 'photo.jpg', 'image/jpeg');
+    if (m.document) add(m.document, kindOfClaim(m.document.mime_type), 'document');
+    add(m.voice, 'audio', 'voice.ogg', 'audio/ogg');
+    add(m.audio, 'audio', 'audio');
+    add(m.video ?? m.video_note ?? m.animation, 'video', 'video.mp4', 'video/mp4');
+    return out;
   }
 
   #redact(text: string): string {
     return text.split(this.#token).join('<token>');
   }
 
-  async #call(method: string, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+  async #call(method: string, body: Record<string, unknown> | FormData, signal: AbortSignal): Promise<unknown> {
     let res: Response;
     try {
+      // FormData sets its own multipart content type with the boundary.
       res = await this.#fetch(`${this.#base}/bot${this.#token}/${method}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        ...(body instanceof FormData ? { body } : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
         signal,
       });
     } catch (e) {
@@ -253,4 +367,23 @@ export class TelegramChannel implements ChannelAdapter {
     const maybeDelivered = res.ok || AMBIGUOUS_STATUSES.has(res.status);
     throw new TelegramApiError(res.status, `Telegram ${method} failed with ${res.status}${description ? `: ${description}` : ''}`, payload.parameters?.retry_after, maybeDelivered);
   }
+}
+
+function kindOfClaim(mime: string | undefined): InboundAttachment['kind'] {
+  if (!mime) return 'file';
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime === 'application/pdf' || mime.startsWith('text/')) return 'document';
+  return 'file';
+}
+
+/** Message types with no file or text Ruby could read. */
+function unsupportedOf(m: TgMessage): string | undefined {
+  if (m.sticker) return 'a sticker';
+  if (m.location || m.venue) return 'a location';
+  if (m.contact) return 'a contact card';
+  if (m.poll) return 'a poll';
+  if (m.dice) return 'a dice roll';
+  return undefined;
 }

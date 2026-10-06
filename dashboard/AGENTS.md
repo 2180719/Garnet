@@ -42,3 +42,4 @@ overview (`/api/overview`, `/api/achievements`), chat (`POST /v1/chat/completion
 ## Verifying
 
 Run a real server with the fake model (`model.provider = "fake"`, `api.enabled`, `dashboard.enabled`), open the link from `ruby dashboard` in Chromium via Playwright, visit every page at 1280x800 and 375x812 in light and dark, and assert there are no `console`/`pageerror` events (CSP violations are console errors) and no horizontal overflow.
+- Session events render attachment blocks (kind, name, type, size) with any transcript or extracted text in a `<details>`; the bytes are never sent to the dashboard.
