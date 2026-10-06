@@ -35,6 +35,7 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/scheduler/` | Cron jobs and heartbeats with pre-checks, budgets, catch-up and failure pausing; runs go through the gateway. |
 | `src/service/` | systemd/launchd service definitions and install. |
 | `src/migrate/` | `ruby import openclaw|hermes`: memory, persona and skills from other harnesses (dry run by default, never secrets). |
+| `src/media/` | Attachments: content-addressed file store, type sniffing, voice-note transcription (OpenAI-compatible endpoint or local command), text extraction, the `send_file` tool. |
 | `src/sandbox/` | Command execution: Docker (isolated, non-root, no network by default) or local (not a boundary). |
 | `src/secrets/` | Optional encrypted secret store (`<RUBY_HOME>/secrets`, scrypt + AES-256-GCM) and secret-name resolution: environment first, then the store. |
 | `src/achievements/` | Local achievements and easter eggs for the dashboard. |
