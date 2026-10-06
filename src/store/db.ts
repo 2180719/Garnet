@@ -161,6 +161,11 @@ const MIGRATIONS: string[] = [
   `
   CREATE INDEX outbox_by_chat ON outbox(channel, account, chat_id, status);
   `,
+  `
+  ALTER TABLE inbox ADD COLUMN attachments TEXT;
+  ALTER TABLE outbox ADD COLUMN attachments TEXT;
+  CREATE INDEX inbox_by_session ON inbox(session_id);
+  `,
 ];
 
 export type Db = DatabaseSync;

@@ -7,6 +7,8 @@ import {
   textOf,
   unknownUsage,
   type ChannelAdapter,
+  type ContentBlock,
+  type InboundAttachment,
   type InboundMessage,
   type OutboundMessage,
   type SendResult,
@@ -15,6 +17,7 @@ import {
   type UnsupportedContent,
 } from '../contracts/index.ts';
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
+import type { FailedFile, MediaIngest, MediaInput } from '../media/index.ts';
 import type { ApprovalStore, GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
 
 export type Route = { match: { channel: string; chatId?: string | undefined }; conversation: string };
@@ -41,6 +44,8 @@ export type GatewayDeps = {
   deliveryEnabled?: boolean;
   /** A send still pending after this long is treated as possibly delivered (`uncertain`). Default 60 s. */
   sendTimeoutMs?: number;
+  /** Stores, transcribes and describes inbound files. Without it, files get an honest "can't receive files" reply. */
+  media?: MediaIngest;
   /** Shown by /status and /usage. */
   model?: { id: string; contextWindow: number };
 };
@@ -68,6 +73,21 @@ const UNSUPPORTED_REPLY: Record<UnsupportedContent, string> = {
   sticker: "I can't see stickers yet, but I'm here. Send me a text message.",
   other: "I can only read text messages for now. Could you send that as text?",
 };
+
+/** A turn for a non-channel surface: text plus files already in memory (e.g. data URLs from the HTTP API). */
+export type ChatInput = string | { text: string; files: (MediaInput | FailedFile)[] };
+
+function unsupportedReply(kind: UnsupportedContent, hasCaption: boolean): string {
+  return `${UNSUPPORTED_REPLY[kind]}${hasCaption ? ' (I did not act on the caption either; send it as its own message if it stands alone.)' : ''}`;
+}
+
+/** The reply category for a file when media handling is off. */
+function unsupportedOfFile(f: InboundAttachment): UnsupportedContent {
+  if (f.kind === 'image') return 'photo';
+  if (f.kind === 'video') return 'video';
+  if (f.kind === 'audio') return /voice/i.test(f.name ?? '') || f.mimeType === 'audio/ogg' ? 'voice' : 'audio';
+  return 'file';
+}
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -156,7 +176,7 @@ export class Gateway {
       return;
     }
     store.setInbox(row.id, 'done');
-    this.reply(row, `${UNSUPPORTED_REPLY[kind]}${hasCaption ? ' (I did not act on the caption either; send it as its own message if it stands alone.)' : ''}`);
+    this.reply(row, unsupportedReply(kind, hasCaption));
   }
 
   /** Whether a conversation key already has a session (the API uses it to replay a stateless client's history once). */
@@ -177,7 +197,7 @@ export class Gateway {
    */
   chat(
     conversationKey: string,
-    text: string,
+    input: ChatInput,
     options: { signal?: AbortSignal; onEvent?: (e: RuntimeEvent) => void; source: string },
   ): Promise<ChatResult> {
     return this.deps.lanes.run(conversationKey, async () => {
@@ -191,7 +211,16 @@ export class Gateway {
       else options.signal?.addEventListener('abort', onAbort, { once: true });
       this.active.set(conversationKey, controller);
       try {
-        const task = await agent.run(sessionId, text, { ...options, signal: controller.signal });
+        let turn: string | ContentBlock[] = typeof input === 'string' ? input : input.text;
+        if (typeof input !== 'string' && input.files.length) {
+          const media = this.deps.media;
+          if (!media) throw new RubyError('invalid_input', 'Files are not accepted: media handling is off (media.enabled in config.json).');
+          const blocks = [...(input.text.trim() ? [{ type: 'text' as const, text: input.text }] : []), ...(await media.ingest(input.files, { sessionId, signal: controller.signal }))];
+          const unreadable = media.unreadableReply(blocks);
+          if (unreadable) throw new RubyError('invalid_input', unreadable);
+          turn = blocks;
+        }
+        const task = await agent.run(sessionId, turn, { ...options, signal: controller.signal });
         return { task, text: this.replyText(sessionId, before, task), sessionId };
       } finally {
         options.signal?.removeEventListener('abort', onAbort);
@@ -242,13 +271,18 @@ export class Gateway {
   }
 
   /**
-   * Queues a proactive message (scheduled results, alerts) to a chat. With
+   * Queues a proactive message (scheduled results, alerts, files) to a chat. With
    * `record`, the text is also written into that chat's conversation as a
    * context note, so a reply ("tell me more") has something to refer to. The
    * note is appended after any running task (append-only, never mid-turn).
    */
-  notify(target: { channel: string; account: string; chatId: string }, text: string, record?: { from: string }): void {
-    this.deps.store.enqueue({ ...target, text });
+  notify(
+    target: { channel: string; account: string; chatId: string },
+    text: string,
+    record?: { from: string },
+    attachments?: OutboundMessage['attachments'],
+  ): void {
+    this.deps.store.enqueue({ ...target, text, ...(attachments?.length ? { attachments } : {}) });
     void this.deliver();
     if (!record) return;
     const key = this.conversationKeyFor(target.channel, target.account, target.chatId);
@@ -363,6 +397,44 @@ export class Gateway {
     void this.deps.lanes.run(key, () => this.process(row, key)).catch((e) => this.log('error', `processing ${row.id}: ${errorMessage(e)}`));
   }
 
+  /**
+   * The turn for an inbound message: its text plus its files, downloaded from
+   * the channel (only now, for a paired sender), stored and described. Returns
+   * a direct reply instead when nothing in it is readable (a voice note with
+   * no transcription set up, an image for a text-only model).
+   */
+  private async inboundTurn(row: InboxRow, sessionId: string, channel: ChannelAdapter | undefined, signal: AbortSignal): Promise<{ turn: string | ContentBlock[] } | { reply: string }> {
+    const files = row.attachments ?? [];
+    if (files.length === 0) return { turn: row.text };
+    const text: ContentBlock[] = row.text.trim() ? [{ type: 'text', text: row.text }] : [];
+    const media = this.deps.media;
+    // Media handling off (media.enabled false): the same honest answer as other unreadable content; a caption is not acted on alone.
+    if (!media) return { reply: unsupportedReply(unsupportedOfFile(files[0]!), row.text.trim() !== '') };
+    const received: (MediaInput | FailedFile)[] = [];
+    for (const f of files) {
+      const base = { name: f.name, kind: f.kind };
+      if (f.size !== undefined && f.size > media.maxBytes) {
+        received.push({ ...base, error: `it is ${(f.size / 1048576).toFixed(1)} MB, over the ${(media.maxBytes / 1048576).toFixed(1)} MB limit (media.maxBytes)` });
+        continue;
+      }
+      if (!channel?.fetchAttachment) {
+        received.push({ ...base, error: `the ${row.channel} channel cannot download files` });
+        continue;
+      }
+      try {
+        const got = await channel.fetchAttachment(f.ref, { maxBytes: media.maxBytes, signal });
+        received.push({ data: got.data, name: f.name, mimeType: got.mimeType ?? f.mimeType, durationSec: f.durationSec });
+      } catch (e) {
+        if (signal.aborted) throw e;
+        this.log('warn', `${row.channel} attachment download failed: ${errorMessage(e)}`);
+        received.push({ ...base, error: errorMessage(e) });
+      }
+    }
+    const blocks = [...text, ...(await media.ingest(received, { sessionId, signal }))];
+    const unreadable = media.unreadableReply(blocks);
+    return unreadable ? { reply: unreadable } : { turn: blocks };
+  }
+
   private async process(row: InboxRow, key: string): Promise<void> {
     const { store, sessions } = this.deps;
     const agent = this.deps.agentFor?.(key) ?? this.deps.agent;
@@ -375,12 +447,23 @@ export class Gateway {
     const typing = setInterval(() => void channel?.typing?.(row.chatId), 4500);
     typing.unref();
     try {
+      const prepared = await this.inboundTurn(row, sessionId, channel, controller.signal);
+      if ('reply' in prepared) {
+        store.setInbox(row.id, 'done');
+        this.reply(row, prepared.reply);
+        return;
+      }
       const before = sessions.lastSeq(sessionId);
-      const task = await agent.run(sessionId, row.text, { signal: controller.signal, source: row.channel });
+      const task = await agent.run(sessionId, prepared.turn, { signal: controller.signal, source: row.channel });
       store.setInbox(row.id, 'done', { taskId: task.id });
       this.reply(row, this.replyText(sessionId, before, task));
     } catch (e) {
       store.setInbox(row.id, 'done');
+      if (controller.signal.aborted) {
+        // /stop while files were still downloading or being transcribed.
+        this.reply(row, 'Stopped.');
+        return;
+      }
       this.log('error', `task for ${row.id} crashed: ${errorMessage(e)}`);
       this.reply(row, 'Sorry, something went wrong on my side. The error has been logged.');
     } finally {

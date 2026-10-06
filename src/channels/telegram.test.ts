@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { tempDir } from '../../test/helpers.ts';
 import { RubyError, type InboundMessage } from '../contracts/index.ts';
 import { TelegramChannel } from './index.ts';
 
@@ -25,7 +28,7 @@ function fakeApi(handlers: Record<string, Handler> = {}, updateScript: Handler[]
   const queue = [...updateScript];
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const method = String(url).split('/').pop()!;
-    const body = JSON.parse(String(init?.body ?? '{}'));
+    const body = init?.body instanceof FormData ? init.body : JSON.parse(String(init?.body ?? '{}'));
     calls.push({ method, body });
     if (method === 'getUpdates') return (queue.shift() ?? hang)(body, init?.signal ?? undefined);
     const handler = handlers[method];
@@ -161,27 +164,16 @@ test('a failing sink stops the batch and the same update is redelivered', async 
   await channel.stop();
 });
 
-test('voice, photo, file and sticker messages are passed on as unsupported; service messages are skipped', async () => {
-  const msg = (id: number, extra: object) => ({ update_id: id, message: { message_id: id * 10, date: 1, from: { id: 1 }, chat: { id: 1, type: 'private' }, ...extra } });
-  const updates = [
-    msg(1, { voice: { file_id: 'v' } }),
-    msg(2, { photo: [{}], caption: 'look at this' }),
-    msg(3, { document: {} }),
-    msg(4, { sticker: {} }),
-    msg(5, { video_note: {} }),
-    msg(6, { new_chat_members: [{}] }),
-    textUpdate(7, 'after'),
-  ];
-  const api = fakeApi({}, [() => ok(updates)]);
+test('updates with nothing to read (service messages, a photo without a file id) are skipped but acknowledged', async () => {
+  const photo = { update_id: 5, message: { message_id: 50, date: 1, photo: [{}], new_chat_title: 'x', from: { id: 1 }, chat: { id: 1, type: 'private' } } };
+  const api = fakeApi({}, [() => ok([photo]), () => ok([photo, textUpdate(6, 'after')])]);
   const { channel } = setup(api);
-  const got: InboundMessage[] = [];
-  await channel.start(async (m) => void got.push(m));
-  await until(() => api.of('getUpdates').length === 2);
-  assert.deepEqual(
-    got.map((m) => [m.unsupported ?? null, m.text]),
-    [['voice', ''], ['photo', 'look at this'], ['file', ''], ['sticker', ''], ['video', ''], [null, 'after']],
-  );
-  assert.equal(api.of('getUpdates')[1]!.body.offset, 8, 'everything acknowledged');
+  const got: string[] = [];
+  await channel.start(async (m) => void got.push(m.text));
+  await until(() => api.of('getUpdates').length === 3);
+  assert.deepEqual(got, ['after']);
+  assert.equal(api.of('getUpdates')[1]!.body.offset, 6);
+  assert.equal(api.of('getUpdates')[2]!.body.offset, 7);
   await channel.stop();
 });
 
@@ -340,7 +332,102 @@ test('ambiguous send errors are uncertain, pre-connect ones retryable; never thr
 test('capabilities and typing', async () => {
   const api = fakeApi({ sendChatAction: () => fail(500, 'boom') });
   const { channel } = setup(api);
-  assert.deepEqual(channel.capabilities, { maxMessageChars: 4096, dedupesSends: false, typingIndicator: true });
+  assert.deepEqual(channel.capabilities, { maxMessageChars: 4096, dedupesSends: false, typingIndicator: true, maxUploadBytes: 50 * 1024 * 1024 });
   await channel.typing('42');
   assert.deepEqual(api.of('sendChatAction')[0]!.body, { chat_id: '42', action: 'typing' });
+});
+
+const base = { date: 1, from: { id: 7, first_name: 'Ada' }, chat: { id: 7, type: 'private' } };
+
+test('photos, voice notes, documents and captions arrive as attachments; stickers as unsupported', async () => {
+  const updates = [
+    { update_id: 1, message: { ...base, message_id: 1, caption: 'look', photo: [{ file_id: 'small', width: 90, height: 90, file_size: 1000 }, { file_id: 'big', width: 1280, height: 960, file_size: 90_000 }] } },
+    { update_id: 2, message: { ...base, message_id: 2, voice: { file_id: 'v1', duration: 4, mime_type: 'audio/ogg', file_size: 9000 } } },
+    { update_id: 3, message: { ...base, message_id: 3, document: { file_id: 'd1', file_name: 'report.pdf', mime_type: 'application/pdf', file_size: 50_000 } } },
+    { update_id: 4, message: { ...base, message_id: 4, sticker: { file_id: 's1' } } },
+  ];
+  const api = fakeApi({}, [() => ok(updates)]);
+  const { channel } = setup(api);
+  const got: InboundMessage[] = [];
+  await channel.start(async (m) => void got.push(m));
+  await until(() => got.length === 4, 'four messages');
+  assert.equal(got[0]!.text, 'look');
+  assert.deepEqual(got[0]!.attachments, [{ kind: 'image', ref: 'big', name: 'photo.jpg', mimeType: 'image/jpeg', size: 90_000 }]);
+  assert.equal(got[1]!.text, '');
+  assert.deepEqual(got[1]!.attachments, [{ kind: 'audio', ref: 'v1', name: 'voice.ogg', mimeType: 'audio/ogg', size: 9000, durationSec: 4 }]);
+  assert.deepEqual(got[2]!.attachments, [{ kind: 'document', ref: 'd1', name: 'report.pdf', mimeType: 'application/pdf', size: 50_000 }]);
+  assert.equal(got[3]!.unsupported, 'sticker');
+  assert.equal(got[3]!.attachments, undefined);
+  await channel.stop();
+});
+
+test('fetchAttachment resolves the file with getFile, downloads it, enforces limits and never leaks the token', async () => {
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  const urls: string[] = [];
+  const api = fakeApi({
+    getFile: (body) => (body.file_id === 'huge' ? ok({ file_id: 'huge', file_size: 30_000_000 }) : ok({ file_id: body.file_id, file_size: 4, file_path: 'voice/file_9.oga' })),
+    'file_9.oga': () => new Response(bytes, { status: 200 }),
+  });
+  const wrapped = (async (url: unknown, init?: RequestInit) => {
+    urls.push(String(url));
+    return api.fetch(url as string, init);
+  }) as typeof fetch;
+  const channel = new TelegramChannel({ token: TOKEN, fetch: wrapped, sleep: async () => {} });
+  const got = await channel.fetchAttachment('v1', { maxBytes: 1000, signal: new AbortController().signal });
+  assert.deepEqual(got.data, bytes);
+  assert.equal(urls.at(-1), `https://api.telegram.org/file/bot${TOKEN}/voice/file_9.oga`);
+  await assert.rejects(channel.fetchAttachment('v1', { maxBytes: 2, signal: new AbortController().signal }), /too large/);
+  await assert.rejects(channel.fetchAttachment('huge', { maxBytes: 50_000_000, signal: new AbortController().signal }), /too large \(28\.6 MB; the limit is 20\.0 MB\)/);
+  const failing = new TelegramChannel({ token: TOKEN, fetch: (async () => { throw new Error(`connect failed for /bot${TOKEN}/getFile`); }) as typeof fetch });
+  await assert.rejects(failing.fetchAttachment('x', { maxBytes: 10, signal: new AbortController().signal }), (e: Error) => !e.message.includes(TOKEN) && /<token>/.test(e.message));
+});
+
+test('send with files: photos via sendPhoto (multipart) with the text as caption, voice via sendVoice, long text after', async () => {
+  const dir = tempDir();
+  const png = join(dir, 'chart.png');
+  writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const ogg = join(dir, 'v.ogg');
+  writeFileSync(ogg, Buffer.from('OggS'));
+  const api = fakeApi({ sendPhoto: () => ok({ message_id: 10 }), sendVoice: () => ok({ message_id: 11 }), sendMessage: () => ok({ message_id: 12 }) });
+  const { channel } = setup(api);
+  const result = await channel.send({
+    deliveryId: 'd1', channel: 'telegram', account: 'default', chatId: '7', text: 'Here you go', replyToExternalId: '3',
+    attachments: [
+      { path: png, name: 'chart.png', mimeType: 'image/png', kind: 'image', size: 4 },
+      { path: ogg, name: 'v.ogg', mimeType: 'audio/ogg', kind: 'audio', size: 4 },
+    ],
+  });
+  assert.deepEqual(result, { status: 'sent', externalIds: ['10', '11'] });
+  const photo = api.of('sendPhoto')[0]!.body as FormData;
+  assert.equal(photo.get('chat_id'), '7');
+  assert.equal((photo.get('photo') as File).name, 'chart.png');
+  assert.equal((photo.get('photo') as File).size, 4);
+  assert.equal(photo.get('caption'), null, 'the caption rides on the last file');
+  assert.deepEqual(JSON.parse(String(photo.get('reply_parameters'))), { message_id: 3, allow_sending_without_reply: true });
+  const voice = api.of('sendVoice')[0]!.body as FormData;
+  assert.equal(voice.get('caption'), 'Here you go');
+  assert.equal(voice.get('parse_mode'), 'HTML', 'captions use the same markdown to HTML conversion as messages');
+  assert.equal(voice.get('reply_parameters'), null, 'only the first message replies');
+
+  const long = await channel.send({ deliveryId: 'd2', channel: 'telegram', account: 'default', chatId: '7', text: 'x'.repeat(1500), attachments: [{ path: png, name: 'doc.bin', mimeType: 'application/octet-stream', kind: 'file', size: 4 }] });
+  assert.equal(long.status, 'sent');
+  assert.equal(api.of('sendDocument').length, 1, 'other files go as documents');
+  assert.equal(api.of('sendMessage').at(-1)!.body.text.length, 1500, 'text too long for a caption follows as a message');
+});
+
+test('a caption Telegram cannot parse as HTML is resent as plain text', async () => {
+  const dir = tempDir();
+  const png = join(dir, 'c.png');
+  writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  let calls = 0;
+  const api = fakeApi({
+    sendPhoto: (body: FormData) => (++calls === 1 && body.get('parse_mode') === 'HTML' ? fail(400, "Bad Request: can't parse entities: unsupported start tag") : ok({ message_id: 20 })),
+  });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '7', text: '**Chart** for `Q3`', attachments: [{ path: png, name: 'c.png', mimeType: 'image/png', kind: 'image', size: 4 }] });
+  assert.deepEqual(r, { status: 'sent', externalIds: ['20'] });
+  const [html, plain] = api.of('sendPhoto').map((c) => c.body as FormData);
+  assert.equal(html!.get('caption'), '<b>Chart</b> for <code>Q3</code>');
+  assert.equal(plain!.get('parse_mode'), null);
+  assert.equal(plain!.get('caption'), 'Chart for Q3');
 });

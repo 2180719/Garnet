@@ -1,7 +1,7 @@
 // Composition root: the only place modules are wired together.
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DiscordChannel, SignalChannel, TelegramChannel } from './channels/index.ts';
+import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
 import { loadConfig, redact, rubyHome, type Paths, type RubyConfig } from './config/index.ts';
 import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter } from './contracts/index.ts';
 import { ApiKeys, ApiServer, DemoChat, Gateway, persistentApprover, staticFiles, type LogFn } from './gateway/index.ts';
@@ -14,6 +14,7 @@ import { Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
+import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type ChatTarget, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
@@ -41,6 +42,8 @@ export type Ruby = {
   makeAgent: (policy: Policy, budget: Budget) => Agent;
   memory: MemoryStore;
   skills: SkillStore;
+  /** Inbound file handling; null when `media.enabled` is false. */
+  media: MediaIngest | null;
   agent: Agent;
   model: ModelAdapter;
   close: () => void;
@@ -74,8 +77,20 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   const memory = new MemoryStore({ root: join(paths.home, 'memory'), limits: { memory: config.memory.memoryChars, user: config.memory.userChars } });
   const skills = new SkillStore({ root: join(paths.home, 'skills') });
   const artifacts = new ArtifactStore(join(paths.home, 'artifacts'));
+  const gatewayStore = new GatewayStore(db);
   const registry = new ToolRegistry();
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
+  const mediaStore = config.media.enabled ? new MediaStore(join(paths.home, 'media'), config.media.maxBytes) : null;
+  if (mediaStore) {
+    registry.register(
+      sendFileTool({
+        media: mediaStore,
+        target: (sessionId) => chatTargetFor(config, gatewayStore, sessionId),
+        maxUploadBytes: (channel) => UPLOAD_LIMITS[channel],
+        enqueue: (target, text, attachments) => void gatewayStore.enqueue({ ...target, text, attachments }),
+      }),
+    );
+  }
   // run_command exists only when the owner opted into exec; the tool set is fixed per session.
   let sandbox: Sandbox | null = null;
   if (config.permissions.exec !== 'deny') {
@@ -88,6 +103,16 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
   const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, secret));
+  const media = mediaStore
+    ? new MediaIngest({
+        store: mediaStore,
+        transcriber: createTranscriber(config, secret),
+        pdfText: config.media.pdfText.command ? { argv: config.media.pdfText.command, timeoutMs: config.media.pdfText.timeoutSeconds * 1000 } : null,
+        modelMedia: model.capabilities.media,
+        maxTextChars: config.media.maxTextChars,
+        saveText: (sessionId, text) => artifacts.save(sessionId, text),
+      })
+    : null;
   /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
   const makeAgent = (policy: Policy, budget: Budget): Agent =>
     new Agent({
@@ -102,6 +127,8 @@ export function createRuby(options: CreateOptions = {}): Ruby {
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       maxOutputTokens: config.model.maxOutputTokens,
+      ...(mediaStore ? { loadAttachment: (ref: { id: string }) => mediaStore.read(ref.id) } : {}),
+      maxAttachmentsInContext: config.media.maxInContext,
       timeZone: ownerTimeZone(config),
     });
   const ownerPolicy = new Policy(config.permissions, { containment: config.containment, allowHosts: config.web.allowHosts, trustedEndpoints });
@@ -114,7 +141,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     secret,
     db,
     store,
-    gatewayStore: new GatewayStore(db),
+    gatewayStore,
     approvals,
     jobStore: new JobStore(db),
     ownerPolicy,
@@ -125,6 +152,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     sandbox,
     memory,
     skills,
+    media,
     agent,
     model,
     close: () => db.close(),
@@ -156,7 +184,7 @@ export function createModel(config: RubyConfig, secret: SecretLookup): ModelAdap
   const apiKey = secret(m.apiKeyEnv);
   if (m.provider === 'openai-compatible') {
     // Local servers often need no key.
-    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow });
+    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf });
   }
   if (!apiKey) {
     throw new RubyError('config', `No API key found. Set the ${m.apiKeyEnv} environment variable or store it with \`ruby secrets set ${m.apiKeyEnv}\`, or run with --fake.`);
@@ -166,8 +194,41 @@ export function createModel(config: RubyConfig, secret: SecretLookup): ModelAdap
     model: m.name,
     effort: m.effort,
     fallbacks: m.fallbacks,
+    vision: m.vision,
+    pdf: m.pdf,
     ...(m.baseUrl ? { baseUrl: m.baseUrl } : {}),
   });
+}
+
+/** Speech to text for voice notes, from `media.transcription`; null when none is configured. */
+export function createTranscriber(config: RubyConfig, secret: SecretLookup): Transcriber | null {
+  const t = config.media.transcription;
+  const timeoutMs = t.timeoutSeconds * 1000;
+  if (t.backend === 'command' && t.command) return new CommandTranscriber(t.command, timeoutMs);
+  if (t.backend !== 'openai-compatible' || !t.baseUrl) return null;
+  const apiKey = t.apiKeyEnv ? secret(t.apiKeyEnv) : undefined;
+  if (t.apiKeyEnv && !apiKey) {
+    // Not fatal at startup (admin commands never transcribe); each voice note gets this explanation instead.
+    const why = `${t.apiKeyEnv} is not set (environment or \`ruby secrets set ${t.apiKeyEnv}\`)`;
+    return { label: 'openai-compatible (missing key)', transcribe: () => Promise.reject(new RubyError('config', why)) };
+  }
+  return new OpenAITranscriber({ baseUrl: t.baseUrl, path: t.path, apiKey, model: t.model, language: t.language, timeoutMs });
+}
+
+/**
+ * Where a file sent from a session goes: a job's notify chat for job
+ * sessions, otherwise the chat the session last heard from. Terminal, API and
+ * dashboard sessions have none.
+ */
+function chatTargetFor(config: RubyConfig, store: GatewayStore, sessionId: string): ChatTarget | null {
+  const key = store.keyForSession(sessionId);
+  if (key?.startsWith('job:')) {
+    const job = config.jobs.find((j) => `job:${j.id}` === key);
+    if (!job?.notify) return null;
+    const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
+    return { channel: job.notify.channel, account, chatId: job.notify.chatId };
+  }
+  return store.lastChatForSession(sessionId) ?? null;
 }
 
 /** The website demo uses its own cheap model with the same provider and credentials. */
@@ -231,6 +292,7 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
     deliveryEnabled: deliver,
     model: { id: ruby.model.id, contextWindow: ruby.model.capabilities.contextWindow },
     log,
+    ...(ruby.media ? { media: ruby.media } : {}),
   });
   const scheduler = new Scheduler({
     jobs: config.jobs,
@@ -276,6 +338,8 @@ export async function startService(ruby: Ruby, rawLog: LogFn, overrides: { chann
         log,
         admin: createBackend(ruby, gateway, scheduler, VERSION),
         trustProxy: config.api.trustProxy,
+        // Base64 data URLs are a third larger than the file; leave room for the rest of the request.
+        ...(config.media.enabled ? { maxChatBodyBytes: Math.ceil(config.media.maxBytes * 1.4) + 1_000_000 } : {}),
         corsOrigins: config.api.corsOrigins,
         ...(config.api.demo.enabled ? { demo: createDemo(ruby) } : {}),
         ...(config.dashboard.enabled ? { fallback: staticFiles(join(import.meta.dirname, '..', 'dashboard')) } : {}),

@@ -11,7 +11,7 @@ const ROOT = resolve(import.meta.dirname, '..');
 const SRC = join(ROOT, 'src');
 
 const PACKAGES: Record<string, string[]> = {
-  zod: ['contracts', 'config', 'tools', 'gateway', 'memory', 'skills'],
+  zod: ['contracts', 'config', 'tools', 'gateway', 'memory', 'skills', 'media'],
   '@anthropic-ai/sdk': ['models'],
 };
 

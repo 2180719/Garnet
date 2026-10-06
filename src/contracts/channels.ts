@@ -1,5 +1,32 @@
 // Channel adapter contract. Adapters normalize a messaging platform into these
 // shapes; the gateway owns identity, routing, dedupe and durable delivery.
+import type { AttachmentKind } from './messages.ts';
+
+/**
+ * A file in an inbound message, not yet downloaded. `ref` is opaque to
+ * everyone but the adapter that made it (a Telegram file_id, a Discord CDN
+ * URL, a signal-cli attachment id); the gateway persists it and downloads the
+ * bytes with `fetchAttachment` only for paired senders.
+ */
+export type InboundAttachment = {
+  kind: AttachmentKind;
+  /** As the platform claims it; the media store sniffs the bytes. */
+  mimeType?: string;
+  name?: string;
+  /** Bytes, when the platform says so up front. */
+  size?: number;
+  durationSec?: number;
+  ref: string;
+};
+
+/** A stored file to send. `path` is an absolute path the adapter may read. */
+export type OutboundAttachment = {
+  path: string;
+  name: string;
+  mimeType: string;
+  kind: AttachmentKind;
+  size: number;
+};
 
 export type InboundMessage = {
   channel: string; // e.g. "telegram"
@@ -8,14 +35,18 @@ export type InboundMessage = {
   /** Platform message ID, unique per (channel, account, chatId). Used for dedupe. */
   externalId: string;
   sender: { id: string; displayName?: string };
+  /** Message text or media caption; empty for a file without a caption. */
   text: string;
+  /** Files, not yet downloaded. */
+  attachments?: InboundAttachment[];
   /** True for one-to-one chats. Group chats never get private memory or pairing. */
   isPrivate: boolean;
   receivedAt: string; // ISO timestamp
   /**
-   * Set when the message carried content Ruby cannot read yet (voice note,
-   * photo, file, sticker...). `text` then holds the caption, if any. The
-   * gateway answers honestly instead of dropping the message.
+   * Set when the message carried content with nothing to download or read
+   * (a sticker, a location, a poll). Files are `attachments`, never this.
+   * `text` then holds the caption, if any. The gateway answers honestly
+   * instead of dropping the message.
    */
   unsupported?: UnsupportedContent;
 };
@@ -29,6 +60,8 @@ export type OutboundMessage = {
   chatId: string;
   text: string; // plain text; adapters handle formatting and splitting
   replyToExternalId?: string;
+  /** Files sent before the text; the text may become the last file's caption. */
+  attachments?: OutboundAttachment[];
 };
 
 export type SendResult =
@@ -43,6 +76,8 @@ export type ChannelCapabilities = {
   /** True when the platform can deduplicate a resend of the same delivery. */
   dedupesSends: boolean;
   typingIndicator: boolean;
+  /** Set when `send` delivers `attachments`: the largest file the platform accepts from a bot. */
+  maxUploadBytes?: number;
 };
 
 export type ChannelHealth = {
@@ -66,6 +101,11 @@ export interface ChannelAdapter {
   /** Validates credentials and begins receiving. Resolves once receiving has started. */
   start(sink: InboundSink): Promise<void>;
   send(message: OutboundMessage): Promise<SendResult>;
+  /**
+   * Downloads an inbound attachment by its `ref`. Rejects (with a message fit
+   * for the owner) when the file is larger than `maxBytes` or unavailable.
+   */
+  fetchAttachment?(ref: string, options: { maxBytes: number; signal: AbortSignal }): Promise<{ data: Uint8Array; mimeType?: string }>;
   /** Optional "typing…" hint while a task runs. Never throws. */
   typing?(chatId: string): Promise<void>;
   /** Stops receiving and releases platform sessions (e.g. long polls) before resolving, for clean handover. */

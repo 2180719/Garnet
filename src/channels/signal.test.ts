@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { tempDir } from '../../test/helpers.ts';
 import { RubyError, type InboundMessage } from '../contracts/index.ts';
 import { SignalChannel } from './index.ts';
 
@@ -97,7 +100,7 @@ test('rejects malformed account numbers', () => {
   const ch = new SignalChannel({ account: ACCOUNT });
   assert.equal(ch.channel, 'signal');
   assert.equal(ch.account, ACCOUNT);
-  assert.deepEqual(ch.capabilities, { maxMessageChars: 4000, dedupesSends: false, typingIndicator: true });
+  assert.deepEqual(ch.capabilities, { maxMessageChars: 4000, dedupesSends: false, typingIndicator: true, maxUploadBytes: 100 * 1024 * 1024 });
 });
 
 test('refuses non-loopback http baseUrl but allows loopback and https', () => {
@@ -393,18 +396,36 @@ test('health reports lastSuccessAt and reflects a down stream', async () => {
   await channel.stop();
 });
 
-test('attachments and stickers are passed on as unsupported content, with any caption as text', async () => {
-  const { d, channel, got } = await started();
-  const f = d.feeds[0]!;
-  f.push(notification({ sourceNumber: '+15559998888', timestamp: 11, dataMessage: { message: null, attachments: [{ contentType: 'audio/aac' }] } }));
-  f.push(notification({ sourceNumber: '+15559998888', timestamp: 12, dataMessage: { message: 'my desk', attachments: [{ contentType: 'image/jpeg' }] } }));
-  f.push(notification({ sourceNumber: '+15559998888', timestamp: 13, dataMessage: { attachments: [{ contentType: 'application/pdf' }] } }));
-  f.push(notification({ sourceNumber: '+15559998888', timestamp: 14, dataMessage: { sticker: { packId: 'x', stickerId: 1 } } }));
-  f.push(notification({ sourceNumber: '+15559998888', timestamp: 15, dataMessage: { reaction: { emoji: 'x' } } }));
-  f.push(direct('done', 16));
-  await until(() => got.length === 5, 'five messages');
-  assert.deepEqual(got.map((m) => [m.unsupported ?? null, m.text]), [['voice', ''], ['photo', 'my desk'], ['file', ''], ['sticker', ''], [null, 'done']]);
+test('attachments carry a getAttachment reference; downloads decode base64 and enforce the limit', async () => {
+  const d = fakeDaemon({
+    rpc: (c) => Response.json({ jsonrpc: '2.0', result: c.method === 'getAttachment' ? { data: Buffer.from('voice!').toString('base64') } : {}, id: c.id }),
+  });
+  const { channel, got } = await started(d);
+  const env = (dataMessage: object) => notification({ source: '+15559998888', sourceNumber: '+15559998888', sourceUuid: 'uuid-1', timestamp: 1700000000001, dataMessage });
+  d.feeds[0]!.push(env({ message: null, attachments: [{ id: 'att1.m4a', contentType: 'audio/aac', size: 6, voiceNote: true }] }));
+  d.feeds[0]!.push(notification({ sourceNumber: '+15559998888', sourceUuid: 'uuid-1', timestamp: 1700000000002, dataMessage: { message: 'pic', groupInfo: { groupId: 'G1' }, attachments: [{ id: 'att2.jpg', contentType: 'image/jpeg', filename: 'cat.jpg', size: 3 }] } }));
+  await until(() => got.length === 2, 'two messages');
+  assert.deepEqual(got[0]!.attachments, [{ kind: 'audio', ref: JSON.stringify({ id: 'att1.m4a', recipient: '+15559998888' }), name: 'voice.m4a', mimeType: 'audio/aac', size: 6 }]);
+  assert.equal(got[0]!.text, '');
+  assert.equal(JSON.parse(got[1]!.attachments![0]!.ref).groupId, 'G1');
+  const file = await channel.fetchAttachment(got[0]!.attachments![0]!.ref, { maxBytes: 100, signal: new AbortController().signal });
+  assert.equal(Buffer.from(file.data).toString(), 'voice!');
+  assert.deepEqual(d.rpcs.at(-1)!.params, { id: 'att1.m4a', recipient: '+15559998888' });
+  await assert.rejects(channel.fetchAttachment(got[0]!.attachments![0]!.ref, { maxBytes: 2, signal: new AbortController().signal }), /too large/);
+  await assert.rejects(channel.fetchAttachment('not json', { maxBytes: 2, signal: new AbortController().signal }), /not a Signal attachment/);
   await channel.stop();
+});
+
+test('send with a file uses a data URI attachment, with the text in the same message', async () => {
+  const d = fakeDaemon();
+  const { channel } = setup(d);
+  const path = join(tempDir(), 'a.png');
+  writeFileSync(path, Buffer.from([1, 2, 3]));
+  const r = await channel.send({ deliveryId: 'd', channel: 'signal', account: ACCOUNT, chatId: '+15559998888', text: 'see', attachments: [{ path, name: 'my chart;v2.png', mimeType: 'image/png', kind: 'image', size: 3 }] });
+  assert.equal(r.status, 'sent');
+  const call = d.rpcs.at(-1)!;
+  assert.equal(call.method, 'send');
+  assert.deepEqual(call.params, { recipient: ['+15559998888'], message: 'see', attachments: ['data:image/png;filename=my_chart_v2.png;base64,AQID'] });
 });
 
 test('send strips markdown, since Signal shows the markers literally', async () => {

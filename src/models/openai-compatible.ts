@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   ContentBlock,
+  MediaCapabilities,
   ErrorCategory,
   ModelAdapter,
   ModelEvent,
@@ -9,7 +10,7 @@ import type {
   ToolCallBlock,
   Usage,
 } from '../contracts/index.ts';
-import { newId, unknownUsage } from '../contracts/index.ts';
+import { attachmentText, newId, unknownUsage } from '../contracts/index.ts';
 
 const PROVIDER = 'openai-compatible';
 
@@ -28,11 +29,22 @@ export type OpenAICompatibleOptions = {
    * (OpenRouter, Ollama, llama.cpp, LM Studio and older vLLM only document `max_tokens`).
    */
   tokenParam?: 'max_tokens' | 'max_completion_tokens' | undefined;
+  /** The model accepts `image_url` parts (vision). Off unless configured: many local models are text only. */
+  vision?: boolean | undefined;
+  /** The server accepts `file` parts with a PDF (OpenAI, OpenRouter). Off unless configured. */
+  pdf?: boolean | undefined;
 };
+
+const MAX_INLINE_BYTES = 20 * 1024 * 1024;
+
+type WirePart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'file'; file: { filename: string; file_data: string } };
 
 type WireMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string | WirePart[] }
   | { role: 'assistant'; content: string | null; tool_calls?: WireToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
 
@@ -47,14 +59,19 @@ type PartialCall = { id: string; name: string; args: string };
  */
 export class OpenAICompatibleModel implements ModelAdapter {
   readonly id: string;
-  readonly capabilities: { streaming: boolean; promptCaching: boolean; contextWindow: number };
+  readonly capabilities: { streaming: boolean; promptCaching: boolean; contextWindow: number; media: MediaCapabilities };
   private readonly options: OpenAICompatibleOptions;
   private readonly tokenParam: 'max_tokens' | 'max_completion_tokens';
 
   constructor(options: OpenAICompatibleOptions) {
     this.options = options;
     this.id = `${PROVIDER}:${options.model}`;
-    this.capabilities = { streaming: true, promptCaching: false, contextWindow: options.contextWindow ?? 128_000 };
+    this.capabilities = {
+      streaming: true,
+      promptCaching: false,
+      contextWindow: options.contextWindow ?? 128_000,
+      media: { images: options.vision === true, pdf: options.pdf === true, maxImageBytes: MAX_INLINE_BYTES, maxPdfBytes: MAX_INLINE_BYTES },
+    };
     this.tokenParam = options.tokenParam ?? (isOpenAI(options.baseUrl) ? 'max_completion_tokens' : 'max_tokens');
   }
 
@@ -75,7 +92,7 @@ export class OpenAICompatibleModel implements ModelAdapter {
         model: o.model,
         stream: true,
         stream_options: { include_usage: true },
-        [this.tokenParam]: clampOutputTokens(request.maxOutputTokens, this.capabilities.contextWindow, JSON.stringify(messages).length + JSON.stringify(tools ?? []).length),
+        [this.tokenParam]: clampOutputTokens(request.maxOutputTokens, this.capabilities.contextWindow, promptChars(messages) + JSON.stringify(tools ?? []).length),
         messages,
       };
       if (tools) body.tools = tools;
@@ -230,15 +247,24 @@ function toWireMessages(request: ModelRequest): WireMessage[] {
       continue;
     }
     // Tool results first: OpenAI requires them right after the assistant tool_calls message.
-    const texts: string[] = [];
+    const parts: WirePart[] = [];
     for (const b of m.content) {
       if (b.type === 'tool_result') {
         out.push({ role: 'tool', tool_call_id: b.callId, content: b.isError ? `Error: ${b.content}` : b.content });
       } else if (b.type === 'text') {
-        texts.push(b.text);
+        parts.push({ type: 'text', text: b.text });
+      } else if (b.type === 'attachment') {
+        // `data` is set only for what this model reads natively; anything else is described in text.
+        const a = b.attachment;
+        if (b.data && a.kind === 'image') parts.push({ type: 'image_url', image_url: { url: `data:${a.mimeType};base64,${b.data}` } });
+        else if (b.data && a.mimeType === 'application/pdf') parts.push({ type: 'file', file: { filename: a.name ?? 'document.pdf', file_data: `data:application/pdf;base64,${b.data}` } });
+        else parts.push({ type: 'text', text: attachmentText(b) });
       }
     }
-    if (texts.length) out.push({ role: 'user', content: texts.join('\n\n') });
+    if (parts.length === 0) continue;
+    // Plain string content unless there is media: text-only local servers often reject part arrays.
+    if (parts.every((p) => p.type === 'text')) out.push({ role: 'user', content: parts.map((p) => (p as { text: string }).text).join('\n\n') });
+    else out.push({ role: 'user', content: parts });
   }
   return out;
 }
@@ -368,6 +394,21 @@ export function clampOutputTokens(requested: number, contextWindow: number, prom
   const room = contextWindow - Math.ceil(promptChars / 3);
   return Math.max(1, Math.min(requested, Math.max(MIN_OUTPUT_TOKENS, room)));
 }
+
+/** Characters of prompt text for the estimate. Inline files (data URLs) count as a flat ~1.5k tokens, not their base64 length. */
+export function promptChars(messages: WireMessage[]): number {
+  let inline = 0;
+  const text = JSON.stringify(messages, (_key, value: unknown) => {
+    if (typeof value === 'string' && value.startsWith('data:')) {
+      inline += 1;
+      return '';
+    }
+    return value;
+  });
+  return text.length + inline * INLINE_FILE_CHARS;
+}
+
+const INLINE_FILE_CHARS = 4500;
 
 /** OpenAI proper and Azure OpenAI, which want max_completion_tokens. */
 function isOpenAI(baseUrl: string): boolean {

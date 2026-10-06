@@ -7,7 +7,7 @@ import { errorMessage, type ToolCallBlock, type ToolResult } from '../../contrac
 import type { Ruby } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
-import { executeCommand } from './actions.ts';
+import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
 import { messageText, parseSlash } from './commands.ts';
 import { describeCall } from './render.ts';
 import { formatTokens, sanitize, truncate } from './text.ts';
@@ -33,6 +33,7 @@ export class PlainChat {
   private sessionId: string;
   private readonly always = new Set<string>();
   private readonly toolLog: { call: ToolCallBlock; result: ToolResult }[] = [];
+  private readonly attachments: PendingFile[] = [];
 
   constructor(options: PlainOptions) {
     this.o = options;
@@ -86,7 +87,7 @@ export class PlainChat {
         const slash = parseSlash(raw);
         if (slash) {
           const result = await executeCommand(slash, {
-            ruby, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog,
+            ruby, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog, attachments: this.attachments,
             switchTo: (id) => (this.sessionId = id),
           });
           if (result.effect === 'exit') return 0;
@@ -125,7 +126,12 @@ export class PlainChat {
       }
     };
     try {
-      const task = await this.o.ruby.agent.run(this.sessionId, text, { signal: this.current.signal, onEvent, source: 'cli' });
+      const prepared = await prepareTurn(this.o.ruby, this.sessionId, text, this.attachments.splice(0), this.current.signal);
+      if ('reply' in prepared) {
+        this.o.out(`${prepared.reply}\n`);
+        return;
+      }
+      const task = await this.o.ruby.agent.run(this.sessionId, prepared.turn, { signal: this.current.signal, onEvent, source: 'cli' });
       if (wroteText) this.o.out('\n');
       const u = task.usage;
       this.o.err(`  [${task.status}${task.reason ? `: ${sanitize(task.reason)}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens]\n\n`);

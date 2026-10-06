@@ -4,7 +4,7 @@ A persistent personal agent you can actually read.
 
 Ruby runs on your own VPS or computer and is designed to be reached through Telegram, Signal, Discord, an opt-in dashboard, or a key-gated API. It is small enough to audit, secure by default, and careful with tokens.
 
-> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), web fetch and search with prompt-injection containment, bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord, a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
+> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), web fetch and search with prompt-injection containment, bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord (with photos, files and voice notes in, and files out), a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
 
 ## Install
 
@@ -54,6 +54,16 @@ printf '%s' "$KEY" | ruby setup -y --provider anthropic --key-stdin --name Juno 
 ### Telegram by hand
 
 `ruby setup` covers this. Without it: create a bot with [@BotFather](https://t.me/BotFather), store the token (`ruby secrets set TELEGRAM_BOT_TOKEN`, or a `TELEGRAM_BOT_TOKEN=...` line in `~/.ruby/env`), set `"channels": { "telegram": { "enabled": true } }` in `~/.ruby/config.json` (`ruby config explain` lists every setting), run `ruby start`, message your bot, and approve the pairing code it sends with `ruby pair approve <code>` (or pair someone whose ID you know with `ruby pair add telegram <user-id>`). `ruby service install` keeps it running; give each extra Ruby home its own instance with `RUBY_HOME=~/.ruby-work ruby service install --name work`.
+
+### Photos, files and voice notes
+
+Send Ruby a photo, a PDF, a text or CSV file, or a voice note in any chat (or `/attach <path>` in `ruby chat`, or an `image_url` data URL over the API). Photos and PDFs go to the model natively when it supports them (`model.vision`, `model.pdf`; on for Anthropic, off by default for OpenAI-compatible servers). Voice notes need a transcription backend, off by default:
+
+```json
+"media": { "transcription": { "backend": "openai-compatible", "baseUrl": "https://api.groq.com/openai/v1", "model": "whisper-large-v3-turbo", "apiKeyEnv": "GROQ_API_KEY" } }
+```
+
+A local whisper server or command works too (`ruby config explain` shows every option). Without one, Ruby says it can't listen to voice notes rather than going silent. Files are stored in `~/.ruby/media`, never inside the conversation log. Ruby can send you files from its workspace with `send_file`, which asks for your approval first.
 
 ### Encrypted secrets
 

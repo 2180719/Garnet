@@ -16,7 +16,17 @@ export class FakeChannel implements ChannelAdapter {
   sent: OutboundMessage[] = [];
   failures: SendResult[] = [];
   stopped = false;
+  /** Files `fetchAttachment` can return, by ref; every download is recorded. */
+  files = new Map<string, Uint8Array>();
+  fetched: string[] = [];
   async start(sink: InboundSink) { this.sink = sink; }
+  async fetchAttachment(ref: string, o: { maxBytes: number }) {
+    this.fetched.push(ref);
+    const data = this.files.get(ref);
+    if (!data) throw new Error('the file is gone');
+    if (data.byteLength > o.maxBytes) throw new Error('the file is too large');
+    return { data };
+  }
   async send(m: OutboundMessage): Promise<SendResult> {
     const f = this.failures.shift();
     if (f) return f;
