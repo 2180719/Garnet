@@ -1,7 +1,8 @@
 #!/bin/sh
 # Garnet installer: clones (or updates) Garnet, installs its two dependencies and
-# puts a `garnet` command in ~/.local/bin. No sudo, no shell-profile edits, and
-# safe to run again: a second run updates in place.
+# puts a `garnet` command in ~/.local/bin. No sudo, and safe to run again: a second
+# run updates in place. If ~/.local/bin is not on your PATH it offers (on a terminal,
+# default yes) to add one line to your shell's rc file; it edits nothing otherwise.
 #
 #   curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh
 #   sh install.sh --help
@@ -269,16 +270,37 @@ check_path() {
       fi
       ;;
     *)
-      shell_rc="~/.profile"
+      rc="$HOME/.profile"
+      rc_label="~/.profile"
       case ${SHELL:-} in
-        */zsh) shell_rc="~/.zshrc" ;;
-        */bash) shell_rc="~/.bashrc" ;;
+        */zsh) rc="$HOME/.zshrc"; rc_label="~/.zshrc" ;;
+        */bash) rc="$HOME/.bashrc"; rc_label="~/.bashrc" ;;
+        */fish) rc="$HOME/.config/fish/config.fish"; rc_label="~/.config/fish/config.fish" ;;
       esac
-      warn "$bin_dir is not on your PATH. Add this line to $shell_rc, then open a new terminal:"
       case ${SHELL:-} in
-        */fish) printf '      fish_add_path %s\n' "$bin_dir" >&2 ;;
-        *) printf '      export PATH="%s:$PATH"\n' "$bin_dir" >&2 ;;
+        */fish) path_line="fish_add_path $bin_dir" ;;
+        *) path_line="export PATH=\"$bin_dir:\$PATH\"" ;;
       esac
+      warn "$bin_dir is not on your PATH, so the shell cannot find \`$name\` yet."
+      if [ -t 1 ] && (: </dev/tty) 2>/dev/null; then
+        printf '  Add this line to %s so new terminals find it?\n      %s\n  [Y/n] ' "$rc_label" "$path_line"
+        answer=''
+        read -r answer </dev/tty || answer=n
+        case $answer in
+          ''|[Yy]*)
+            if [ -f "$rc" ] && grep -qxF "$path_line" "$rc" 2>/dev/null; then
+              ok "$rc_label already has that line; open a new terminal"
+            elif { mkdir -p "$(dirname "$rc")" && printf '\n# Added by the Garnet installer\n%s\n' "$path_line" >>"$rc"; } 2>/dev/null; then
+              ok "Added it to $rc_label. Open a new terminal (or run: . $rc_label) to use \`$name\`"
+            else
+              warn "Could not write $rc_label. Add the line above yourself."
+            fi
+            ;;
+          *) printf '  Skipped. Add the line above to %s yourself, then open a new terminal.\n' "$rc_label" ;;
+        esac
+      else
+        printf '  Add this line to %s, then open a new terminal:\n      %s\n' "$rc_label" "$path_line" >&2
+      fi
       found=$(command -v "$name" 2>/dev/null || echo '')
       if [ -n "$found" ]; then
         warn "After that, \`$name\` runs Garnet instead of $found. To keep that one as \`$name\`, reinstall with --name garnet-agent."
