@@ -19,6 +19,41 @@
 - Without a terminal (pipes) or with `--plain`, chat is line-based: replies on stdout, everything else on stderr, no escape sequences.
 - Runtime: `Agent.compact(sessionId)` compacts on request.
 
+### Polish and fixes
+Security:
+- `ruby chat` shows escape sequences from model and tool output instead of sending them to the terminal, so they can no longer hide text in approval prompts or write the clipboard.
+- `ruby dashboard` prints a one-time login link valid for 15 minutes. The dashboard swaps it for a 1-day key kept only in that browser tab, and Sign out revokes it.
+- Ruby refuses a `workspace` that contains its own home; `ruby doctor` reports it, and warns about an API bound beyond loopback.
+- The secret store limits how much memory key derivation may use when reading a file.
+- Tool calls with unknown arguments are rejected with a clear error instead of having those arguments silently dropped.
+
+Runtime and models:
+- Fixed a second compaction resending the whole conversation instead of starting from the previous summary; a truncated summary now fails compaction.
+- Fixed tool results attaching to the wrong turn with OpenAI-compatible servers that send no tool call ids.
+- Fixed the global concurrency cap being exceeded under load.
+- A command that times out is reported to the model as an error, with its output kept; a tool that ran is never reported as failed because its output could not be stored.
+- Anthropic: overloads that arrive mid-stream are retried; empty text blocks are no longer sent.
+- Tasks no longer stay "running" after an internal error; a provider's long `retry-after` no longer blocks a conversation past its time limit.
+- OpenAI-compatible: connections are released when a stream stops early, and OpenRouter cache writes are reported.
+- `read_file` streams large files; `list_files` shows correct paths when the workspace path goes through a symlink.
+
+Channels, gateway and service:
+- Signal: fixed inbound messages being dropped (signal-cli sends `{account, envelope}` events); reconnect a silent event stream; a group send that reached some members no longer resends to all.
+- A long reply that hits a rate limit partway is finished in place instead of being resent from the start (no duplicate chunks).
+- Replies are delivered in order per chat; health no longer loads the whole outbox.
+- The SQLite WAL is truncated after write bursts (`journal_size_limit` 16 MiB); migrations are safe when the service and the CLI open the database together.
+- A restart during a scheduled job no longer counts as a failure or messages the owner.
+- Service: reinstall restarts the service (systemd) and works when the agent is already loaded (launchd); 60 s stop timeout; launchd PATH includes Homebrew and /usr/local/bin. Existing installs show as out of date in `ruby doctor` until reinstalled.
+- API: invalid `limit`/`after` return 400; key expiry must be 1–3650 days.
+
+CLI, config and knowledge:
+- `ruby chat` no longer crashes on unusual key sequences; command output redraws cleanly after the terminal narrows; plain mode continues after an error.
+- Cron rejects malformed fields; `*/N` day-of-month with a weekday matches like Vixie cron.
+- Config migrations keep earlier backups; `ruby setup --reset` never loses `config.json` on a failed save; a failing import no longer aborts setup.
+- `ruby memory rollback … --ns`, `EDITOR` values with arguments, arrow keys in hidden input, and clean usage errors (exit 2) for bad flags.
+- Backup and restore include artifacts; skill proposals that would break a skill are refused, and skill descriptions get the memory injection check.
+- `install.sh` handles relative `--dir` / `--bin-dir`; `ruby doctor` recognises `--name` installs.
+
 ### Phase 6: hardening
 - Encrypted secret store: `ruby secrets list|set|rm|import-env|keygen`. `<RUBY_HOME>/secrets` is AES-256-GCM under a scrypt-derived key, unlocked by `RUBY_SECRETS_KEY_FILE` or `RUBY_SECRETS_PASSPHRASE`. Environment variables win over stored secrets; values come from stdin, never argv. Backups include the store, not its key.
 - Docker sandbox never runs as root. New `sandbox.user` (`uid:gid`, uid 0 refused); unset, it is the host uid, or the workspace owner when Ruby runs as root, else 65534:65534. Startup fails with a remedy if that user cannot write the workspace.
