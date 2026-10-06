@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel } from './channels/index.ts';
 import { loadConfig, redact, rubyHome, type Paths, type RubyConfig } from './config/index.ts';
 import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter } from './contracts/index.ts';
-import { ApiKeys, ApiServer, DemoChat, Gateway, persistentApprover, staticFiles, type LogFn } from './gateway/index.ts';
+import { ApiKeys, ApiServer, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
-import { Scheduler } from './scheduler/index.ts';
+import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, execTool, fileTools, readArtifactTool } from './tools/index.ts';
@@ -36,6 +36,12 @@ export type Ruby = {
   sandbox: Sandbox | null;
   approvals: ApprovalStore;
   jobStore: JobStore;
+  /** Config jobs plus jobs created from chat, CLI or dashboard. */
+  jobBook: JobBook;
+  /** Paired chats and delivery targets for proactive messages. */
+  directory: ChatDirectory;
+  /** The owner's time zone (config `timezone`, else the host's). */
+  timezone: string;
   ownerPolicy: Policy;
   makeAgent: (policy: Policy, budget: Budget) => Agent;
   memory: MemoryStore;
@@ -73,8 +79,34 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   const memory = new MemoryStore({ root: join(paths.home, 'memory'), limits: { memory: config.memory.memoryChars, user: config.memory.userChars } });
   const skills = new SkillStore({ root: join(paths.home, 'skills') });
   const artifacts = new ArtifactStore(join(paths.home, 'artifacts'));
+  const gatewayStore = new GatewayStore(db);
+  const jobStore = new JobStore(db);
+  const timezone = config.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const jobBook = new JobBook({ configJobs: config.jobs, store: jobStore, timezone, maxAgentJobs: config.scheduler.maxAgentJobs });
+  const directory = new ChatDirectory({ store: gatewayStore, sessions: store, routes: config.routes });
   const registry = new ToolRegistry();
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
+  // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
+  if (config.permissions['schedule.edit'] !== 'deny') {
+    const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
+    registry.register(
+      scheduleTool({
+        book: jobBook,
+        originOf: (sessionId) => {
+          const o = directory.origin(sessionId);
+          return { conversation: o.conversation, isJob: o.isJob, chat: o.chat && target(o.chat) };
+        },
+        resolveTarget: (to, sessionId) => target(directory.resolve(to, sessionId)),
+        labelOf: (n) => {
+          const known = directory.chats().find((c) => c.channel === n.channel && c.chatId === n.chatId);
+          return ChatDirectory.label(known ?? { ...n, senderId: null, name: null });
+        },
+      }),
+    );
+  }
+  if (config.permissions['message.send'] !== 'deny') {
+    registry.register(sendMessageTool({ directory, store: gatewayStore, perHour: config.gateway.messagesPerHour }));
+  }
   // run_command exists only when the owner opted into exec; the tool set is fixed per session.
   let sandbox: Sandbox | null = null;
   if (config.permissions.exec !== 'deny') {
@@ -110,9 +142,12 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     secret,
     db,
     store,
-    gatewayStore: new GatewayStore(db),
+    gatewayStore,
     approvals,
-    jobStore: new JobStore(db),
+    jobStore,
+    jobBook,
+    directory,
+    timezone,
     ownerPolicy,
     makeAgent,
     keyStore,
@@ -176,14 +211,25 @@ export function createChannels(config: RubyConfig, secret: SecretLookup): Channe
 
 export type Service = { gateway: Gateway; api: ApiServer | null; scheduler: Scheduler; stop: () => Promise<void> };
 
-/** Each job runs as its own agent: its grant intersected with the owner's permissions, and its own budget. */
-function jobAgents(ruby: Ruby): Map<string, Agent> {
-  const agents = new Map<string, Agent>();
-  for (const job of ruby.config.jobs) {
+/**
+ * Each job runs as its own agent: its grant intersected with the owner's
+ * permissions, and its own budget. Built on first use (jobs created from chat
+ * appear while Ruby runs) and rebuilt when the job's grant or budget changes.
+ */
+function jobAgents(ruby: Ruby): (key: string) => Agent | undefined {
+  const agents = new Map<string, { sig: string; agent: Agent }>();
+  return (key) => {
+    if (!key.startsWith('job:')) return undefined;
+    const job = ruby.jobBook.find(key.slice(4))?.job;
+    if (!job) return undefined;
+    const sig = JSON.stringify([job.permissions, job.budget, job.timeoutMinutes]);
+    const cached = agents.get(key);
+    if (cached?.sig === sig) return cached.agent;
     const policy = ruby.ownerPolicy.intersect(new Policy(job.permissions));
-    agents.set(`job:${job.id}`, ruby.makeAgent(policy, { ...ruby.config.budgets, maxTokens: job.budget.maxTokensPerRun, maxWallMs: job.timeoutMinutes * 60_000 }));
-  }
-  return agents;
+    const agent = ruby.makeAgent(policy, { ...ruby.config.budgets, maxTokens: job.budget.maxTokensPerRun, maxWallMs: job.timeoutMinutes * 60_000 });
+    agents.set(key, { sig, agent });
+    return agent;
+  };
 }
 
 /** Wraps a logger so every message is redacted before it is written. */
@@ -195,13 +241,13 @@ export function redactingLog(log: LogFn): LogFn {
 export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter[], deliver: boolean): { gateway: Gateway; scheduler: Scheduler; channels: ChannelAdapter[] } {
   const { config } = ruby;
   const log = redactingLog(rawLog);
-  const agents = jobAgents(ruby);
+  const agentFor = jobAgents(ruby);
   const gateway = new Gateway({
     store: ruby.gatewayStore,
     approvals: ruby.approvals,
     sessions: ruby.store,
     agent: ruby.agent,
-    agentFor: (key) => agents.get(key),
+    agentFor,
     lanes: new LaneQueue(config.gateway.maxConcurrent),
     channels,
     routes: config.routes,
@@ -209,8 +255,12 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
     deliveryEnabled: deliver,
     log,
   });
+  const sandbox = ruby.sandbox;
   const scheduler = new Scheduler({
-    jobs: config.jobs,
+    jobs: () => ruby.jobBook.jobs(),
+    timezone: ruby.timezone,
+    // Script-only jobs run in the same sandbox as run_command, and only when exec is not denied.
+    runScript: sandbox ? (job, signal) => sandbox.run({ command: job.script!.command, cwd: '.', timeoutMs: job.script!.timeoutSeconds * 1000, signal }) : null,
     store: ruby.jobStore,
     workspace: ruby.paths.workspace,
     enabled: config.scheduler.enabled,
@@ -220,9 +270,10 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
     notify: (job, text) => {
       if (!job.notify) return;
       const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
-      gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text);
+      gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text, `scheduled job "${job.id}"`);
     },
   });
+  ruby.jobBook.onRemoved((id) => scheduler.cancel(id));
   return { gateway, scheduler, channels };
 }
 
@@ -263,9 +314,11 @@ export async function startService(ruby: Ruby, rawLog: LogFn, overrides: { chann
     await gateway.stop(0);
     throw e;
   }
-  if (config.jobs.length) {
-    log('info', `Scheduler: ${config.jobs.filter((j) => j.enabled).length} of ${config.jobs.length} job(s) enabled${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
+  const jobs = ruby.jobBook.jobs();
+  if (jobs.length) {
+    log('info', `Scheduler: ${jobs.filter((j) => j.enabled).length} of ${jobs.length} job(s) enabled (${ruby.timezone})${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
   }
+  for (const p of ruby.jobBook.problems()) log('warn', `job ${p.id} is not scheduled: ${p.problem}`);
   if (channels.length === 0 && !api) log('warn', 'No channels or API enabled; Ruby is idle. Enable one in config.json.');
   return {
     gateway,

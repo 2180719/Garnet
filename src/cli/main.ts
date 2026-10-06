@@ -36,8 +36,9 @@ Usage:
   ruby api key list|revoke <id>
                             Opt-in HTTP API and its keys
   ruby dashboard            Enable the dashboard and print a login link
-  ruby jobs list|history <id>|run <id>|resume <id>
-                            Scheduled jobs and heartbeats (defined in config.json)
+  ruby jobs list|show|history|run|pause|resume|delete|edit|add
+                            Scheduled jobs, reminders and script jobs (config.json,
+                            created in chat, or added here; \`ruby jobs help\`)
   ruby memory show|edit|history|rollback
                             Inspect and correct what Ruby remembers
   ruby skills list|show|proposal|accept|reject|archive|stale

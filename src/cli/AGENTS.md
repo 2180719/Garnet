@@ -1,6 +1,6 @@
 # cli
 
-The `ruby` command (`bin.ts` → `main.ts`). Commands: `setup`, `doctor`, `init`, `chat [--fake] [--session <id>] [--plain]`, `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `ruby help` lists them all).
+The `ruby` command (`bin.ts` → `main.ts`). `ruby jobs` (in `admin.ts`) lists config, chat-made and CLI-added jobs with their schedule and next run in words; `add`/`edit` take natural schedules (`parseWhen`); `delete`/`edit` refuse config.json jobs. Commands: `setup`, `doctor`, `init`, `chat [--fake] [--session <id>] [--plain]`, `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `ruby help` lists them all).
 
 - `main(argv, io)` returns an exit code and writes through `io`, so it is testable.
 - The CLI is a surface, not logic: it calls `createRuby()` from `src/main.ts` and renders runtime events.

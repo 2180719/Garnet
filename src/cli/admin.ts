@@ -3,7 +3,8 @@ import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { writeConfig } from '../config/index.ts';
 import { RubyError } from '../contracts/index.ts';
-import { approvePairing, SCOPES, type Scope } from '../gateway/index.ts';
+import { approvePairing, ChatDirectory, SCOPES, type Scope } from '../gateway/index.ts';
+import { describeNext, describeSchedule, describeTime, parseWhen, WHEN_HELP } from '../scheduler/index.ts';
 import { buildService, createRuby, startService, VERSION } from '../main.ts';
 import { defaultEntry, installService, planService, serviceStatus, uninstallService, type ServiceResult } from '../service/index.ts';
 import type { Io } from './main.ts';
@@ -143,35 +144,133 @@ export async function service(args: string[], io: Io): Promise<number> {
   return result.ok ? 0 : 1;
 }
 
+const JOBS_USAGE = `Usage:
+  ruby jobs [list]                 Every job: config.json, created in chat, or added here
+  ruby jobs show <id>              One job in full, with recent runs
+  ruby jobs history <id>           Recent runs
+  ruby jobs run <id>               Run now (results go to the job's chat via the running service)
+  ruby jobs pause|resume <id>      Stop or restart scheduling (any job)
+  ruby jobs delete <id>            Delete a job created in chat or here (config.json jobs: edit the file)
+  ruby jobs edit <id> [--when "<schedule>"] [--message <text> | --instructions <text>]
+  ruby jobs add --when "<schedule>" (--message <text> | --instructions <text> | --command <cmd>)
+                [--name <id>] [--to <channel|channel:id>] [--only-changes]
+Schedules: ${WHEN_HELP}
+`;
+
 export async function jobs(args: string[], io: Io): Promise<number> {
-  const [sub = 'list', id] = args;
+  const [sub = 'list', ...rest] = args;
+  if (sub === 'help' || sub === '--help') {
+    io.out(JOBS_USAGE);
+    return 0;
+  }
   const ruby = createRuby({ noModel: sub !== 'run' });
+  const usage = (code = 2) => {
+    io.err(JOBS_USAGE);
+    return code;
+  };
   try {
-    const { config, jobStore } = ruby;
-    const job = id ? config.jobs.find((j) => j.id === id) : undefined;
+    const { config, jobStore, jobBook, directory } = ruby;
+    const now = new Date();
+    const label = (n: { channel: string; account: string; chatId: string }) => {
+      const known = directory.chats().find((c) => c.channel === n.channel && c.chatId === n.chatId);
+      return ChatDirectory.label(known ?? { ...n, senderId: null, name: null });
+    };
     if (sub === 'list') {
-      if (!config.jobs.length) io.out('No jobs. Add them under "jobs" in config.json (`ruby config explain` describes each field).\n');
+      const entries = jobBook.list();
+      if (!entries.length) io.out('No jobs. Ask Ruby in chat ("remind me at 5pm to …"), use `ruby jobs add`, or add them under "jobs" in config.json.\n');
       if (!config.scheduler.enabled) io.out('The scheduler is switched off (scheduler.enabled = false).\n');
-      for (const j of config.jobs) {
-        const state = jobStore.state(j.id);
-        const last = jobStore.runs(j.id, 1)[0];
-        const when = j.kind === 'cron' ? `cron "${j.cron}" ${j.timezone ?? ''}`.trim() : `every ${j.everyMinutes} min`;
-        const status = !j.enabled ? 'disabled' : state.paused ? 'PAUSED' : 'enabled';
-        io.out(`${j.id.padEnd(20)} ${status.padEnd(8)} ${when}${last ? `  · last: ${last.status} ${last.startedAt}` : ''}\n`);
+      for (const e of entries) {
+        const status = !e.job.enabled ? 'disabled' : e.state.paused ? 'PAUSED' : e.done ? 'done' : 'enabled';
+        const from = e.origin.by === 'config' ? 'config' : e.origin.by === 'agent' ? 'chat' : e.origin.via;
+        const next = e.next ? `next ${describeNext(e.next, e.zone, now)}` : '';
+        io.out(`${e.job.id.padEnd(22)} ${status.padEnd(8)} ${from.padEnd(9)} ${describeSchedule(e.job, e.zone, now)}${next ? `  · ${next}` : ''}${e.lastRun ? `  · last: ${e.lastRun.status}` : ''}\n`);
       }
+      for (const p of jobBook.problems()) io.out(`! ${p.id}: ${p.problem}\n`);
+      if (entries.length) io.out(`Times are in ${ruby.timezone}.\n`);
       return 0;
     }
-    if (!job) {
-      io.err(id ? `No job "${id}".\n` : 'Usage: ruby jobs list | history <id> | run <id> | resume <id>\n');
-      return id ? 1 : 2;
+    if (sub === 'add') {
+      const { values } = parseArgs({
+        args: rest,
+        options: {
+          when: { type: 'string' },
+          message: { type: 'string' },
+          instructions: { type: 'string' },
+          command: { type: 'string' },
+          name: { type: 'string' },
+          to: { type: 'string' },
+          'only-changes': { type: 'boolean' },
+        },
+      });
+      const actions = [values.message, values.instructions, values.command].filter((v) => v !== undefined);
+      if (!values.when || actions.length !== 1) return usage();
+      const when = parseWhen(values.when, { now, zone: ruby.timezone });
+      let notify: { channel: string; account: string; chatId: string } | undefined;
+      try {
+        const t = directory.resolve(values.to ?? 'owner', '');
+        notify = { channel: t.channel, account: t.account, chatId: t.chatId };
+      } catch (e) {
+        if (values.to || !values.instructions) throw e;
+      }
+      const entry = jobBook.create(
+        {
+          id: jobBook.freeId(values.name ?? actions[0]!.split(/\s+/).slice(0, 4).join(' ')),
+          ...(when.kind === 'once' ? { kind: 'once', at: when.at.toISOString() } : when.kind === 'heartbeat' ? { kind: 'heartbeat', everyMinutes: when.everyMinutes } : { kind: 'cron', cron: when.cron }),
+          ...(values.message !== undefined ? { message: values.message } : {}),
+          ...(values.instructions !== undefined ? { instructions: values.instructions } : {}),
+          ...(values.command !== undefined ? { script: { command: values.command } } : {}),
+          notifyWhen: values['only-changes'] ? 'on_change' : 'always',
+          ...(notify ? { notify } : {}),
+        },
+        { by: 'owner', via: 'cli', at: now.toISOString() },
+      );
+      if (values.command !== undefined && config.permissions.exec === 'deny') io.err('Note: exec is deny in config.json, so this script job will fail until you allow it.\n');
+      io.out(`Added ${entry.job.id}: ${describeSchedule(entry.job, entry.zone, now)}${entry.next ? `, next ${describeNext(entry.next, entry.zone, now)}` : ''}${entry.job.notify ? ` → ${label(entry.job.notify)}` : ' (results kept in history only)'}.\n`);
+      return 0;
+    }
+    const id = rest[0];
+    const found = id ? jobBook.find(id) : undefined;
+    if (!found) {
+      if (!id) return usage();
+      io.err(`No job "${id}". Run \`ruby jobs list\`.\n`);
+      return 1;
+    }
+    const job = found.job;
+    if (sub === 'show') {
+      const e = jobBook.entry(job, found.origin);
+      const origin =
+        e.origin.by === 'config' ? 'config.json' : e.origin.by === 'agent' ? `created by Ruby in chat${e.origin.conversation ? ` (${e.origin.conversation})` : ''}, ${describeTime(new Date(e.origin.at), e.zone, now)}` : `added from the ${e.origin.via}, ${describeTime(new Date(e.origin.at), e.zone, now)}`;
+      const what = job.message !== undefined ? `message: ${job.message}` : job.script ? `script: ${job.script.command}` : `instructions: ${job.instructions}`;
+      io.out(`${job.id}\n  from:      ${origin}\n  schedule:  ${describeSchedule(job, e.zone, now)} (${e.zone})\n  next:      ${e.next ? describeNext(e.next, e.zone, now) : e.done ? 'done' : e.state.paused ? 'paused' : 'none'}\n  ${what}\n  sends to:  ${job.notify ? label(job.notify) : 'nowhere (history only)'}${job.notifyWhen === 'on_change' ? ', only when there is something new' : ''}\n`);
+      for (const r of jobStore.runs(job.id, 5)) io.out(`  ${r.startedAt}  ${r.status.padEnd(18)} ${r.note ?? ''}\n`);
+      return 0;
     }
     if (sub === 'history') {
       for (const r of jobStore.runs(job.id)) io.out(`${r.startedAt}  ${r.status.padEnd(20)} ${String(r.tokens).padStart(7)} tok  ${r.note ?? ''}\n`);
       return 0;
     }
-    if (sub === 'resume') {
-      jobStore.saveState({ ...jobStore.state(job.id), paused: false, consecutiveFailures: 0 });
-      io.out(`Resumed ${job.id}.\n`);
+    if (sub === 'resume' || sub === 'pause') {
+      const e = sub === 'pause' ? jobBook.pause(job.id) : jobBook.resume(job.id);
+      io.out(`${sub === 'pause' ? 'Paused' : 'Resumed'} ${job.id}.${e.next ? ` Next run ${describeNext(e.next, e.zone, now)}.` : ''}\n`);
+      return 0;
+    }
+    if (sub === 'delete') {
+      jobBook.remove(job.id);
+      io.out(`Deleted ${job.id} (its run history is kept). A run in progress stops at the service's next check.\n`);
+      return 0;
+    }
+    if (sub === 'edit') {
+      const { values } = parseArgs({ args: rest.slice(1), options: { when: { type: 'string' }, message: { type: 'string' }, instructions: { type: 'string' } } });
+      const patch: Record<string, unknown> = {};
+      if (values.when) {
+        const w = parseWhen(values.when, { now, zone: jobBook.zoneOf(job) });
+        Object.assign(patch, w.kind === 'once' ? { kind: 'once', at: w.at.toISOString() } : w.kind === 'heartbeat' ? { kind: 'heartbeat', everyMinutes: w.everyMinutes } : { kind: 'cron', cron: w.cron });
+      }
+      if (values.message !== undefined) patch.message = values.message;
+      if (values.instructions !== undefined) patch.instructions = values.instructions;
+      if (!Object.keys(patch).length) return usage();
+      const e = jobBook.update(job.id, patch, 'owner');
+      io.out(`Updated ${job.id}: ${describeSchedule(e.job, e.zone, now)}${e.next ? `, next ${describeNext(e.next, e.zone, now)}` : ''}.\n`);
       return 0;
     }
     if (sub === 'run') {
@@ -183,8 +282,7 @@ export async function jobs(args: string[], io: Io): Promise<number> {
       io.out(`Ran ${job.id}: ${r?.status ?? 'unknown'}${r?.note ? ` (${r.note})` : ''}, ${r?.tokens ?? 0} tokens.\n`);
       return 0;
     }
-    io.err('Usage: ruby jobs list | history <id> | run <id> | resume <id>\n');
-    return 2;
+    return usage();
   } finally {
     ruby.close();
   }
