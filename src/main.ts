@@ -17,7 +17,7 @@ import { importedArchiveSection } from './migrate/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
-import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
+import { assertSandboxReady, createSandbox, requiresIsolation, type Sandbox, type SandboxOptions } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
 export const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }).version;
@@ -83,6 +83,32 @@ export type CreateOptions = {
   /** Skip creating the model (admin commands that never call it). */
   noModel?: boolean;
 };
+
+/** Backend options from config. The ssh key passphrase is resolved by name here, the only place that reads it. */
+export function sandboxOptions(config: GarnetConfig, workspace: string, secret: SecretLookup): SandboxOptions {
+  const sb = config.sandbox;
+  const base: SandboxOptions = { workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit, ...(sb.user ? { user: sb.user } : {}) };
+  if (sb.backend !== 'ssh') return base;
+  const s = sb.ssh;
+  const passphrase = s.passphraseEnv ? secret(s.passphraseEnv) : undefined;
+  if (s.passphraseEnv && !passphrase) throw new GarnetError('config', `sandbox.ssh.passphraseEnv names ${s.passphraseEnv}, which is not set. Run \`garnet secrets set ${s.passphraseEnv}\`.`);
+  return {
+    ...base,
+    ssh: {
+      host: s.host!,
+      user: s.user!,
+      workdir: s.workdir!,
+      port: s.port,
+      agent: s.agent,
+      hostKeyChecking: s.hostKeyChecking,
+      connectTimeoutSeconds: s.connectTimeoutSeconds,
+      ...(s.identityFile ? { identityFile: s.identityFile } : {}),
+      ...(passphrase ? { passphrase } : {}),
+      ...(s.knownHostsFile ? { knownHostsFile: s.knownHostsFile } : {}),
+      ...(s.sshPath ? { sshPath: s.sshPath } : {}),
+    },
+  };
+}
 
 export function createGarnet(options: CreateOptions = {}): Garnet {
   const env = options.env ?? process.env;
@@ -166,8 +192,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   // run_command exists only when the owner opted into exec; the tool set is fixed per session.
   let sandbox: Sandbox | null = null;
   if (config.permissions.exec !== 'deny') {
-    const sb = config.sandbox;
-    sandbox = createSandbox(sb.backend, { workspace: paths.workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit, ...(sb.user ? { user: sb.user } : {}) });
+    sandbox = createSandbox(config.sandbox.backend, sandboxOptions(config, paths.workspace, secret));
     registry.register(execTool(sandbox));
   }
   // web_fetch and web_search exist only when net.fetch is not denied. They run in-process (the sandbox has no network).
@@ -458,8 +483,8 @@ export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { c
   try {
     // Fail fast rather than silently downgrade isolation; remove containers a crash may have left.
     if (garnet.sandbox) {
-      await assertSandboxReady(garnet.sandbox, { requireIsolated: config.sandbox.backend === 'docker' });
-      await (garnet.sandbox as { cleanup?: () => Promise<unknown> }).cleanup?.();
+      await assertSandboxReady(garnet.sandbox, { requireIsolated: requiresIsolation(config.sandbox.backend) });
+      await garnet.sandbox.cleanup?.();
     }
     await gateway.start();
     scheduler.start();

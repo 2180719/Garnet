@@ -9,7 +9,8 @@ import { parseArgs } from 'node:util';
 import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
-import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
+import { sandboxOptions } from '../main.ts';
+import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings, type SecretLookup } from '../secrets/index.ts';
 import { defaultEntry, installedServices, legacyServices, resolveService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
@@ -44,8 +45,11 @@ export type DoctorDeps = {
   version: string;
   run: (cmd: string[]) => Promise<CommandResult>;
   sqlite: () => { ok: boolean; detail: string };
-  /** Docker sandbox readiness (only called when commands are allowed). */
-  sandboxCheck: (config: GarnetConfig, workspace: string) => Promise<{ ok: boolean; detail: string }>;
+  /**
+   * Sandbox readiness (only called when commands are allowed and the backend is configured). Read-only; `secret`
+   * resolves a secret name for the backend (an ssh key passphrase) and is never printed.
+   */
+  sandboxCheck: (config: GarnetConfig, workspace: string, secret: SecretLookup) => Promise<{ ok: boolean; detail: string }>;
 };
 
 export const MIN_NODE = [22, 18] as const;
@@ -188,12 +192,21 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     }
 
     // Sandbox
+    const sb = config.sandbox;
     if (config.permissions.exec === 'deny') add('sandbox', 'info', 'Shell commands are off (permissions.exec = deny), so no sandbox is needed');
-    else if (config.sandbox.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker.');
-    else {
-      const r = await d.sandboxCheck(config, workspace).catch((e: unknown) => ({ ok: false, detail: errorMessage(e) }));
+    else if (sb.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker (or ssh to a dedicated machine).');
+    else if (sb.backend === 'ssh' && (!sb.ssh.host || !sb.ssh.user || !sb.ssh.workdir)) {
+      add('sandbox', 'fail', 'sandbox.backend is ssh but sandbox.ssh.host, user or workdir is not set', 'Set them in config.json (`garnet config explain` lists sandbox.ssh.*), or use sandbox.backend = docker.');
+    } else if (sb.backend === 'ssh' && sb.ssh.passphraseEnv && !where(sb.ssh.passphraseEnv)) {
+      add('sandbox', 'fail', `ssh sandbox: the key passphrase ${sb.ssh.passphraseEnv} is not set`, missingFix(sb.ssh.passphraseEnv));
+    } else {
+      if (sb.backend === 'ssh' && sb.ssh.hostKeyChecking === 'off') {
+        add('sandbox', 'warn', 'ssh host key checking is off (sandbox.ssh.hostKeyChecking = off): anyone on the network path can impersonate the remote host', 'Set hostKeyChecking to strict (and add the host to known_hosts) or accept-new.');
+      }
+      const lookup: SecretLookup = (name) => d.env[name] || (storeNames?.has(name) ? store.get(name) : undefined);
+      const r = await d.sandboxCheck(config, workspace, lookup).catch((e: unknown) => ({ ok: false, detail: errorMessage(e) }));
       // The sandbox's own detail already says how to fix it.
-      add('sandbox', r.ok ? 'ok' : 'fail', `Docker sandbox: ${r.detail}`);
+      add('sandbox', r.ok ? 'ok' : 'fail', `${sb.backend === 'ssh' ? 'SSH' : 'Docker'} sandbox: ${r.detail}`);
     }
 
     // Media
@@ -330,11 +343,7 @@ export async function doctor(args: string[], io: Io, overrides: Partial<DoctorDe
     version: overrides.version ?? 'unknown',
     run,
     sqlite: realSqliteCheck,
-    sandboxCheck: async (config, workspace) => {
-      const sb = config.sandbox;
-      const sandbox = createSandbox(sb.backend, { workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit, ...(sb.user ? { user: sb.user } : {}) });
-      return sandbox.check();
-    },
+    sandboxCheck: async (config, workspace, secret) => createSandbox(config.sandbox.backend, sandboxOptions(config, workspace, secret)).check(),
     ...overrides,
   };
   const findings = await diagnose(deps);

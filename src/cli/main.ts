@@ -14,6 +14,7 @@ import { secrets } from './secrets.ts';
 import { doctor } from './doctor.ts';
 import { init, setup } from './setup/command.ts';
 import { chat } from './chat/index.ts';
+import { sandboxCommand } from './sandbox.ts';
 
 const HELP = `garnet — a persistent personal agent you can actually read
 
@@ -28,6 +29,7 @@ Usage:
   garnet config check         Validate the config file
   garnet config show          Print the effective config (secrets redacted)
   garnet config explain       Describe every setting
+  garnet sandbox check        Probe the command sandbox (docker or ssh), read-only
   garnet sessions             List recent sessions
   garnet start                Run the service (channels, gateway, API) in the foreground
   garnet pair list|approve <code>|revoke <channel> <id>
@@ -100,6 +102,8 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return await chat(rest, { ...io, stdin: process.stdin, stdout: io === stdio ? process.stdout : null, env: process.env });
       case 'config':
         return configCommand(rest, io);
+      case 'sandbox':
+        return await sandboxCommand(rest, io);
       case 'sessions':
         return sessions(io);
       case 'start':

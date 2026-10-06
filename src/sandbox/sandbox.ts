@@ -26,8 +26,11 @@ export type RunResult = {
   truncated: boolean;
 };
 
+/** The backends that exist. Add a kind here and an entry in `factory.ts` to add one. */
+export type SandboxKind = 'docker' | 'local' | 'ssh';
+
 export interface Sandbox {
-  readonly kind: 'docker' | 'local';
+  readonly kind: SandboxKind;
   /** True only for a real isolation boundary. */
   readonly isolated: boolean;
   /** True when commands can reach a network (the local backend always can), so their output may carry web content. */
@@ -35,7 +38,10 @@ export interface Sandbox {
   /** Absolute (real) host path of the workspace the sandbox exposes. */
   readonly workspace: string;
   run(req: RunRequest): Promise<RunResult>;
+  /** Read-only readiness probe: never changes anything, never pulls or installs. `detail` says how to fix a failure. */
   check(): Promise<{ ok: boolean; detail: string }>;
+  /** Removes what a crash left behind (optional). Returns how many things were removed. */
+  cleanup?(): Promise<number>;
 }
 
 /** `child_process.spawn` signature, injectable for tests. */

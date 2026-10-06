@@ -227,7 +227,10 @@ export const configSchema = z
       .describe('Photos, documents and voice notes in; files out (send_file).'),
     sandbox: z
       .object({
-        backend: z.enum(['docker', 'local']).default('docker').describe('docker: isolated container per command. local: runs on the host and is NOT a security boundary.'),
+        backend: z
+          .enum(['docker', 'local', 'ssh'])
+          .default('docker')
+          .describe('docker: isolated container per command. ssh: run on a remote host over the system ssh client (a boundary only as strong as the remote account; see sandbox.ssh). local: runs on the host and is NOT a security boundary.'),
         image: z.string().default('debian:stable-slim').describe('Container image with sh. Pull it yourself first: docker pull <image>.'),
         network: z.enum(['none', 'bridge']).default('none').describe('Container network. none blocks all network access.'),
         memory: z.string().regex(/^[0-9]+[bkmg]?$/i).default('512m').describe('Memory limit per command (swap disabled).'),
@@ -239,6 +242,33 @@ export const configSchema = z
           .refine((u) => Number(u.split(':')[0]) !== 0, 'the sandbox never runs as root (uid 0)')
           .optional()
           .describe('Container user as uid:gid (docker). Unset: your uid:gid, or the workspace owner when Garnet runs as root, else 65534:65534. Never root.'),
+        ssh: z
+          .strictObject({
+            host: z.string().max(253).optional().describe('ssh backend: remote host name or IP address (required for the ssh backend). Never a URL or an ssh alias with options.'),
+            port: z.number().int().min(1).max(65535).default(22).describe('ssh backend: remote port.'),
+            user: z.string().max(64).optional().describe('ssh backend: remote account (required). Use a dedicated, unprivileged account: the ssh backend is only as strong a boundary as this account.'),
+            workdir: z.string().max(1024).optional().describe('ssh backend: absolute directory on the remote host that plays the role of the workspace (required). A command with cwd "a/b" runs in <workdir>/a/b; paths that leave workdir (including through symlinks) are refused. It is not synced with the local workspace.'),
+            identityFile: z.string().max(1024).optional().describe('ssh backend: absolute path of a private key file on this machine. With no identityFile, set agent to true.'),
+            agent: z.boolean().default(false).describe('ssh backend: also (or instead) authenticate through the running ssh-agent (SSH_AUTH_SOCK). Garnet never forwards the agent to the remote host.'),
+            passphraseEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional().describe('ssh backend: NAME of the environment variable or stored secret holding the passphrase of identityFile (never the passphrase itself). Unset for an unencrypted key or an agent. Needs OpenSSH 8.4 or newer.'),
+            hostKeyChecking: z
+              .enum(['strict', 'accept-new', 'off'])
+              .default('strict')
+              .describe('ssh backend: strict (default) refuses a host that is not already in known_hosts or whose key changed. accept-new trusts a first-seen host and refuses a changed key. off disables the check and is unsafe: anyone on the network path can impersonate the host.'),
+            knownHostsFile: z.string().max(1024).optional().describe('ssh backend: absolute path of the known_hosts file to use. Unset: the ssh default (~/.ssh/known_hosts).'),
+            connectTimeoutSeconds: z.number().int().min(1).max(120).default(10).describe('ssh backend: give up connecting after this long.'),
+            sshPath: z.string().max(1024).optional().describe('ssh backend: the ssh client to run. Unset: ssh from PATH.'),
+          })
+          .prefault({})
+          .describe('Options for the ssh backend. Non-secret; the key passphrase is named by passphraseEnv. Only used when backend is ssh.'),
+      })
+      .refine((s) => s.backend !== 'ssh' || (s.ssh.host && s.ssh.user && s.ssh.workdir), {
+        message: 'the ssh backend needs sandbox.ssh.host, sandbox.ssh.user and sandbox.ssh.workdir',
+        path: ['ssh'],
+      })
+      .refine((s) => s.backend !== 'ssh' || s.ssh.identityFile || s.ssh.agent, {
+        message: 'the ssh backend needs sandbox.ssh.identityFile or sandbox.ssh.agent = true (ssh never asks for a password)',
+        path: ['ssh'],
       })
       .prefault({})
       .describe('Where run_command executes. Only used when the exec permission is allow or ask.'),

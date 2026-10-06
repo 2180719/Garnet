@@ -126,5 +126,6 @@ function quoteEnv(value: string): string {
 /** Names of the environment variables (or stored secrets) the config refers to. Names only, never values. */
 export function secretNames(config: GarnetConfig): string[] {
   const transcription = config.media.transcription.backend === 'openai-compatible' ? config.media.transcription.apiKeyEnv : undefined;
-  return [...new Set([config.model.apiKeyEnv, config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : [])])];
+  const sshPassphrase = config.sandbox.backend === 'ssh' ? config.sandbox.ssh.passphraseEnv : undefined;
+  return [...new Set([config.model.apiKeyEnv, config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : []), ...(sshPassphrase ? [sshPassphrase] : [])])];
 }
