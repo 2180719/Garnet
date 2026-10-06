@@ -212,14 +212,14 @@ export class ApiServer {
     }
     if (method === 'GET' && path === '/api/sessions') {
       this.require(ctx, 'read');
-      return send(res, 200, { sessions: this.deps.sessions.listSessions(Number(url.searchParams.get('limit') ?? 50)) });
+      return send(res, 200, { sessions: this.deps.sessions.listSessions(intParam(url, 'limit', 50, 1, 200)) });
     }
     const events = /^\/api\/sessions\/([A-Za-z0-9_]+)\/events$/.exec(path);
     if (method === 'GET' && events) {
       this.require(ctx, 'read');
       const id = events[1]!;
       if (!this.deps.sessions.getSession(id)) throw new HttpError(404, 'No such session.');
-      const after = Number(url.searchParams.get('after') ?? 0);
+      const after = intParam(url, 'after', 0, 0, Number.MAX_SAFE_INTEGER);
       // Sanitized view (no thinking, no frozen prompt) for read keys; raw events only for admin without a backend.
       if (this.deps.admin) return send(res, 200, this.deps.admin.sessionEvents(id, after, 200));
       this.require(ctx, 'admin');
@@ -299,6 +299,15 @@ export class ApiServer {
       ruby: { task_id: result.task.id, session_id: result.sessionId, status: result.task.status },
     });
   }
+}
+
+/** An integer query parameter within [min, max]; 400 otherwise (NaN or a negative LIMIT would reach SQLite). */
+function intParam(url: URL, name: string, fallback: number, min: number, max: number): number {
+  const raw = url.searchParams.get(name);
+  if (raw === null || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) throw new HttpError(400, `"${name}" must be an integer from ${min} to ${max}.`);
+  return n;
 }
 
 function statusNote(task: TaskRecord): string {

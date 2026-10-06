@@ -42,12 +42,16 @@ export class ApiKeys {
     if (!name.trim() || name.length > 64) throw new RubyError('invalid_input', 'Key name must be 1-64 characters.');
     const unknown = scopes.filter((s) => !SCOPES.includes(s));
     if (scopes.length === 0 || unknown.length) throw new RubyError('invalid_input', `Scopes must be some of: ${SCOPES.join(', ')}.`);
+    if (expiresInDays !== undefined && !(Number.isFinite(expiresInDays) && expiresInDays > 0 && expiresInDays <= 3650)) {
+      throw new RubyError('invalid_input', 'Expiry must be a number of days from 1 to 3650 (omit it for a key that does not expire).');
+    }
     const id = base62(8);
     const secret = base62(32);
     const salt = randomBytes(16).toString('hex');
     const expiresAt = expiresInDays ? new Date(Date.now() + expiresInDays * 86_400_000).toISOString() : null;
-    this.store.insert({ id, name: name.trim(), salt, hash: digest(salt, secret), scopes: [...new Set(scopes)], createdAt: new Date().toISOString(), expiresAt });
-    return { id, key: `ruby_${id}_${secret}`, name: name.trim(), scopes, expiresAt };
+    const unique = [...new Set(scopes)];
+    this.store.insert({ id, name: name.trim(), salt, hash: digest(salt, secret), scopes: unique, createdAt: new Date().toISOString(), expiresAt });
+    return { id, key: `ruby_${id}_${secret}`, name: name.trim(), scopes: unique, expiresAt };
   }
 
   /** Returns the key record when `presented` is a valid, active key. Constant-time comparison. */
