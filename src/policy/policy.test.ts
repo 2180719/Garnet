@@ -60,7 +60,8 @@ test('untrusted content escalates consequential allows to ask; deny and ask are 
     assert.match(d.reason, /read untrusted content \(web_fetch https:\/\/evil\.example\/\)/);
   }
   assert.equal(p.check('exec', { taint: t }).verdict, 'deny', 'deny stays deny');
-  assert.equal(p.check('schedule.edit', { taint: t }).taint, undefined, 'already ask: not marked as escalated');
+  assert.deepEqual(p.check('schedule.edit', { taint: t }).taint, ['web_fetch https://evil.example/'], 'already ask: still marked, so no standing approval applies');
+  assert.equal(p.check('schedule.edit').taint, undefined, 'untainted ask carries no marker');
   assert.equal(p.check('fs.read', { taint: t }).verdict, 'allow', 'reading is not consequential by default');
   assert.equal(p.check('fs.write', { taint: taint([]) }).verdict, 'allow', 'no sources: not tainted');
 });

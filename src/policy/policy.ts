@@ -103,8 +103,13 @@ export class Policy {
     }
     const sources = ctx.taint?.sources ?? [];
     const c = this.options.containment;
-    if (decision.verdict !== 'allow' || sources.length === 0 || !c.enabled || !c.escalate.includes(capability)) return decision;
+    if (decision.verdict === 'deny' || sources.length === 0 || !c.enabled) return decision;
     if (capability === 'net.fetch' && targets.length > 0 && targets.every((t) => this.carriesNoData(t, ctx.taint!))) return decision;
+    if (decision.verdict === 'ask') {
+      // Already ask: still marked, so no standing "always" answer applies to it.
+      return { ...decision, taint: sources };
+    }
+    if (!c.escalate.includes(capability)) return decision;
     return {
       verdict: 'ask',
       reason: `this conversation has read untrusted content (${describeSources(sources)}), so ${capability} needs the owner's approval until a new conversation starts`,

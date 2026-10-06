@@ -5,8 +5,8 @@ import { createGarnet, VERSION } from '../main.ts';
 import { backupDb } from '../store/index.ts';
 import type { Io } from './main.ts';
 
-// Artifacts hold large tool outputs that session history refers to by id.
-const DIRS = ['memory', 'skills', 'artifacts', 'workspace'];
+// Artifacts hold large tool outputs and media holds attachments (inbound files, pending outbox files) that session history and the outbox refer to by id or path.
+const DIRS = ['memory', 'skills', 'artifacts', 'media', 'workspace'];
 
 export function backup(args: string[], io: Io): number {
   const garnet = createGarnet({ noModel: true });
@@ -37,7 +37,9 @@ export function backup(args: string[], io: Io): number {
 
 export function restore(args: string[], io: Io): number {
   const from = args[0] && resolve(args[0]);
-  if (!from || !existsSync(join(from, 'BACKUP.json')) || !existsSync(join(from, 'garnet.db'))) {
+  // Backups made before the rename hold ruby.db.
+  const dbFile = from ? ['garnet.db', 'ruby.db'].find((n) => existsSync(join(from, n))) : undefined;
+  if (!from || !dbFile || !existsSync(join(from, 'BACKUP.json'))) {
     io.err('Usage: garnet restore <backup-dir>   (stop Garnet first; the current data is moved aside, not deleted)\n');
     return 2;
   }
@@ -47,13 +49,15 @@ export function restore(args: string[], io: Io): number {
   garnet.close();
   const aside = join(home, `pre-restore-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   mkdirSync(aside, { recursive: true, mode: 0o700 });
-  for (const name of ['garnet.db', 'garnet.db-wal', 'garnet.db-shm', 'config.json', 'secrets', 'memory', 'skills', 'artifacts']) {
+  // Both database names move aside: the app opens garnet.db when present, so a leftover ruby.db must not linger beside a restored one.
+  for (const name of ['garnet.db', 'garnet.db-wal', 'garnet.db-shm', 'ruby.db', 'ruby.db-wal', 'ruby.db-shm', 'config.json', 'secrets', 'memory', 'skills', 'artifacts', 'media']) {
     if (existsSync(join(home, name))) renameSync(join(home, name), join(aside, name));
   }
   if (existsSync(workspace)) renameSync(workspace, join(aside, 'workspace'));
   for (const name of readdirSync(from)) {
-    if (name === 'BACKUP.json') continue;
-    const dest = name === 'workspace' ? workspace : join(home, name);
+    if (name === 'BACKUP.json' || (name === 'ruby.db' && dbFile === 'garnet.db')) continue;
+    // A pre-rename backup's ruby.db is restored as garnet.db: that is the file the app opens first, and any ruby.db in this home was moved aside above.
+    const dest = name === 'workspace' ? workspace : join(home, name === 'ruby.db' ? 'garnet.db' : name);
     cpSync(join(from, name), dest, { recursive: true, verbatimSymlinks: true });
   }
   io.out(`Restored from ${from}. Your previous data was moved to ${aside}.\n`);

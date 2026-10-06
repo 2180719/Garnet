@@ -1,11 +1,14 @@
 // CLI argument handling for the owner commands (memory, skills, flags).
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { tempDir } from './helpers.ts';
 import { main } from '../src/cli/main.ts';
 import { MemoryStore } from '../src/memory/index.ts';
+import { createGarnet } from '../src/main.ts';
+import { MediaStore } from '../src/media/index.ts';
+import { GatewayStore } from '../src/store/index.ts';
 
 const home = tempDir();
 const saved = { home: process.env.GARNET_HOME, editor: process.env.EDITOR, visual: process.env.VISUAL };
@@ -80,6 +83,50 @@ test('backup and restore round-trip the database, config, memory, skills, artifa
   assert.equal(readFileSync(join(home, 'workspace', 'notes.md'), 'utf8'), 'workspace file');
   const aside = readdirSync(home).find((n) => n.startsWith('pre-restore-'))!;
   assert.equal(readFileSync(join(home, aside, 'artifacts', 'art_1.txt'), 'utf8'), 'changed', 'the replaced data is moved aside, not deleted');
+});
+
+test('backup and restore include the media store, so a pending outbox attachment survives', async () => {
+  const media = new MediaStore(join(home, 'media'), 1_000_000);
+  const ref = media.put({ data: Buffer.from('attachment bytes'), name: 'a.txt', mimeType: 'text/plain' });
+  const garnet = createGarnet({ noModel: true, home });
+  try {
+    new GatewayStore(garnet.db).enqueue({ channel: 'telegram', account: 'a', chatId: '1', text: 'here', attachments: [{ path: media.path(ref.id), name: 'a.txt', mimeType: 'text/plain', kind: ref.kind, size: ref.size }] });
+  } finally {
+    garnet.close();
+  }
+  const target = join(tempDir(), 'bk-media');
+  const b = await run('backup', target);
+  assert.equal(b.code, 0, b.err);
+  assert.equal(readFileSync(join(target, 'media', `${ref.id}.bin`), 'utf8'), 'attachment bytes');
+
+  rmSync(join(home, 'media'), { recursive: true });
+  const r = await run('restore', target);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(readFileSync(media.path(ref.id), 'utf8'), 'attachment bytes', 'the restored outbox row still points at an existing file');
+});
+
+test('restore accepts a pre-rename backup (ruby.db) and the restored data is what the app opens', async () => {
+  const before = createGarnet({ noModel: true, home });
+  const sessionId = before.store.createSession('from the old backup').id;
+  before.close();
+  const target = join(tempDir(), 'bk-legacy');
+  assert.equal((await run('backup', target)).code, 0);
+  renameSync(join(target, 'garnet.db'), join(target, 'ruby.db'));
+  const garnetNow = createGarnet({ noModel: true, home });
+  const extra = garnetNow.store.createSession('made after the backup').id;
+  garnetNow.close();
+
+  const r = await run('restore', target);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(existsSync(join(home, 'garnet.db')) && !existsSync(join(home, 'ruby.db')));
+  const after = createGarnet({ noModel: true, home });
+  try {
+    const ids = after.store.listSessions().map((s) => s.id);
+    assert.ok(ids.includes(sessionId), 'the backup data is open');
+    assert.ok(!ids.includes(extra), 'later data is not');
+  } finally {
+    after.close();
+  }
 });
 
 test('garnet jobs: add, list, show, pause, edit and delete; config.json jobs stay read-only', async () => {
