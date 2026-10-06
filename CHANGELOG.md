@@ -8,6 +8,9 @@
 - The daily spending cap is checked before every model call and counts compaction; missing cache prices are derived from the input price; with a cap set, tasks whose cost can't be priced are refused; "today" follows the owner's time zone.
 - Installer: updates installs made under the old command name, leaves a link at the old install path for an old service, honours `RUBY_NODE`; an old service is removed after `~/.ruby` is moved to `~/.garnet`; an empty `GARNET_*` falls back to `RUBY_*`.
 - `doctor` checks media commands given as full paths correctly.
+- Security: in a conversation that has read untrusted content, every approval asks again, including tools already set to ask; an earlier "always allow" in the terminal chat no longer applies.
+- Backups include attachments (`<home>/media`); restore accepts backups made before the rename (`ruby.db`).
+- `/compact` respects the daily spending cap, and spending is counted by when each model call happened, so tasks that run past midnight are counted.
 
 ### Renamed: Ruby is now Garnet
 - The project, command (`garnet`), package (`garnet-agent`), default assistant name, repository (`2180719/Garnet`), service (`garnet.service` / `dev.garnet.agent`), API key prefix (`garnet_`), header (`X-Garnet-Conversation`) and data directory (`~/.garnet`) all changed, because `ruby` clashes with the Ruby language interpreter. Environment variables are now `GARNET_*` (`GARNET_HOME`, `GARNET_SECRETS_KEY_FILE`, ...); `npm run ruby` is now `npm run garnet`.
