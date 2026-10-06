@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### New capabilities
+
+#### Tier 0 (gateway/channels)
+- Voice notes, photos, files and stickers get a short "I can't … yet" reply instead of silence.
+- Chat commands `/help`, `/usage` (`/cost`), `/status` and `/retry` on Telegram, Signal and Discord.
+- Telegram replies render markdown (falling back to plain text if Telegram rejects it); Signal replies have markdown stripped; code blocks stay whole when long replies are split.
+- API: one conversation per chat for Open WebUI, LibreChat and other clients that resend history; `content: null` and content-part arrays accepted; SSE keepalives; `/approve` and `/deny` in API chats; opt-in CORS (`api.corsOrigins`); Open WebUI title, tag and follow-up requests answered without running the agent.
+- Breaking: API requests with neither a conversation header nor `X-OpenWebUI-Chat-Id` no longer share a `default` conversation.
+- Heartbeats: `HEARTBEAT_OK` counts as nothing to report; job notifications are written into the chat's conversation so replies have context.
+- The agent knows the current date and time: each message carries its send time in the owner's time zone (new `timezone` setting).
+#### Web tools and containment
+- Added `web_fetch` (public pages as Markdown; large pages as artifacts) and `web_search` (DuckDuckGo by default, SearXNG, Brave, Tavily), both behind `net.fetch`, with an SSRF guard that checks every redirect and pins DNS.
+- Added prompt-injection containment: once a conversation reads untrusted content, actions set to allow (write files, run commands, send messages, change memory, skills or schedules, fetch URLs the agent composed) ask first until `/new`. Approvals say why; the terminal chat and dashboard show it.
+- `web.allowHosts` lets `web_fetch` reach listed hosts without asking. `doctor` reports the web setup.
+#### Media
+- Photos, PDFs, text files and voice notes from Telegram, Discord and Signal. Images and PDFs go to the model natively when it supports them; voice notes are transcribed by an OpenAI-compatible endpoint (OpenAI, Groq, local whisper server) or a local command; otherwise the agent says plainly what it can't read instead of going silent.
+- New `send_file` tool (asks first) sends workspace files to your chat.
+- Terminal chat: `/attach <path>`.
+- API: `image_url` and `file` parts as data URLs; remote URLs are refused.
+- Stickers, locations and similar get a reply instead of silence.
+- Old images are swapped for placeholders in the model's view so photos can't fill the context window.
+#### Switching (importer, CLI, models)
+- The system prompt uses the assistant's configured name and points the agent at imported archives.
+- `import` brings scheduled jobs over (disabled) from Hermes `cron/jobs.json` and OpenClaw 2026.9 automations, including heartbeat checklists.
+- `import` can raise memory caps to fit (`--raise-caps`) and pair allowlisted senders (`--pairings`); it merges a persona into one that only has setup basics (`--persona keep|merge|replace` otherwise).
+- `import` keeps skill requirements, flags missing tools and programs, rewrites `{baseDir}`, imports Hermes bundled skills you edited, honours `HERMES_HOME` and OpenClaw profile/workspace settings, and warns about other profiles.
+- `pair add <channel> <id>`; `service ... --name <n>` for several homes side by side, with `service list` and `restart`.
+- OpenAI: `max_completion_tokens`; output capped to fit the context window.
+#### Scheduling and messaging
+- Jobs created by a conversation that had read untrusted content keep asking for approval when they run.
+- The agent can schedule work from chat: one-shot reminders, recurring tasks and script-only jobs, with natural times in your time zone. Each needs your approval and delivers back to the chat you asked from.
+- `send_message` lets the agent message you or another paired chat on its own: approval required by default, rate-limited, and recorded in that chat's conversation.
+- New `scheduler.maxAgentJobs` and `gateway.messagesPerHour` settings.
+- `jobs` shows every job's origin and next run; new `show`, `add`, `edit`, `pause` and `delete` subcommands. The dashboard can pause, edit and delete jobs.
+
 ### Installation and onboarding
 - One-line installer: `curl -fsSL https://raw.githubusercontent.com/2180719/Ruby/main/install.sh | sh`. POSIX sh, no sudo, idempotent: checks Node.js 22.18+ and `node:sqlite` (with install advice), clones or fast-forwards into `~/.local/share/ruby` (refusing to touch local changes), runs `npm ci --omit=dev`, writes a `ruby` shim in `~/.local/bin` (never over a file it did not write), warns when PATH lacks it or another `ruby` (the language) shadows it, then starts `ruby setup` on a terminal. `--name` installs under another command name.
 - `ruby setup`: a guided, re-runnable wizard for the model (Anthropic, OpenRouter, local servers, any OpenAI-compatible API, or the demo model), the key (hidden input; encrypted store with a new key file outside `~/.ruby`, the env file, or your own environment), persona basics, Telegram/Discord/Signal, importing from OpenClaw or Hermes (preview first), the background service, and pairing your own account. Live key checks run only with consent and cost no tokens. On a re-run it shows the current setup and a menu. `ruby setup -y` takes everything from flags (`--key-stdin` for the key) for scripts and CI.

@@ -16,15 +16,28 @@ const capabilityGrant = z.object({
   'schedule.edit': permission.default('deny'),
 });
 
-const jobSchema = z
+/** Channels a job or `send_message` can deliver to (paired chats only). */
+export const NOTIFY_CHANNELS = ['telegram', 'signal', 'discord'] as const;
+
+export const jobSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9-]{1,40}$/).describe('Short unique name.'),
     enabled: z.boolean().default(true).describe('Disabled jobs never run and never call the model.'),
-    kind: z.enum(['cron', 'heartbeat']).describe('cron: calendar times. heartbeat: every N minutes.'),
+    kind: z.enum(['cron', 'heartbeat', 'once']).describe('cron: calendar times. heartbeat: every N minutes. once: a single run at `at` (reminders).'),
     cron: z.string().optional().describe('5-field cron expression (minute hour day month weekday), for kind=cron.'),
     everyMinutes: z.number().int().min(5).max(10_080).optional().describe('Interval for kind=heartbeat.'),
-    timezone: z.string().optional().describe('IANA time zone, e.g. Europe/London. Defaults to the host zone.'),
-    instructions: z.string().min(1).max(4000).describe('What Ruby should do on each run.'),
+    at: z.iso.datetime({ offset: true }).optional().describe('When a kind=once job runs: an ISO date-time with a zone offset, e.g. 2026-10-07T09:00:00+01:00.'),
+    timezone: z.string().optional().describe('IANA time zone, e.g. Europe/London. Defaults to the top-level timezone, then the host zone.'),
+    instructions: z.string().min(1).max(4000).optional().describe('What Ruby should do on each run (runs the agent). Give exactly one of instructions, message or script.'),
+    message: z.string().min(1).max(4000).optional().describe('Fixed text sent as is on each run, without calling the model (cheap reminders).'),
+    script: z
+      .object({
+        command: z.string().min(1).max(10_000).describe('Shell command (sh -c) run in the command sandbox, starting in the workspace.'),
+        timeoutSeconds: z.number().int().min(1).max(600).default(60).describe('The command is killed after this long.'),
+      })
+      .strict()
+      .optional()
+      .describe('Script-only job: runs the command and never calls the model. Non-empty output is sent (with notifyWhen on_change, only when it changed). Needs exec to be allow or ask.'),
     check: z
       .discriminatedUnion('type', [
         z.object({ type: z.literal('file_changed'), path: z.string().describe('Workspace-relative file to watch.') }),
@@ -44,13 +57,16 @@ const jobSchema = z
       .object({ channel: z.string(), chatId: z.string(), account: z.string().default('default') })
       .optional()
       .describe('Where to send results. Without it, results are only kept in run history.'),
-    notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Ruby has something worth reporting.'),
+    notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Ruby has something worth reporting (script jobs: when the output changed).'),
     catchUp: z.boolean().default(true).describe('After downtime, run missed occurrences once (coalesced). Otherwise skip them.'),
   })
   .strict()
   .superRefine((j, ctx) => {
     if (j.kind === 'cron' && !j.cron) ctx.addIssue({ code: 'custom', path: ['cron'], message: 'cron jobs need a cron expression' });
     if (j.kind === 'heartbeat' && !j.everyMinutes) ctx.addIssue({ code: 'custom', path: ['everyMinutes'], message: 'heartbeats need everyMinutes' });
+    if (j.kind === 'once' && !j.at) ctx.addIssue({ code: 'custom', path: ['at'], message: 'once jobs need `at` (an ISO date-time with offset)' });
+    const actions = [j.instructions, j.message, j.script].filter((a) => a !== undefined).length;
+    if (actions !== 1) ctx.addIssue({ code: 'custom', path: ['instructions'], message: 'give exactly one of instructions, message or script' });
     if (j.cron) {
       try {
         parseCron(j.cron);
@@ -59,6 +75,9 @@ const jobSchema = z
       }
     }
     if (j.timezone && !validTimeZone(j.timezone)) ctx.addIssue({ code: 'custom', path: ['timezone'], message: `Unknown time zone "${j.timezone}"` });
+    if (j.notify && !(NOTIFY_CHANNELS as readonly string[]).includes(j.notify.channel)) {
+      ctx.addIssue({ code: 'custom', path: ['notify', 'channel'], message: `notify.channel must be ${NOTIFY_CHANNELS.join(', ')}` });
+    }
   });
 
 export type JobConfig = z.infer<typeof jobSchema>;
@@ -70,6 +89,11 @@ export const configSchema = z
       .string()
       .optional()
       .describe('Directory tools may work in. Defaults to <home>/workspace.'),
+    timezone: z
+      .string()
+      .refine(validTimeZone, "Unknown time zone (use an IANA name like Europe/London)")
+      .optional()
+      .describe("Your IANA time zone, e.g. Europe/London. Ruby shows each message's send time in it, and jobs without their own timezone use it. Defaults to the host zone."),
     model: z
       .object({
         provider: z
@@ -90,6 +114,14 @@ export const configSchema = z
         baseUrl: z.string().url().optional().describe('Provider API base URL. Required for openai-compatible, e.g. http://127.0.0.1:11434/v1.'),
         contextWindow: z.number().int().min(4096).optional().describe('Context window of an openai-compatible model.'),
         maxOutputTokens: z.number().int().positive().default(32_000).describe('Output token cap per model call.'),
+        vision: z
+          .boolean()
+          .optional()
+          .describe('The model can view images (sent as image blocks). Default: on for anthropic, off for openai-compatible; turn it on for vision models (gpt-4o, Qwen-VL, LLaVA, Gemma 3).'),
+        pdf: z
+          .boolean()
+          .optional()
+          .describe('The provider reads PDFs natively (document blocks). Default: on for anthropic, off for openai-compatible (OpenAI and OpenRouter accept them; most local servers do not).'),
       })
       .prefault({})
       .describe('Model used for interactive tasks.'),
@@ -121,6 +153,68 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Bounded memory, shown to Ruby at the start of each session.'),
+    media: z
+      .object({
+        enabled: z.boolean().default(true).describe('Accept photos, voice notes and files (chats, the API, /attach in the terminal) and offer the send_file tool. Off: files get a polite "cannot receive files" reply.'),
+        maxBytes: z
+          .number()
+          .int()
+          .min(1024)
+          .max(200 * 1024 * 1024)
+          .default(20 * 1024 * 1024)
+          .describe('Largest file accepted, in bytes (in and out). Telegram bots can download at most 20 MB.'),
+        maxInContext: z
+          .number()
+          .int()
+          .min(0)
+          .max(50)
+          .default(8)
+          .describe('Most images and PDFs shown to the model in one request, newest first. Older ones become a short text placeholder so photos cannot fill the context window.'),
+        maxTextChars: z
+          .number()
+          .int()
+          .min(1000)
+          .max(200_000)
+          .default(30_000)
+          .describe('Longest transcript or file text put into a turn; the full text is kept as an artifact the model can read.'),
+        transcription: z
+          .object({
+            backend: z
+              .enum(['none', 'openai-compatible', 'command'])
+              .default('none')
+              .describe('Voice-note speech to text. openai-compatible: POST /audio/transcriptions (OpenAI, Groq, a local whisper.cpp or speaches server). command: a local program. none: voice notes get an honest reply.'),
+            baseUrl: z.string().url().optional().describe('API base for openai-compatible, e.g. https://api.openai.com/v1, https://api.groq.com/openai/v1 or http://127.0.0.1:8080/v1.'),
+            path: z
+              .string()
+              .regex(/^\/[A-Za-z0-9/_.-]*$/)
+              .optional()
+              .describe("Endpoint path under baseUrl. Default /audio/transcriptions; whisper.cpp's server uses /inference unless started with --inference-path /v1/audio/transcriptions."),
+            model: z.string().default('whisper-1').describe('Transcription model, e.g. whisper-1, gpt-4o-mini-transcribe, whisper-large-v3-turbo (Groq).'),
+            apiKeyEnv: z.string().optional().describe('Environment variable (or encrypted secret) holding the API key. Omit for local servers without one.'),
+            language: z.string().regex(/^[a-z]{2,3}$/).optional().describe('ISO-639-1 language hint, e.g. en. Omit to auto-detect.'),
+            command: z
+              .array(z.string())
+              .min(1)
+              .optional()
+              .describe('For backend=command: argv run on the host without a shell; {input} is replaced by the audio file path; the transcript is read from stdout. E.g. ["whisper-cli","-m","/models/ggml-base.bin","-nt","-f","{input}"]. whisper-cli reads WAV, MP3, FLAC and OGG Vorbis; Telegram voice notes are Opus, so wrap it with ffmpeg in a script.'),
+            timeoutSeconds: z.number().int().min(5).max(1800).default(120).describe('Give up on one transcription after this long.'),
+          })
+          .prefault({})
+          .describe('Speech to text for voice notes and audio files. Off by default.'),
+        pdfText: z
+          .object({
+            command: z
+              .array(z.string())
+              .min(1)
+              .optional()
+              .describe("argv that prints a PDF's text to stdout, run on the host without a shell; {input} is the file. E.g. [\"pdftotext\",\"-layout\",\"{input}\",\"-\"] (poppler-utils). Used only when the model cannot read PDFs itself."),
+            timeoutSeconds: z.number().int().min(5).max(600).default(60).describe('Give up on one extraction after this long.'),
+          })
+          .prefault({})
+          .describe('Optional PDF text extraction for models without native PDF input. Off by default: it parses untrusted files on the host.'),
+      })
+      .prefault({})
+      .describe('Photos, documents and voice notes in; files out (send_file).'),
     sandbox: z
       .object({
         backend: z.enum(['docker', 'local']).default('docker').describe('docker: isolated container per command. local: runs on the host and is NOT a security boundary.'),
@@ -150,6 +244,55 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Default permission for each capability: allow, ask (owner approval) or deny.'),
+    containment: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(true)
+          .describe('Once a conversation has read untrusted content (web pages, search results), ask before consequential actions even if they are set to allow. Off: taint is still recorded and shown, but nothing is escalated.'),
+        escalate: z
+          .array(z.enum(['fs.read', 'fs.write', 'net.fetch', 'exec', 'message.send', 'memory.write', 'schedule.edit']))
+          .default(['fs.write', 'exec', 'message.send', 'memory.write', 'schedule.edit', 'net.fetch'])
+          .describe('Capabilities that change from allow to ask in a conversation that has read untrusted content. deny always stays deny.'),
+        fetchSeenUrls: z
+          .boolean()
+          .default(true)
+          .describe('In such a conversation, still fetch without asking a URL that a search result or fetched page contained word for word (it carries nothing Ruby composed). URLs you wrote yourself are always allowed.'),
+      })
+      .prefault({})
+      .describe('Prompt-injection containment: untrusted content cannot quietly trigger actions. Lasts until /new starts a fresh conversation.'),
+    web: z
+      .object({
+        allowHosts: z
+          .array(z.string().regex(/^(\*\.)?[a-z0-9.-]+$/i, 'a host name such as example.com or *.example.com'))
+          .default([])
+          .describe('Hosts web_fetch may read without asking when net.fetch is ask, e.g. en.wikipedia.org or *.python.org.'),
+        fetch: z
+          .object({
+            maxBytes: z.number().int().min(10_000).max(50_000_000).default(5_000_000).describe('Largest response body read; longer bodies are cut off at this size.'),
+            timeoutSeconds: z.number().int().min(1).max(120).default(20).describe('Time limit for one fetch, redirects included.'),
+            maxRedirects: z.number().int().min(0).max(10).default(5).describe('Redirects followed; each target is checked again.'),
+          })
+          .prefault({})
+          .describe('web_fetch limits. Private, loopback, link-local and cloud metadata addresses are always refused.'),
+        search: z
+          .object({
+            backend: z
+              .enum(['duckduckgo', 'searxng', 'brave', 'tavily', 'none'])
+              .default('duckduckgo')
+              .describe('duckduckgo: keyless, reads the HTML results page (unofficial, may be rate limited). searxng: your instance. brave, tavily: API with a key. none: no web_search tool.'),
+            searxngUrl: z.string().url().optional().describe('SearXNG base URL, e.g. http://127.0.0.1:8888 (the instance must allow format=json).'),
+            apiKeyEnv: z
+              .string()
+              .optional()
+              .describe('Environment variable (or encrypted secret) holding the brave or tavily API key. Defaults to BRAVE_API_KEY or TAVILY_API_KEY.'),
+            maxResults: z.number().int().min(1).max(20).default(8).describe('Results returned per search.'),
+          })
+          .prefault({})
+          .describe('web_search backend.'),
+      })
+      .prefault({})
+      .describe('web_fetch and web_search (both need net.fetch). Their output is untrusted.'),
     persona: z
       .string()
       .max(4000)
@@ -161,6 +304,15 @@ export const configSchema = z
         host: z.string().default('127.0.0.1').describe('Bind address. Non-loopback requires at least one API key.'),
         port: z.number().int().min(1).max(65535).default(7311).describe('HTTP port.'),
         rateLimitPerMinute: z.number().int().positive().default(120).describe('Requests per minute allowed for each API key (the dashboard polls, so keep this comfortably above 60).'),
+        corsOrigins: z
+          .array(
+            z
+              .string()
+              .url()
+              .refine((o) => { try { return new URL(o).origin === o.replace(/\/+$/, ''); } catch { return false; } }, 'must be an origin like https://chat.example.com (scheme, host and optional port; no path)'),
+          )
+          .default([])
+          .describe('Browser apps allowed to call /v1/chat/completions and /v1/models directly (CORS), e.g. https://chat.example.com. Empty (the default) sends no CORS headers. List exact origins; there is no wildcard.'),
         trustProxy: z.boolean().default(false).describe('Behind your own reverse proxy: take the client IP from X-Forwarded-For. The rightmost entry (the one your proxy appends) is used, so the proxy must append the client address to X-Forwarded-For.'),
         demo: z
           .object({
@@ -207,6 +359,7 @@ export const configSchema = z
       .object({
         maxConcurrent: z.number().int().min(1).max(64).default(4).describe('Tasks that may run at once across all conversations.'),
         pairingTtlMinutes: z.number().int().min(1).max(1440).default(60).describe('How long a pairing code stays valid.'),
+        messagesPerHour: z.number().int().min(1).max(1000).default(20).describe('Messages Ruby may send on its own with send_message per hour, across all chats. Replies and job results are not counted.'),
       })
       .prefault({})
       .describe('Message routing and delivery.'),
@@ -231,6 +384,7 @@ export const configSchema = z
       .object({
         enabled: z.boolean().default(true).describe('Global switch for cron jobs and heartbeats. Off stops all new scheduled runs.'),
         tickSeconds: z.number().int().min(5).max(300).default(30).describe('How often the scheduler checks for due jobs.'),
+        maxAgentJobs: z.number().int().min(0).max(500).default(25).describe('Jobs Ruby may create from chat with the schedule tool (0 turns that off). Jobs in this file do not count.'),
       })
       .prefault({})
       .describe('Scheduled work.'),
@@ -260,13 +414,18 @@ export const configSchema = z
     if (c.dashboard.enabled && !c.api.enabled) {
       ctx.addIssue({ code: 'custom', path: ['dashboard', 'enabled'], message: 'The dashboard is served by the API server: enable api too' });
     }
+    const t = c.media.transcription;
+    if (t.backend === 'openai-compatible' && !t.baseUrl) {
+      ctx.addIssue({ code: 'custom', path: ['media', 'transcription', 'baseUrl'], message: 'openai-compatible transcription needs baseUrl' });
+    }
+    if (t.backend === 'command' && !t.command) {
+      ctx.addIssue({ code: 'custom', path: ['media', 'transcription', 'command'], message: 'command transcription needs command' });
+    }
+    if (c.web.search.backend === 'searxng' && !c.web.search.searxngUrl) {
+      ctx.addIssue({ code: 'custom', path: ['web', 'search', 'searxngUrl'], message: 'The searxng backend needs web.search.searxngUrl' });
+    }
     if (c.channels.signal.enabled && !c.channels.signal.account) {
       ctx.addIssue({ code: 'custom', path: ['channels', 'signal', 'account'], message: "Signal needs the bot's number" });
-    }
-    for (const [i, j] of c.jobs.entries()) {
-      if (j.notify && !['telegram', 'signal', 'discord'].includes(j.notify.channel)) {
-        ctx.addIssue({ code: 'custom', path: ['jobs', i, 'notify', 'channel'], message: 'notify.channel must be telegram, signal or discord' });
-      }
     }
   });
 

@@ -1,11 +1,14 @@
 // CLI argument handling for the owner commands (memory, skills, flags).
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { tempDir } from './helpers.ts';
 import { main } from '../src/cli/main.ts';
 import { MemoryStore } from '../src/memory/index.ts';
+import { createRuby } from '../src/main.ts';
+import { MediaStore } from '../src/media/index.ts';
+import { GatewayStore } from '../src/store/index.ts';
 
 const home = tempDir();
 const saved = { home: process.env.RUBY_HOME, editor: process.env.EDITOR, visual: process.env.VISUAL };
@@ -80,4 +83,54 @@ test('backup and restore round-trip the database, config, memory, skills, artifa
   assert.equal(readFileSync(join(home, 'workspace', 'notes.md'), 'utf8'), 'workspace file');
   const aside = readdirSync(home).find((n) => n.startsWith('pre-restore-'))!;
   assert.equal(readFileSync(join(home, aside, 'artifacts', 'art_1.txt'), 'utf8'), 'changed', 'the replaced data is moved aside, not deleted');
+});
+
+test('backup and restore include the media store, so a pending outbox attachment survives', async () => {
+  const media = new MediaStore(join(home, 'media'), 1_000_000);
+  const ref = media.put({ data: Buffer.from('attachment bytes'), name: 'a.txt', mimeType: 'text/plain' });
+  const ruby = createRuby({ noModel: true, home });
+  try {
+    new GatewayStore(ruby.db).enqueue({ channel: 'telegram', account: 'a', chatId: '1', text: 'here', attachments: [{ path: media.path(ref.id), name: 'a.txt', mimeType: 'text/plain', kind: ref.kind, size: ref.size }] });
+  } finally {
+    ruby.close();
+  }
+  const target = join(tempDir(), 'bk-media');
+  const b = await run('backup', target);
+  assert.equal(b.code, 0, b.err);
+  assert.equal(readFileSync(join(target, 'media', `${ref.id}.bin`), 'utf8'), 'attachment bytes');
+
+  rmSync(join(home, 'media'), { recursive: true });
+  const r = await run('restore', target);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(readFileSync(media.path(ref.id), 'utf8'), 'attachment bytes', 'the restored outbox row still points at an existing file');
+});
+
+test('ruby jobs: add, list, show, pause, edit and delete; config.json jobs stay read-only', async () => {
+  const own = tempDir();
+  process.env.RUBY_HOME = own;
+  try {
+    writeFileSync(join(own, 'config.json'), JSON.stringify({ version: 1, timezone: 'Europe/London', jobs: [{ id: 'brief', kind: 'cron', cron: '0 7 * * 1-5', instructions: 'Morning brief.' }] }));
+    const nowhere = await run('jobs', 'add', '--when', 'in 20 minutes', '--message', 'Stretch');
+    assert.equal(nowhere.code, 1);
+    assert.match(nowhere.err, /no chat to send to.*ruby pair/s);
+    const added = await run('jobs', 'add', '--when', 'every day at 8am', '--instructions', 'Tidy notes', '--name', 'tidy');
+    assert.equal(added.code, 0, added.err);
+    assert.match(added.out, /Added tidy: every day at 08:00, next .* \(Europe\/London, in .*\) \(results kept in history only\)\./);
+    const list = await run('jobs');
+    assert.match(list.out, /^brief\s+enabled\s+config\s+every weekday at 07:00/m);
+    assert.match(list.out, /^tidy\s+enabled\s+cli\s+every day at 08:00/m);
+    assert.match(list.out, /Times are in Europe\/London\./);
+    assert.match((await run('jobs', 'show', 'tidy')).out, /from:\s+added from the cli/);
+    assert.match((await run('jobs', 'pause', 'brief')).out, /Paused brief/);
+    assert.match((await run('jobs', 'list')).out, /^brief\s+PAUSED/m);
+    assert.match((await run('jobs', 'edit', 'tidy', '--when', 'weekdays at 18:30')).out, /Updated tidy: every weekday at 18:30/);
+    const refused = await run('jobs', 'delete', 'brief');
+    assert.equal(refused.code, 1);
+    assert.match(refused.err, /config\.json/);
+    assert.equal((await run('jobs', 'delete', 'tidy')).code, 0);
+    assert.doesNotMatch((await run('jobs')).out, /tidy/);
+    assert.match((await run('jobs', 'help')).out, /ruby jobs add --when/);
+  } finally {
+    process.env.RUBY_HOME = home;
+  }
 });

@@ -170,3 +170,26 @@ function dayMatches(cron: Cron, p: ReturnType<typeof zonedParts>): boolean {
   // Both restricted: either may match (Vixie cron). Otherwise both must (a "*" field matches every day, "*/2" filters).
   return cron.domRestricted && cron.dowRestricted ? dom || dow : dom && dow;
 }
+
+/**
+ * The instant at which the wall clock in `timeZone` reads the given local
+ * time. A local time skipped by a spring-forward jump resolves to the same
+ * wall-clock distance after the jump (02:30 becomes 03:30), and `shifted` is
+ * true; a time repeated by a fall-back resolves to its first instance.
+ */
+export function localToUtc(
+  local: { year: number; month: number; day: number; hour: number; minute: number },
+  timeZone: string,
+): { at: Date; shifted: boolean } {
+  const wall = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute);
+  const offsetAt = (t: number): number => {
+    const p = zonedParts(new Date(t), timeZone);
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - Math.floor(t / 60_000) * 60_000;
+  };
+  // Try the offsets in force a few hours either side; keep the earliest instant whose wall clock matches.
+  const candidates = new Set([offsetAt(wall - 6 * 3_600_000), offsetAt(wall), offsetAt(wall + 6 * 3_600_000)]);
+  const matches = [...candidates].map((o) => wall - o).filter((t) => offsetAt(t) === wall - t).sort((a, b) => a - b);
+  if (matches.length) return { at: new Date(matches[0]!), shifted: false };
+  // In a gap: use the offset from before the jump, which lands after it.
+  return { at: new Date(wall - offsetAt(wall - 6 * 3_600_000)), shifted: true };
+}

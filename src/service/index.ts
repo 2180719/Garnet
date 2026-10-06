@@ -1,5 +1,12 @@
 export {
   planService,
+  resolveService,
+  installedServices,
+  serviceHomeOf,
+  checkServiceName,
+  systemdUnit,
+  launchdLabel,
+  SERVICE_NAME_RE,
   installService,
   uninstallService,
   serviceStatus,
@@ -11,4 +18,5 @@ export {
   type ServiceDeps,
   type CommandResult,
   type ServiceResult,
+  type InstalledService,
 } from './service.ts';

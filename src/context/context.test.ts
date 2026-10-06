@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent, SessionEventPayload } from '../contracts/index.ts';
-import { extractSummary, messagesFromEvents, planCompaction, systemPrompt } from './index.ts';
+import { assistantName, extractSummary, messagesFromEvents, planCompaction, systemPrompt, turnTime } from './index.ts';
 
 const ev = (seq: number, p: SessionEventPayload): SessionEvent => ({ ...p, sessionId: 's', seq, at: '' });
 const usage = { inputTokens: 1, outputTokens: 1, cacheReadTokens: null, cacheWriteTokens: null };
@@ -25,6 +25,16 @@ test('the system prompt is deterministic', () => {
   const a = systemPrompt({ workspace: '/w' });
   assert.equal(a, systemPrompt({ workspace: '/w' }));
   assert.match(systemPrompt({ workspace: '/w', persona: 'Be terse.' }), /Be terse\./);
+});
+
+test('the system prompt uses the configured assistant name, defaulting to Ruby', () => {
+  assert.match(systemPrompt({ workspace: '/w' }), /^You are Ruby, /);
+  const persona = '<!-- ruby setup -->\nYour name is Molty.\n<!-- /ruby setup -->\n\nBe terse.';
+  assert.match(systemPrompt({ workspace: '/w', persona }), /^You are Molty, /);
+  assert.match(systemPrompt({ workspace: '/w', persona, name: 'Nova' }), /^You are Nova, /);
+  assert.equal(assistantName('Your name is  .'), 'Ruby');
+  assert.equal(assistantName('Your name is Juniper.\nYour name is Other.'), 'Juniper');
+  assert.equal(assistantName('My friend said your name is Bob.'), 'Ruby');
 });
 
 test('bound blocks are dropped only from turns that precede a checkpoint', () => {
@@ -87,4 +97,23 @@ test('extractSummary takes the text after an unclosed tag', () => {
   assert.equal(extractSummary('<summary>\nfacts'), 'facts');
   assert.equal(extractSummary('x <summary>a</summary> y'), 'a');
   assert.equal(extractSummary('plain'), 'plain');
+});
+
+test('with a time zone, each user message carries its send time; the system prompt stays the same per session', () => {
+  const at = (seq: number, iso: string, p: SessionEventPayload): SessionEvent => ({ ...p, sessionId: 's', seq, at: iso });
+  const events = [
+    at(1, '2026-10-06T13:03:59Z', { type: 'user_message', message: { role: 'user', content: [{ type: 'text', text: 'what day is it?' }] }, source: 't' }),
+    at(2, '2026-10-06T13:04:00Z', { type: 'assistant_message', message: { role: 'assistant', content: [{ type: 'text', text: 'Tuesday.' }] }, stopReason: 'end_turn', usage, model: 'm' }),
+    at(3, '2026-10-07T08:00:00Z', { type: 'user_message', message: { role: 'user', content: [{ type: 'text', text: 'and now?' }] }, source: 't' }),
+  ];
+  const msgs = messagesFromEvents(events, { timeZone: 'Europe/London' });
+  assert.deepEqual(msgs[0]!.content[0], { type: 'text', text: '[Tue 2026-10-06 14:03 Europe/London, UTC+01:00]' });
+  assert.deepEqual(msgs[0]!.content[1], { type: 'text', text: 'what day is it?' });
+  assert.deepEqual(msgs[2]!.content[0], { type: 'text', text: '[Wed 2026-10-07 09:00 Europe/London, UTC+01:00]' });
+  assert.deepEqual(messagesFromEvents(events, { timeZone: 'Europe/London' }), msgs, 'derived from stored timestamps, so stable');
+  assert.equal(messagesFromEvents(events)[0]!.content.length, 1, 'off without a time zone');
+  assert.equal(turnTime('2026-01-06T13:03:00Z', 'America/New_York'), '[Tue 2026-01-06 08:03 America/New_York, UTC-05:00]');
+  assert.equal(turnTime('2026-01-06T13:03:00Z', 'UTC'), '[Tue 2026-01-06 13:03 UTC, UTC+00:00]');
+  assert.match(systemPrompt({ workspace: '/w', timestamps: true }), /starts with the time it was sent/);
+  assert.doesNotMatch(systemPrompt({ workspace: '/w' }), /time it was sent/);
 });

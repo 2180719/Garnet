@@ -6,9 +6,10 @@ import {
   type ToolContext,
   type ToolOutput,
   type ToolResult,
+  type UntrustedMark,
 } from '../contracts/index.ts';
 import { z, type ZodType } from 'zod';
-import type { ApprovalDecision, Approver, Policy } from '../policy/index.ts';
+import { describeSources, type ApprovalDecision, type Approver, type Decision, type Policy } from '../policy/index.ts';
 import type { ToolRegistry } from './registry.ts';
 import type { ArtifactStore } from './artifacts.ts';
 import { repairCall } from './repair.ts';
@@ -68,8 +69,13 @@ export class ToolExecutor {
       const issues = parsed.error.issues.map((i) => describeIssue(i, tool.input)).join('; ');
       return fail('invalid_input', `Invalid arguments for ${tool.name}: ${issues}. Fix the arguments and call again.`);
     }
-    const input = parsed.data;
     const fullCtx: ToolContext = { ...ctx, callId: call.id };
+    let input = parsed.data;
+    try {
+      if (tool.bind) input = tool.bind(input, fullCtx);
+    } catch (e) {
+      return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+    }
 
     let targets: string[];
     try {
@@ -78,22 +84,42 @@ export class ToolExecutor {
       return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
     }
 
-    const decision = this.deps.policy.check(tool.capability);
+    // Every capability this call needs is checked (with the session's taint); the strictest verdict wins.
+    const rank = { allow: 0, ask: 1, deny: 2 } as const;
+    let capability = tool.capability;
+    let decision: Decision = { verdict: 'allow', reason: 'no permission needed' };
+    let taint: readonly string[] | undefined;
+    try {
+      for (const cap of tool.capabilitiesFor ? tool.capabilitiesFor(input) : [tool.capability]) {
+        const d = this.deps.policy.check(cap, { targets, taint: ctx.taint });
+        if (d.taint) taint = d.taint;
+        if (rank[d.verdict] > rank[decision.verdict] || (d.verdict === decision.verdict && cap === 'exec')) [decision, capability] = [d, cap];
+      }
+    } catch (e) {
+      return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+    }
     if (decision.verdict === 'deny') {
       return fail('denied', `Not permitted: ${decision.reason}. Do not retry; tell the owner if this is needed.`);
     }
     if (decision.verdict === 'ask') {
+      let summary: string;
+      try {
+        // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
+        summary = tool.summarize ? tool.summarize(input, fullCtx) : describe(tool.name, input, targets, ctx.workspace, capability === 'exec' ? 10_000 : 120);
+      } catch (e) {
+        return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+      }
       let answer: ApprovalDecision;
       try {
         answer = await this.deps.approver({
           sessionId: ctx.sessionId,
           callId: call.id,
           tool: tool.name,
-          capability: tool.capability,
+          capability,
           targets,
           input,
-          // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
-          summary: describe(tool.name, input, targets, ctx.workspace, tool.capability === 'exec' ? 10_000 : 120),
+          summary: summary + taintNote(taint),
+          ...(taint ? { taint } : {}),
         });
       } catch (e) {
         return fail('internal', `Could not ask the owner for approval: ${errorMessage(e)}. The operation did not run.`);
@@ -105,16 +131,20 @@ export class ToolExecutor {
     if (ctx.signal.aborted) return fail('cancelled', 'Cancelled before the tool started.');
     const timeout = AbortSignal.timeout(tool.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const signal = AbortSignal.any([ctx.signal, timeout]);
+    // From here the tool has run: an untrusted tool's result taints the session even when it failed
+    // (an error page or a server's error message is outside content too).
+    const defaultMark = tool.untrustedOutput ? { untrusted: { source: tool.name } } : {};
     let output: ToolOutput;
     try {
       output = await raceAbort(tool.run(input, { ...fullCtx, signal }), signal);
     } catch (e) {
-      if (timeout.aborted && !ctx.signal.aborted) return fail('timeout', `${tool.name} timed out.`);
-      if (ctx.signal.aborted) return fail('cancelled', `${tool.name} was cancelled.`);
-      return fail(isRubyError(e) ? e.category : 'tool_failed', errorMessage(e));
+      if (timeout.aborted && !ctx.signal.aborted) return { ...fail('timeout', `${tool.name} timed out.`), ...defaultMark };
+      if (ctx.signal.aborted) return { ...fail('cancelled', `${tool.name} was cancelled.`), ...defaultMark };
+      return { ...fail(isRubyError(e) ? e.category : 'tool_failed', errorMessage(e)), ...defaultMark };
     }
     const { content, truncated, artifactId } = this.limit(output.content, tool.maxOutputChars ?? DEFAULT_MAX_OUTPUT, ctx.sessionId);
-    const meta = artifactId ? { artifactId } : {};
+    const untrusted = output.untrusted ?? defaultMark.untrusted;
+    const meta = { ...(artifactId ? { artifactId } : {}), ...(untrusted ? { untrusted: boundMark(untrusted) } : {}) };
     // A tool that ran but reports a failed operation is an error result, never a success.
     if (output.error) return { ...fail(output.error, content), ...meta };
     return { status: 'ok', content, truncated, durationMs: Date.now() - started, ...meta };
@@ -153,6 +183,18 @@ function describeIssue(issue: z.core.$ZodIssue, schema: ZodType): string {
     return `unknown argument${issue.keys.length > 1 ? 's' : ''} ${names}${where}.${allowed}`;
   }
   return `${issue.path.join('.') || 'input'}: ${issue.message}`;
+}
+
+/** Keeps the recorded mark small: it is stored in the event log with every result. */
+function boundMark(mark: UntrustedMark): UntrustedMark {
+  const source = mark.source.length > 300 ? `${mark.source.slice(0, 300)}…` : mark.source;
+  return mark.links?.length ? { source, links: mark.links.slice(0, 300) } : { source };
+}
+
+/** Appended to an approval summary when untrusted content is why the owner is asked. */
+function taintNote(taint: readonly string[] | undefined): string {
+  if (!taint?.length) return '';
+  return `\n⚠ This conversation has read untrusted content (${describeSources(taint)}). It may be trying to steer Ruby: approve only if you asked for this.`;
 }
 
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

@@ -7,7 +7,7 @@ import { errorMessage, type ToolCallBlock, type ToolResult } from '../../contrac
 import type { Ruby } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
-import { executeCommand } from './actions.ts';
+import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
 import { messageText, parseSlash } from './commands.ts';
 import { describeCall } from './render.ts';
 import { formatTokens, sanitize, truncate } from './text.ts';
@@ -33,6 +33,7 @@ export class PlainChat {
   private sessionId: string;
   private readonly always = new Set<string>();
   private readonly toolLog: { call: ToolCallBlock; result: ToolResult }[] = [];
+  private readonly attachments: PendingFile[] = [];
 
   constructor(options: PlainOptions) {
     this.o = options;
@@ -52,12 +53,14 @@ export class PlainChat {
 
   readonly approve = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
     const key = req.capability === 'exec' ? `${req.tool}|${JSON.stringify(req.input)}` : `${req.tool}|${req.capability}`;
-    if (this.always.has(`${this.sessionId}|${key}`)) return 'approved';
+    const tainted = Boolean(req.taint?.length);
+    // An operation escalated by untrusted content is never covered by an earlier "always".
+    if (!tainted && this.always.has(`${this.sessionId}|${key}`)) return 'approved';
     // stderr is usually the owner's terminal: show control characters instead of sending them.
     this.o.err(`\n  ? ${sanitize(req.tool)} wants ${req.capability}${req.targets.length ? ` on ${sanitize(req.targets.join(', '))}` : ''}\n`);
     for (const line of sanitize(req.summary).split('\n')) this.o.err(`    | ${line}\n`);
-    const answer = ((await this.ask('  allow? [y]es once, [a]lways in this chat, [N]o: ')) ?? '').trim().toLowerCase();
-    if (answer === 'a' || answer === 'always') {
+    const answer = ((await this.ask(tainted ? '  allow? [y]es once, [N]o: ' : '  allow? [y]es once, [a]lways in this chat, [N]o: ')) ?? '').trim().toLowerCase();
+    if (!tainted && (answer === 'a' || answer === 'always')) {
       this.always.add(`${this.sessionId}|${key}`);
       return 'approved';
     }
@@ -84,7 +87,7 @@ export class PlainChat {
         const slash = parseSlash(raw);
         if (slash) {
           const result = await executeCommand(slash, {
-            ruby, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog,
+            ruby, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog, attachments: this.attachments,
             switchTo: (id) => (this.sessionId = id),
           });
           if (result.effect === 'exit') return 0;
@@ -118,10 +121,17 @@ export class PlainChat {
         this.o.err(`  [retrying in ${Math.round(e.delayMs / 1000)}s: ${sanitize(e.message)}]\n`);
       } else if (e.type === 'compacting') {
         this.o.err('  [compacting older turns]\n');
+      } else if (e.type === 'tainted') {
+        this.o.err(`  [untrusted content read: ${sanitize(e.source)}; risky actions now ask first until /new]\n`);
       }
     };
     try {
-      const task = await this.o.ruby.agent.run(this.sessionId, text, { signal: this.current.signal, onEvent, source: 'cli' });
+      const prepared = await prepareTurn(this.o.ruby, this.sessionId, text, this.attachments.splice(0), this.current.signal);
+      if ('reply' in prepared) {
+        this.o.out(`${prepared.reply}\n`);
+        return;
+      }
+      const task = await this.o.ruby.agent.run(this.sessionId, prepared.turn, { signal: this.current.signal, onEvent, source: 'cli' });
       if (wroteText) this.o.out('\n');
       const u = task.usage;
       this.o.err(`  [${task.status}${task.reason ? `: ${sanitize(task.reason)}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens]\n\n`);

@@ -6,9 +6,11 @@ import type {
   BetaToolUnion,
   BetaUsage,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages';
+import { attachmentText } from '../contracts/index.ts';
 import type {
   ChatMessage,
   ContentBlock,
+  MediaCapabilities,
   ErrorCategory,
   ModelAdapter,
   ModelEvent,
@@ -29,9 +31,20 @@ export type AnthropicOptions = {
   effort?: Effort | undefined;
   /** Server-side refusal fallback ("default" routing). On unless disabled. */
   fallbacks?: boolean;
+  /** Send images as image blocks. Every current Claude model has vision; on unless disabled. */
+  vision?: boolean | undefined;
+  /** Send PDFs as document blocks. On unless disabled. */
+  pdf?: boolean | undefined;
   /** Custom fetch (tests, proxies). */
   fetch?: typeof fetch;
 };
+
+/**
+ * The API takes images up to 5 MB each as base64 (so about 3.75 MB of raw
+ * bytes) and requests up to 32 MB, which bounds an inline PDF.
+ */
+const MAX_IMAGE_BYTES = 3_750_000;
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
 
 /**
  * Anthropic Messages API adapter (official SDK, streaming).
@@ -42,13 +55,19 @@ export type AnthropicOptions = {
  */
 export class AnthropicModel implements ModelAdapter {
   readonly id: string;
-  readonly capabilities = { streaming: true, promptCaching: true, contextWindow: 1_000_000 };
+  readonly capabilities: { streaming: boolean; promptCaching: boolean; contextWindow: number; media: MediaCapabilities };
   private readonly client: Anthropic;
   private readonly options: AnthropicOptions;
 
   constructor(options: AnthropicOptions) {
     this.options = options;
     this.id = `${PROVIDER}:${options.model}`;
+    this.capabilities = {
+      streaming: true,
+      promptCaching: true,
+      contextWindow: 1_000_000,
+      media: { images: options.vision !== false, pdf: options.pdf !== false, maxImageBytes: MAX_IMAGE_BYTES, maxPdfBytes: MAX_PDF_BYTES },
+    };
     // The runtime owns retries so it can avoid duplicating streamed output.
     this.client = new Anthropic({
       apiKey: options.apiKey,
@@ -122,6 +141,17 @@ function toBlockParam(block: ContentBlock): BetaContentBlockParam | null {
     case 'provider':
       // Opaque blocks from this provider are replayed unchanged.
       return block.provider === PROVIDER ? (block.data as BetaContentBlockParam) : null;
+    case 'attachment': {
+      // The runtime sets `data` only for what this model reads natively; anything else is described in text.
+      const a = block.attachment;
+      if (block.data && a.kind === 'image') {
+        return { type: 'image', source: { type: 'base64', media_type: a.mimeType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data: block.data } };
+      }
+      if (block.data && a.mimeType === 'application/pdf') {
+        return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: block.data }, ...(a.name ? { title: a.name } : {}) };
+      }
+      return { type: 'text', text: attachmentText(block) };
+    }
   }
 }
 

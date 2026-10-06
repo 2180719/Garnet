@@ -1,5 +1,5 @@
-export { configSchema, CONFIG_VERSION, type RubyConfig, type Permission, type JobConfig } from './schema.ts';
-export { parseCron, nextRun, zonedParts, validTimeZone, type Cron } from './cron.ts';
+export { configSchema, jobSchema, NOTIFY_CHANNELS, CONFIG_VERSION, type RubyConfig, type Permission, type JobConfig } from './schema.ts';
+export { parseCron, nextRun, zonedParts, validTimeZone, localToUtc, type Cron } from './cron.ts';
 export { loadConfig, writeConfig, parseConfig, defaultConfig, rubyHome, pathsFor, type Paths, type Loaded } from './load.ts';
 export { redact } from './redact.ts';
 export { loadEnvFile, parseEnv, removeFromEnvFile, setInEnvFile, secretNames } from './env.ts';

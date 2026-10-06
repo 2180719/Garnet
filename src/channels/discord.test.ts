@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { tempDir } from '../../test/helpers.ts';
 import { RubyError, type InboundMessage } from '../contracts/index.ts';
 import { DiscordChannel } from './index.ts';
 
@@ -66,7 +69,7 @@ function setup(handlers: Record<string, Handler> = {}) {
       method: init?.method ?? 'GET',
       path,
       headers: init?.headers as Record<string, string>,
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      body: init?.body instanceof FormData ? init.body : init?.body ? JSON.parse(String(init.body)) : undefined,
     };
     reqs.push(req);
     const h = handlers[`${req.method} ${path.replace(/\/\d+/g, '/:id')}`];
@@ -371,4 +374,44 @@ test('stop is prompt and idempotent, even before READY', async () => {
   await t.channel.stop();
   await t.channel.stop();
   assert.equal(t.ws().closedWith, 1000);
+});
+
+test('attachments and stickers in DMs are passed on; CDN downloads only', async () => {
+  const t = setup({ 'GET https://cdn.discordapp.com/attachments/:id/:id/voice-message.ogg': () => new Response(new Uint8Array([9, 9]), { status: 200 }) });
+  const got: InboundMessage[] = [];
+  await connect(t, async (m) => void got.push(m));
+  const a = { id: '1', filename: 'voice-message.ogg', content_type: 'audio/ogg', size: 2, url: 'https://cdn.discordapp.com/attachments/1/2/voice-message.ogg', duration_secs: 3.5 };
+  t.ws().push({ op: 0, s: 2, t: 'MESSAGE_CREATE', d: msg({ content: '', attachments: [a] }) });
+  t.ws().push({ op: 0, s: 3, t: 'MESSAGE_CREATE', d: msg({ id: '556', content: '', sticker_items: [{ id: '1' }] }) });
+  await until(() => got.length === 2, 'two messages');
+  assert.equal(got[0]!.text, '');
+  assert.deepEqual(got[0]!.attachments, [{ kind: 'audio', ref: a.url, name: 'voice-message.ogg', mimeType: 'audio/ogg', size: 2, durationSec: 3.5 }]);
+  assert.equal(got[1]!.unsupported, 'sticker');
+  const file = await t.channel.fetchAttachment(a.url, { maxBytes: 10, signal: new AbortController().signal });
+  assert.deepEqual(file.data, new Uint8Array([9, 9]));
+  assert.equal(t.reqs.at(-1)!.headers.authorization, undefined, 'the bot token is never sent to the CDN');
+  await assert.rejects(t.channel.fetchAttachment('https://169.254.169.254/latest', { maxBytes: 10, signal: new AbortController().signal }), /not a Discord CDN URL/);
+  await assert.rejects(t.channel.fetchAttachment('http://cdn.discordapp.com/x', { maxBytes: 10, signal: new AbortController().signal }), /not a Discord CDN URL/);
+  await assert.rejects(t.channel.fetchAttachment(a.url, { maxBytes: 1, signal: new AbortController().signal }), /too large/);
+  await t.channel.stop();
+});
+
+test('send with a file: multipart payload_json plus files[0], caption as content', async () => {
+  const t = setup();
+  const path = join(tempDir(), 'r.pdf');
+  writeFileSync(path, '%PDF-1.4');
+  const r = await t.channel.send({ deliveryId: 'd1', channel: 'discord', account: 'default', chatId: '777', text: 'The report', attachments: [{ path, name: 'r.pdf', mimeType: 'application/pdf', kind: 'document', size: 8 }] });
+  assert.equal(r.status, 'sent');
+  const req = t.reqs.at(-1)!;
+  assert.equal(req.path, '/channels/777/messages');
+  assert.equal(req.headers['content-type'], undefined, 'fetch sets the multipart boundary itself');
+  const form = req.body as FormData;
+  const payload = JSON.parse(String(form.get('payload_json')));
+  assert.equal(payload.content, 'The report');
+  assert.deepEqual(payload.attachments, [{ id: 0, filename: 'r.pdf' }]);
+  assert.deepEqual(payload.allowed_mentions, { parse: [] });
+  assert.equal((form.get('files[0]') as File).name, 'r.pdf');
+  const big = await t.channel.send({ deliveryId: 'd2', channel: 'discord', account: 'default', chatId: '777', text: '', attachments: [{ path, name: 'big.bin', mimeType: 'application/octet-stream', kind: 'file', size: 11 * 1024 * 1024 }] });
+  assert.equal(big.status, 'failed');
+  assert.match((big as { error: string }).error, /up to 10 MB/);
 });

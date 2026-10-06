@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChatMessage, ModelEvent } from '../contracts/index.ts';
 import { OpenAICompatibleModel } from './index.ts';
+import { clampOutputTokens } from './openai-compatible.ts';
 
 const chunk = (o: object) => `data: ${JSON.stringify(o)}\n\n`;
 const delta = (d: object, finish: string | null = null) => chunk({ choices: [{ index: 0, delta: d, finish_reason: finish }] });
@@ -47,7 +48,12 @@ async function collect(m: OpenAICompatibleModel, messages: ChatMessage[] = [user
 test('id and capabilities', () => {
   const m = new OpenAICompatibleModel({ baseUrl: 'http://x/v1', model: 'm' });
   assert.equal(m.id, 'openai-compatible:m');
-  assert.deepEqual(m.capabilities, { streaming: true, promptCaching: false, contextWindow: 128_000 });
+  assert.deepEqual(m.capabilities, {
+    streaming: true,
+    promptCaching: false,
+    contextWindow: 128_000,
+    media: { images: false, pdf: false, maxImageBytes: 20 * 1024 * 1024, maxPdfBytes: 20 * 1024 * 1024 },
+  });
 });
 
 test('streams text with usage, subtracting cached tokens, across mid-line chunk splits', async () => {
@@ -279,4 +285,78 @@ test('abort maps to cancelled', async () => {
   const ac2 = new AbortController();
   const slow = model(() => new Response(new ReadableStream({ pull() { ac2.abort(); throw new DOMException('aborted', 'AbortError'); } })));
   assert.equal(last(await collect(slow, undefined, { signal: ac2.signal })).category, 'cancelled');
+});
+
+test('output cap field: max_completion_tokens for OpenAI and Azure OpenAI, max_tokens elsewhere, overridable', async () => {
+  const ok = () => sseResponse([delta({}, 'stop'), 'data: [DONE]\n\n']);
+  const field = async (extra: object) => {
+    const seen: Seen[] = [];
+    await collect(model(ok, seen, extra));
+    const b = seen[0]!.body;
+    return { completion: b.max_completion_tokens, tokens: b.max_tokens };
+  };
+  assert.deepEqual(await field({ baseUrl: 'https://api.openai.com/v1' }), { completion: 100, tokens: undefined });
+  assert.deepEqual(await field({ baseUrl: 'https://myres.openai.azure.com/openai/v1' }), { completion: 100, tokens: undefined });
+  assert.deepEqual(await field({ baseUrl: 'https://openrouter.ai/api/v1' }), { completion: undefined, tokens: 100 });
+  assert.deepEqual(await field({ baseUrl: 'http://127.0.0.1:8000/v1', tokenParam: 'max_completion_tokens' }), { completion: 100, tokens: undefined });
+  assert.deepEqual(await field({ baseUrl: 'https://api.openai.com/v1', tokenParam: 'max_tokens' }), { completion: undefined, tokens: 100 });
+});
+
+test('output cap is clamped so prompt + output fits the context window', async () => {
+  const seen: Seen[] = [];
+  const ok = () => sseResponse([delta({}, 'stop'), 'data: [DONE]\n\n']);
+  const m = model(ok, seen, { baseUrl: 'http://127.0.0.1:8000/v1', contextWindow: 8192 });
+  const big = { system: 's', messages: [user('x'.repeat(9000))], tools: [], maxOutputTokens: 32_000 };
+  for await (const e of m.stream(big)) void e;
+  const cap = seen[0]!.body.max_tokens as number;
+  // ~9000 chars of prompt is at most ~3000 tokens; the rest of the 8192 window is left for output.
+  assert.ok(cap < 8192 - 3000 && cap > 4000, `cap ${cap}`);
+  // A cap that already fits is left alone.
+  for await (const e of m.stream({ ...big, messages: [user('hi')], maxOutputTokens: 2000 })) void e;
+  assert.equal(seen[1]!.body.max_tokens, 2000);
+});
+
+test('clampOutputTokens keeps a usable minimum and never exceeds the request', () => {
+  assert.equal(clampOutputTokens(32_000, 128_000, 30_000), 32_000);
+  assert.equal(clampOutputTokens(32_000, 8192, 3000), 7192);
+  assert.equal(clampOutputTokens(32_000, 8192, 30_000), 1024); // nearly full: still ask for something
+  assert.equal(clampOutputTokens(500, 8192, 30_000), 500);
+});
+
+test('attachments: image_url and file parts with data URLs, in order; text-only turns stay plain strings', async () => {
+  const seen: Seen[] = [];
+  const ok = () => sseResponse([delta({ content: 'ok' }, 'stop'), 'data: [DONE]\n\n']);
+  const m = model(ok, seen, { vision: true, pdf: true });
+  assert.equal(m.capabilities.media.images, true);
+  const img = { id: 'med_1', kind: 'image' as const, mimeType: 'image/jpeg', size: 3, name: 'p.jpg' };
+  const pdf = { id: 'med_2', kind: 'document' as const, mimeType: 'application/pdf', size: 3, name: 'r.pdf' };
+  await collect(m, [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'compare' },
+        { type: 'attachment', attachment: img, data: '/9j/' },
+        { type: 'attachment', attachment: pdf, data: 'JVBE' },
+        { type: 'attachment', attachment: { ...img, id: 'med_9' } },
+      ],
+    },
+  ]);
+  assert.deepEqual(seen[0]!.body.messages[1].content, [
+    { type: 'text', text: 'compare' },
+    { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,/9j/' } },
+    { type: 'file', file: { filename: 'r.pdf', file_data: 'data:application/pdf;base64,JVBE' } },
+    { type: 'text', text: '[Image attached: "p.jpg", image/jpeg, 3 B; id med_9]' },
+  ]);
+  await collect(model(ok, seen), [{ role: 'user', content: [{ type: 'text', text: 'a' }, { type: 'attachment', attachment: { id: 'med_3', kind: 'audio', mimeType: 'audio/ogg', size: 3 }, text: 'Transcript:\nb' }] }]);
+  assert.equal(seen[1]!.body.messages[1].content, 'a\n\n[Audio attached: audio/ogg, 3 B; id med_3]\nTranscript:\nb');
+});
+
+test('inline files count as a flat estimate, not their base64 length, when clamping output', async () => {
+  const seen: Seen[] = [];
+  const ok = () => sseResponse([delta({}, 'stop'), 'data: [DONE]\n\n']);
+  const m = model(ok, seen, { baseUrl: 'http://127.0.0.1:8000/v1', contextWindow: 32_000, vision: true });
+  const img = { id: 'med_1', kind: 'image' as const, mimeType: 'image/jpeg', size: 3_000_000, name: 'p.jpg' };
+  const request = { system: 's', messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'look' }, { type: 'attachment' as const, attachment: img, data: 'A'.repeat(4_000_000) }] }], tools: [], maxOutputTokens: 8000 };
+  for await (const e of m.stream(request)) void e;
+  assert.equal(seen[0]!.body.max_tokens, 8000);
 });

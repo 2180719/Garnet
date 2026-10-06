@@ -10,7 +10,7 @@ import { CONFIG_VERSION, parseConfig, parseEnv, rubyHome, type RubyConfig } from
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
-import { defaultEntry, planService, serviceStatus, type CommandResult } from '../service/index.ts';
+import { defaultEntry, installedServices, resolveService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
 
@@ -151,6 +151,20 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     }
     if (ch.signal.enabled) add('channels', 'ok', `signal · ${ch.signal.account} via ${ch.signal.baseUrl} (keep signal-cli daemon running)`);
 
+    // Web
+    const web = config.web.search;
+    if (config.permissions['net.fetch'] === 'deny') add('web', 'info', 'Web access is off (permissions.net.fetch = deny): no web_fetch or web_search');
+    else if (web.backend === 'brave' || web.backend === 'tavily') {
+      const keyName = web.apiKeyEnv ?? (web.backend === 'brave' ? 'BRAVE_API_KEY' : 'TAVILY_API_KEY');
+      const loc = where(keyName);
+      if (loc) add('web', 'ok', `web_search · ${web.backend} · key ${keyName} (${loc})`);
+      else add('web', 'fail', `web.search.backend is ${web.backend} but ${keyName} is not set`, missingFix(keyName));
+    } else if (web.backend === 'none') add('web', 'info', 'web_fetch only (web.search.backend = none)');
+    else add('web', 'ok', `web_search · ${web.backend}${web.backend === 'searxng' ? ` at ${web.searxngUrl}` : ' (keyless, unofficial; may be rate limited)'}`);
+    if (config.permissions['net.fetch'] !== 'deny' && !config.containment.enabled) {
+      add('web', 'warn', 'Untrusted-content containment is off: a web page could steer Ruby into actions you set to allow', 'Set containment.enabled = true in config.json.');
+    }
+
     // Sandbox
     if (config.permissions.exec === 'deny') add('sandbox', 'info', 'Shell commands are off (permissions.exec = deny), so no sandbox is needed');
     else if (config.sandbox.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker.');
@@ -162,14 +176,25 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
   }
 
   // Service
-  const plan = planService({ platform: d.platform, home: d.home, userHome: d.userHome, nodePath: process.execPath, entry: d.entry });
-  if ('unsupported' in plan) add('service', 'info', plan.unsupported);
-  else if (!existsSync(plan.path)) add('service', 'info', 'Background service not installed', 'Run `ruby service install` (or `ruby setup`) to keep Ruby running.');
+  // The service for THIS RUBY_HOME: an instance installed with --name is found by the home it runs.
+  const svc = { platform: d.platform, userHome: d.userHome };
+  const resolved = resolveService({ ...svc, home: d.home, nodePath: process.execPath, entry: d.entry });
+  if ('unsupported' in resolved) add('service', 'info', resolved.unsupported);
   else {
-    const status = await serviceStatus(plan, { run: d.run });
-    const stale = readFileSync(plan.path, 'utf8') !== plan.contents;
-    if (status.ok) add('service', stale ? 'warn' : 'ok', `Service running (${plan.path})${stale ? ', but its file is out of date (Ruby or Node moved?)' : ''}`, stale ? 'Run `ruby service install` to rewrite it.' : undefined);
-    else add('service', 'warn', `Service installed but not running (${plan.path})`, plan.platform === 'systemd' ? 'See `journalctl --user -u ruby -e`, then `systemctl --user restart ruby`.' : `See ${join(d.home, 'logs')}, then \`ruby service install\`.`);
+    const { plan, conflict } = resolved;
+    const name = /(?:ruby-|agent\.)([a-z0-9-]+)\.(?:service|plist)$/.exec(plan.path)?.[1];
+    const flag = name ? ` --name ${name}` : '';
+    const others = installedServices(svc).filter((s) => s.home !== d.home).length;
+    const alongside = others ? ` (${others} other Ruby instance${others > 1 ? 's' : ''} installed; \`ruby service list\`)` : '';
+    if (conflict || !existsSync(plan.path)) {
+      add('service', 'info', `Background service not installed for this RUBY_HOME${alongside}`, conflict ? 'Another RUBY_HOME uses the default service name: run `ruby service install --name <name>`.' : 'Run `ruby service install` (or `ruby setup`) to keep Ruby running.');
+    } else {
+      const status = await serviceStatus(plan, { run: d.run });
+      const stale = readFileSync(plan.path, 'utf8') !== plan.contents;
+      const unit = plan.path.split('/').pop()!;
+      if (status.ok) add('service', stale ? 'warn' : 'ok', `Service running (${plan.path})${stale ? ', but its file is out of date (Ruby or Node moved?)' : ''}${alongside}`, stale ? `Run \`ruby service install${flag}\` to rewrite it.` : undefined);
+      else add('service', 'warn', `Service installed but not running (${plan.path})`, plan.platform === 'systemd' ? `See \`journalctl --user -u ${unit} -e\`, then \`ruby service restart${flag}\`.` : `See ${join(d.home, 'logs')}, then \`ruby service install${flag}\`.`);
+    }
   }
   return out;
 }

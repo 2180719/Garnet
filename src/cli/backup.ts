@@ -5,8 +5,8 @@ import { createRuby, VERSION } from '../main.ts';
 import { backupDb } from '../store/index.ts';
 import type { Io } from './main.ts';
 
-// Artifacts hold large tool outputs that session history refers to by id.
-const DIRS = ['memory', 'skills', 'artifacts', 'workspace'];
+// Artifacts hold large tool outputs and media holds attachments (inbound files, pending outbox files) that session history and the outbox refer to by id or path.
+const DIRS = ['memory', 'skills', 'artifacts', 'media', 'workspace'];
 
 export function backup(args: string[], io: Io): number {
   const ruby = createRuby({ noModel: true });
@@ -47,7 +47,7 @@ export function restore(args: string[], io: Io): number {
   ruby.close();
   const aside = join(home, `pre-restore-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   mkdirSync(aside, { recursive: true, mode: 0o700 });
-  for (const name of ['ruby.db', 'ruby.db-wal', 'ruby.db-shm', 'config.json', 'secrets', 'memory', 'skills', 'artifacts']) {
+  for (const name of ['ruby.db', 'ruby.db-wal', 'ruby.db-shm', 'config.json', 'secrets', 'memory', 'skills', 'artifacts', 'media']) {
     if (existsSync(join(home, name))) renameSync(join(home, name), join(aside, name));
   }
   if (existsSync(workspace)) renameSync(workspace, join(aside, 'workspace'));

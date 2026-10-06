@@ -245,3 +245,28 @@ test('a registered tool absent from the frozen tool list is refused', async () =
   assert.match(refused.content, /not available in this session/);
   assert.equal((await run(['list_files'])).status, 'ok');
 });
+
+test('capabilitiesFor: the strictest verdict across the call’s capabilities wins; none means no permission check', async () => {
+  const registry = new ToolRegistry();
+  const asked: { capability: string; summary: string }[] = [];
+  const tool: ToolDefinition<{ caps: ('schedule.edit' | 'exec' | 'net.fetch')[] }> = {
+    name: 'multi', version: 1, description: 'test', idempotent: true, capability: 'schedule.edit',
+    input: z.object({ caps: z.array(z.enum(['schedule.edit', 'exec', 'net.fetch'])) }),
+    capabilitiesFor: (i) => i.caps,
+    summarize: (i) => `needs ${i.caps.join('+')}`,
+    run: async () => ({ content: 'ran' }),
+  };
+  registry.register(tool);
+  const policy = new Policy({ ...defaultConfig().permissions, 'schedule.edit': 'allow', exec: 'ask', 'net.fetch': 'deny' });
+  const executor = new ToolExecutor({ registry, policy, approver: async (r) => (asked.push(r), 'approved') });
+  const run = (caps: string[]) =>
+    executor.execute({ type: 'tool_call', id: 'x', name: 'multi', input: { caps } }, { sessionId: 's', workspace: '/tmp', memoryNamespace: 'default', signal: new AbortController().signal });
+  assert.equal((await run(['schedule.edit'])).status, 'ok');
+  assert.equal(asked.length, 0, 'allow: no question');
+  assert.equal((await run(['schedule.edit', 'exec'])).status, 'ok');
+  assert.deepEqual(asked.map((a) => [a.capability, a.summary]), [['exec', 'needs schedule.edit+exec']], 'ask wins over allow; the tool summary is shown');
+  const denied = await run(['schedule.edit', 'net.fetch', 'exec']);
+  assert.equal(denied.status === 'error' && denied.category, 'denied');
+  assert.match(denied.content, /net\.fetch is set to "deny"/);
+  assert.equal((await run([])).status, 'ok', 'an empty list needs no permission');
+});

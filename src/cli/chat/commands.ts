@@ -15,6 +15,7 @@ export const COMMANDS: readonly SlashCommand[] = [
   { name: 'resume', args: '<session-id>', description: 'Switch to an earlier session' },
   { name: 'model', description: 'Show the model and its context window' },
   { name: 'usage', aliases: ['cost'], description: 'Token usage for this session and the budget per task' },
+  { name: 'attach', args: '<path>', description: 'Attach a local file (image, PDF, audio, text) to your next message' },
   { name: 'compact', description: 'Summarize older turns now to free context' },
   { name: 'expand', args: '[n]', description: 'Show the full output of the last (or nth-last) tool call' },
   { name: 'clear', description: 'Clear the screen (the session continues)' },

@@ -1,4 +1,4 @@
-import { newId, nowIso, type InboundMessage, type OutboundMessage } from '../contracts/index.ts';
+import { newId, nowIso, type InboundAttachment, type InboundMessage, type OutboundAttachment, type OutboundMessage } from '../contracts/index.ts';
 import { transaction, type Db } from './db.ts';
 
 export type InboxStatus = 'pending' | 'processing' | 'done' | 'ignored' | 'interrupted';
@@ -36,6 +36,7 @@ const inboxFrom = (r: Row): InboxRow => ({
   sender: { id: r.sender_id as string, ...(r.sender_name ? { displayName: r.sender_name as string } : {}) },
   isPrivate: r.is_private === 1,
   text: r.text as string,
+  ...(r.attachments ? { attachments: JSON.parse(r.attachments as string) as InboundAttachment[] } : {}),
   receivedAt: r.received_at as string,
   status: r.status as InboxStatus,
   sessionId: (r.session_id as string | null) ?? null,
@@ -49,6 +50,7 @@ const outboxFrom = (r: Row): OutboxRow => ({
   chatId: r.chat_id as string,
   text: r.text as string,
   ...(r.reply_to ? { replyToExternalId: r.reply_to as string } : {}),
+  ...(r.attachments ? { attachments: JSON.parse(r.attachments as string) as OutboundAttachment[] } : {}),
   status: r.status as OutboxStatus,
   attempts: r.attempts as number,
   nextAttemptAt: r.next_attempt_at as string,
@@ -70,10 +72,22 @@ export class GatewayStore {
     const id = newId('in');
     const result = this.db
       .prepare(
-        `INSERT OR IGNORE INTO inbox (id, channel, account, chat_id, external_id, sender_id, sender_name, is_private, text, received_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        `INSERT OR IGNORE INTO inbox (id, channel, account, chat_id, external_id, sender_id, sender_name, is_private, text, attachments, received_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       )
-      .run(id, m.channel, m.account, m.chatId, m.externalId, m.sender.id, m.sender.displayName ?? null, m.isPrivate ? 1 : 0, m.text, m.receivedAt);
+      .run(
+        id,
+        m.channel,
+        m.account,
+        m.chatId,
+        m.externalId,
+        m.sender.id,
+        m.sender.displayName ?? null,
+        m.isPrivate ? 1 : 0,
+        m.text,
+        m.attachments?.length ? JSON.stringify(m.attachments) : null,
+        m.receivedAt,
+      );
     return result.changes === 0 ? null : this.inbox(id)!;
   }
 
@@ -84,6 +98,14 @@ export class GatewayStore {
 
   inboxByStatus(status: InboxStatus): InboxRow[] {
     return (this.db.prepare('SELECT * FROM inbox WHERE status = ? ORDER BY received_at, rowid').all(status) as Row[]).map(inboxFrom);
+  }
+
+  /** The chat a session last heard from (where a file it sends should go), if any. */
+  lastChatForSession(sessionId: string): { channel: string; account: string; chatId: string } | undefined {
+    const r = this.db
+      .prepare('SELECT channel, account, chat_id FROM inbox WHERE session_id = ? ORDER BY received_at DESC, rowid DESC LIMIT 1')
+      .get(sessionId) as Row | undefined;
+    return r && { channel: r.channel as string, account: r.account as string, chatId: r.chat_id as string };
   }
 
   setInbox(id: string, status: InboxStatus, link: { sessionId?: string; taskId?: string } = {}): void {
@@ -97,10 +119,10 @@ export class GatewayStore {
     const at = nowIso();
     this.db
       .prepare(
-        `INSERT INTO outbox (delivery_id, channel, account, chat_id, text, reply_to, status, next_attempt_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        `INSERT INTO outbox (delivery_id, channel, account, chat_id, text, reply_to, attachments, status, next_attempt_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
       )
-      .run(deliveryId, m.channel, m.account, m.chatId, m.text, m.replyToExternalId ?? null, at, at);
+      .run(deliveryId, m.channel, m.account, m.chatId, m.text, m.replyToExternalId ?? null, m.attachments?.length ? JSON.stringify(m.attachments) : null, at, at);
     return this.outbox(deliveryId)!;
   }
 
@@ -259,6 +281,36 @@ export class GatewayStore {
     };
   }
 
+  /**
+   * Private chats with paired identities, most recently active first: one row
+   * per chat. The chat ID comes from real inbound traffic, which matters where
+   * it differs from the sender ID (Discord DMs).
+   */
+  pairedChats(): (ChatRef & { displayName: string | null; lastAt: string })[] {
+    const rows = this.db
+      .prepare(
+        `SELECT i.channel, i.account, i.chat_id, i.sender_id, d.display_name, MAX(i.received_at) AS last_at, MAX(i.rowid) AS last_row
+         FROM inbox i JOIN identities d ON d.channel = i.channel AND d.sender_id = i.sender_id
+         WHERE i.is_private = 1
+         GROUP BY i.channel, i.account, i.chat_id, i.sender_id
+         ORDER BY last_at DESC, last_row DESC`,
+      )
+      .all() as Row[];
+    return rows.map((r) => ({ ...chatFrom(r), displayName: (r.display_name as string | null) ?? null, lastAt: r.last_at as string }));
+  }
+
+  /** Records a message Ruby sent on its own (send_message). */
+  recordSent(m: { sessionId: string; channel: string; account: string; chatId: string; deliveryId: string }): void {
+    this.db
+      .prepare('INSERT INTO sent_messages (sent_at, session_id, channel, account, chat_id, delivery_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(nowIso(), m.sessionId, m.channel, m.account, m.chatId, m.deliveryId);
+  }
+
+  /** How many messages Ruby sent on its own since `since` (ISO). */
+  sentSince(since: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM sent_messages WHERE sent_at > ?').get(since) as { n: number }).n;
+  }
+
   /** Forgets a conversation binding. The session and its events stay; the next message starts a fresh session. */
   removeConversation(key: string): boolean {
     return this.db.prepare('DELETE FROM conversations WHERE key = ?').run(key).changes > 0;
@@ -274,4 +326,14 @@ const pairingFrom = (r: Row): PairingCode => ({
   chatId: r.chat_id as string,
   createdAt: r.created_at as string,
   expiresAt: r.expires_at as string,
+});
+
+/** A private chat on a channel, with the paired sender who uses it. */
+export type ChatRef = { channel: string; account: string; chatId: string; senderId: string };
+
+const chatFrom = (r: Row): ChatRef => ({
+  channel: r.channel as string,
+  account: r.account as string,
+  chatId: r.chat_id as string,
+  senderId: r.sender_id as string,
 });

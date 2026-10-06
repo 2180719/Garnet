@@ -27,6 +27,16 @@ test('invalid config lists every problem', () => {
   }
 });
 
+test('timezone and api.corsOrigins are validated; CORS is off by default', () => {
+  assert.deepEqual(defaultConfig().api.corsOrigins, []);
+  assert.equal(defaultConfig().timezone, undefined);
+  const c = parseConfig({ version: CONFIG_VERSION, timezone: 'Europe/London', api: { corsOrigins: ['https://chat.example.com', 'http://localhost:3000'] } });
+  assert.equal(c.timezone, 'Europe/London');
+  for (const bad of [{ timezone: 'Mars/Olympus' }, { api: { corsOrigins: ['*'] } }, { api: { corsOrigins: ['https://chat.example.com/app'] } }]) {
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, ...bad }), (e) => isRubyError(e, 'config'));
+  }
+});
+
 test('config without a version is migrated and backed up', () => {
   const home = tempDir();
   writeFileSync(join(home, 'config.json'), JSON.stringify({ persona: 'Be brief.' }));
@@ -106,4 +116,48 @@ test('setInEnvFile replaces, de-duplicates and appends, keeps other lines, quote
   assert.deepEqual([...parseEnv(text)], [['A', 'new'], ['B', '2'], ['C', '/path with space/key']]);
   assert.throws(() => setInEnvFile(home, { 'BAD-NAME': 'x' }), /Invalid variable name/);
   assert.throws(() => setInEnvFile(home, { A: 'two\nlines' }), /single line/);
+});
+
+test('owner timezone, one-shot, message and script jobs validate', () => {
+  assert.equal(parseConfig({ version: CONFIG_VERSION, timezone: 'Europe/London' }).timezone, 'Europe/London');
+  assert.throws(() => parseConfig({ version: CONFIG_VERSION, timezone: 'Mars/Olympus' }), /timezone: Unknown time zone/);
+  const c = defaultConfig();
+  assert.equal(c.timezone, undefined, 'unset means the host zone');
+  assert.equal(c.scheduler.maxAgentJobs, 25);
+  assert.equal(c.gateway.messagesPerHour, 20);
+  const jobs = (j: object) => parseConfig({ version: CONFIG_VERSION, jobs: [{ id: 'j', ...j }] }).jobs[0]!;
+  assert.equal(jobs({ kind: 'once', at: '2026-12-24T09:00:00+01:00', message: 'Hi' }).at, '2026-12-24T09:00:00+01:00');
+  assert.equal(jobs({ kind: 'heartbeat', everyMinutes: 30, script: { command: 'date' } }).script?.timeoutSeconds, 60);
+  assert.throws(() => jobs({ kind: 'once', message: 'Hi' }), /once jobs need `at`/);
+  assert.throws(() => jobs({ kind: 'once', at: '2026-12-24 09:00', message: 'Hi' }), /at/);
+  assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30 }), /exactly one of instructions, message or script/);
+  assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30, message: 'a', instructions: 'b' }), /exactly one of/);
+  assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30, message: 'a', notify: { channel: 'irc', chatId: '1' } }), /notify.channel must be/);
+});
+
+test('media: safe defaults, transcription validation, protected host commands, secret names', async () => {
+  const { isProtectedConfigPath, secretNames } = await import('./index.ts');
+  const c = defaultConfig();
+  assert.equal(c.media.enabled, true);
+  assert.equal(c.media.transcription.backend, 'none');
+  assert.equal(c.media.pdfText.command, undefined);
+  assert.equal(c.media.maxBytes, 20 * 1024 * 1024);
+  assert.equal(c.model.vision, undefined, 'decided per provider');
+  const bad = (media: object) => {
+    try {
+      parseConfig({ version: CONFIG_VERSION, media });
+      return [];
+    } catch (e) {
+      return (e as { detail?: { problems?: string[] } }).detail?.problems ?? [];
+    }
+  };
+  assert.ok(bad({ transcription: { backend: 'openai-compatible' } }).some((p) => p.startsWith('media.transcription.baseUrl')));
+  assert.ok(bad({ transcription: { backend: 'command' } }).some((p) => p.startsWith('media.transcription.command')));
+  assert.ok(bad({ transcription: { backend: 'none', path: 'no-slash' } }).some((p) => p.startsWith('media.transcription.path')));
+  assert.deepEqual(bad({ transcription: { backend: 'command', command: ['whisper-cli', '-f', '{input}'] } }), []);
+  for (const p of ['media.transcription.command', 'media.transcription.baseUrl', 'media.transcription.apiKeyEnv', 'media.pdfText.command']) assert.ok(isProtectedConfigPath(p), p);
+  assert.ok(!isProtectedConfigPath('media.maxInContext'));
+  const withKey = parseConfig({ version: CONFIG_VERSION, media: { transcription: { backend: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY' } } });
+  assert.ok(secretNames(withKey).includes('GROQ_API_KEY'));
+  assert.ok(!secretNames(c).includes('GROQ_API_KEY'));
 });
