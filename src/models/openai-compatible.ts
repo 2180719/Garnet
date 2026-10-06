@@ -22,6 +22,12 @@ export type OpenAICompatibleOptions = {
   /** Custom fetch (tests, proxies). */
   fetch?: typeof fetch | undefined;
   extraHeaders?: Record<string, string> | undefined;
+  /**
+   * Which request field carries the output cap. Defaults by host: `max_completion_tokens` for
+   * OpenAI and Azure OpenAI (their reasoning models reject `max_tokens`), `max_tokens` elsewhere
+   * (OpenRouter, Ollama, llama.cpp, LM Studio and older vLLM only document `max_tokens`).
+   */
+  tokenParam?: 'max_tokens' | 'max_completion_tokens' | undefined;
 };
 
 type WireMessage =
@@ -43,11 +49,13 @@ export class OpenAICompatibleModel implements ModelAdapter {
   readonly id: string;
   readonly capabilities: { streaming: boolean; promptCaching: boolean; contextWindow: number };
   private readonly options: OpenAICompatibleOptions;
+  private readonly tokenParam: 'max_tokens' | 'max_completion_tokens';
 
   constructor(options: OpenAICompatibleOptions) {
     this.options = options;
     this.id = `${PROVIDER}:${options.model}`;
     this.capabilities = { streaming: true, promptCaching: false, contextWindow: options.contextWindow ?? 128_000 };
+    this.tokenParam = options.tokenParam ?? (isOpenAI(options.baseUrl) ? 'max_completion_tokens' : 'max_tokens');
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
@@ -59,19 +67,18 @@ export class OpenAICompatibleModel implements ModelAdapter {
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
     try {
+      const messages = toWireMessages(request);
+      const tools = request.tools.length
+        ? request.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } }))
+        : undefined;
       const body: Record<string, unknown> = {
         model: o.model,
         stream: true,
         stream_options: { include_usage: true },
-        max_tokens: request.maxOutputTokens,
-        messages: toWireMessages(request),
+        [this.tokenParam]: clampOutputTokens(request.maxOutputTokens, this.capabilities.contextWindow, JSON.stringify(messages).length + JSON.stringify(tools ?? []).length),
+        messages,
       };
-      if (request.tools.length) {
-        body.tools = request.tools.map((t) => ({
-          type: 'function',
-          function: { name: t.name, description: t.description, parameters: t.inputSchema },
-        }));
-      }
+      if (tools) body.tools = tools;
       const url = `${o.baseUrl.replace(/\/+$/, '')}/chat/completions`;
       const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(o.extraHeaders ?? {}) };
       if (o.apiKey) headers.Authorization = `Bearer ${o.apiKey}`;
@@ -346,6 +353,30 @@ function retryAfter(headers: Headers): number | undefined {
   if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
   const date = Date.parse(value);
   return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+/** Below this, a clamped request is unlikely to be useful; send it anyway and let the server decide. */
+const MIN_OUTPUT_TOKENS = 1024;
+
+/**
+ * Caps the output so prompt + output fits the context window. Servers such as vLLM and
+ * llama.cpp reject a request whose prompt plus max_tokens exceeds the model length, and the
+ * default cap (32k) is larger than many local models' whole window. The prompt is estimated
+ * generously (3 characters per token, an overestimate for most text) so the sum stays inside.
+ */
+export function clampOutputTokens(requested: number, contextWindow: number, promptChars: number): number {
+  const room = contextWindow - Math.ceil(promptChars / 3);
+  return Math.max(1, Math.min(requested, Math.max(MIN_OUTPUT_TOKENS, room)));
+}
+
+/** OpenAI proper and Azure OpenAI, which want max_completion_tokens. */
+function isOpenAI(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === 'api.openai.com' || host.endsWith('.openai.azure.com');
+  } catch {
+    return false;
+  }
 }
 
 function isOpenRouter(baseUrl: string): boolean {
