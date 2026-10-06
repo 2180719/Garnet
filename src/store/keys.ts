@@ -72,6 +72,17 @@ export class KeyStore {
       .run(nowIso(), entry.keyId, entry.ip, entry.method, entry.path, entry.status);
   }
 
+  /** Deletes audit rows older than `before` (ISO time), then all but the newest `maxRows`. Returns rows deleted. */
+  pruneAudit(before: string, maxRows: number): number {
+    let n = Number(this.db.prepare('DELETE FROM api_audit WHERE at < ?').run(before).changes);
+    n += Number(
+      this.db
+        .prepare('DELETE FROM api_audit WHERE rowid IN (SELECT rowid FROM api_audit ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)')
+        .run(maxRows).changes,
+    );
+    return n;
+  }
+
   auditLog(limit = 100): { at: string; keyId: string | null; ip: string | null; method: string; path: string; status: number }[] {
     const rows = this.db.prepare('SELECT * FROM api_audit ORDER BY at DESC LIMIT ?').all(limit) as Record<string, string | number | null>[];
     return rows.map((r) => ({

@@ -10,6 +10,7 @@ import {
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
+import { AMBIGUOUS_STATUSES, mayHaveReachedServer } from './delivery.ts';
 
 export type TelegramOptions = {
   token: string;
@@ -36,11 +37,14 @@ type TgUpdate = { update_id: number; message?: TgMessage };
 class TelegramApiError extends Error {
   readonly status: number;
   readonly retryAfterSec: number | undefined;
-  constructor(status: number, message: string, retryAfterSec?: number) {
+  /** The request may have been carried out (timeout, reset, unreadable success response). */
+  readonly maybeDelivered: boolean;
+  constructor(status: number, message: string, retryAfterSec?: number, maybeDelivered = false) {
     super(message);
     this.name = 'TelegramApiError';
     this.status = status;
     this.retryAfterSec = retryAfterSec;
+    this.maybeDelivered = maybeDelivered;
   }
 }
 
@@ -172,8 +176,10 @@ export class TelegramChannel implements ChannelAdapter {
         externalIds.push(String(sent.message_id));
         this.#lastSuccessAt = Date.now();
       } catch (e) {
-        const err = e instanceof TelegramApiError ? e : new TelegramApiError(0, errorMessage(e));
+        const err = e instanceof TelegramApiError ? e : new TelegramApiError(0, this.#redact(errorMessage(e)), undefined, true);
         const partial = externalIds.length ? ` (after sending ${externalIds.length} of ${chunks.length} chunks)` : '';
+        // Resending after an ambiguous failure could duplicate the message; the gateway leaves it for the owner.
+        if (err.maybeDelivered) return { status: 'uncertain', error: `${err.message}${partial}` };
         const retryable = err.status === 0 || err.status === 429 || err.status >= 500;
         return {
           status: 'failed',
@@ -269,7 +275,7 @@ export class TelegramChannel implements ChannelAdapter {
         signal,
       });
     } catch (e) {
-      throw new TelegramApiError(0, `Telegram ${method} request failed: ${this.#redact(errorMessage(e))}`);
+      throw new TelegramApiError(0, `Telegram ${method} request failed: ${this.#redact(errorMessage(e))}`, undefined, mayHaveReachedServer(e));
     }
     let payload: { ok?: boolean; result?: unknown; description?: string; parameters?: { retry_after?: number } } = {};
     try {
@@ -279,6 +285,8 @@ export class TelegramChannel implements ChannelAdapter {
     }
     if (res.ok && payload.ok) return payload.result;
     const description = this.#redact(payload.description ?? res.statusText ?? '');
-    throw new TelegramApiError(res.status, `Telegram ${method} failed with ${res.status}${description ? `: ${description}` : ''}`, payload.parameters?.retry_after);
+    // A success status with an unreadable body, or a gateway error, may hide a request that was carried out.
+    const maybeDelivered = res.ok || AMBIGUOUS_STATUSES.has(res.status);
+    throw new TelegramApiError(res.status, `Telegram ${method} failed with ${res.status}${description ? `: ${description}` : ''}`, payload.parameters?.retry_after, maybeDelivered);
   }
 }

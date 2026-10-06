@@ -51,6 +51,8 @@ export class Gateway {
   private timer: NodeJS.Timeout | null = null;
   private delivering: Promise<void> | null = null;
   private stopping = false;
+  /** Set once every channel has started and the inbox backlog is queued; until then inbound messages are only persisted. */
+  private started = false;
   private readonly log: LogFn;
   private readonly now: () => Date;
 
@@ -61,13 +63,21 @@ export class Gateway {
     this.now = deps.now ?? (() => new Date());
   }
 
-  /** Recovers from a previous run, starts every channel (failing fast on bad credentials), then processes queued work. */
+  /**
+   * Recovers from a previous run, starts every channel (failing fast on bad
+   * credentials), then processes queued work. Messages that arrive while
+   * channels are starting are persisted but dispatched only afterwards, together
+   * with the backlog and in arrival order, so a new message never overtakes an
+   * older one in the same conversation.
+   */
   async start(): Promise<void> {
     this.recover();
     for (const c of this.channels.values()) {
       await c.start((m) => this.receive(m));
       this.log('info', `${c.channel}:${c.account} connected`);
     }
+    // Synchronous from here to the end of the loop: no receive() can interleave.
+    this.started = true;
     for (const row of this.deps.store.inboxByStatus('pending')) this.dispatch(row);
     this.timer = setInterval(() => void this.deliver(), this.deps.deliveryIntervalMs ?? 1000);
     this.timer.unref();
@@ -92,7 +102,7 @@ export class Gateway {
   async receive(message: InboundMessage): Promise<void> {
     const row = this.deps.store.receive(message);
     if (!row) return; // duplicate delivery
-    if (!this.stopping) this.dispatch(row);
+    if (this.started && !this.stopping) this.dispatch(row);
   }
 
   /** Approves a pairing code and greets the newly paired sender. */
@@ -115,8 +125,19 @@ export class Gateway {
       const sessionId = this.sessionFor(conversationKey, options.source);
       const before = this.deps.sessions.lastSeq(sessionId);
       const agent = this.deps.agentFor?.(conversationKey) ?? this.deps.agent;
-      const task = await agent.run(sessionId, text, options);
-      return { task, text: this.replyText(sessionId, before, task), sessionId };
+      // Registered like channel tasks, so /stop in the conversation and stop() can cancel it.
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      if (options.signal?.aborted) controller.abort();
+      else options.signal?.addEventListener('abort', onAbort, { once: true });
+      this.active.set(conversationKey, controller);
+      try {
+        const task = await agent.run(sessionId, text, { ...options, signal: controller.signal });
+        return { task, text: this.replyText(sessionId, before, task), sessionId };
+      } finally {
+        options.signal?.removeEventListener('abort', onAbort);
+        if (this.active.get(conversationKey) === controller) this.active.delete(conversationKey);
+      }
     });
   }
 

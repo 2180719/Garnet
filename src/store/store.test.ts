@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import { unknownUsage } from '../contracts/index.ts';
-import { openDb, SessionStore } from './index.ts';
+import { KeyStore, openDb, SessionStore } from './index.ts';
 
 test('events append in order and survive reopening', () => {
   const file = join(tempDir(), 'ruby.db');
@@ -30,4 +30,15 @@ test('unfinished tasks are found for recovery', () => {
   store.updateTask(done);
   const open = store.createTask(s.id, unknownUsage());
   assert.deepEqual(store.unfinishedTasks().map((t) => t.id), [open.id]);
+});
+
+test('the API audit log is pruned by age and by row count', () => {
+  const db = openDb(join(tempDir(), 'ruby.db'));
+  const keys = new KeyStore(db);
+  const insert = db.prepare('INSERT INTO api_audit (at, key_id, ip, method, path, status) VALUES (?, NULL, NULL, ?, ?, 200)');
+  insert.run('2020-01-01T00:00:00.000Z', 'GET', '/old');
+  for (let i = 0; i < 5; i++) insert.run(`2026-10-0${i + 1}T00:00:00.000Z`, 'GET', `/p${i}`);
+  assert.equal(keys.pruneAudit('2026-01-01T00:00:00.000Z', 3), 3);
+  assert.deepEqual(keys.auditLog().map((a) => a.path), ['/p4', '/p3', '/p2']);
+  db.close();
 });

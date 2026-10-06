@@ -15,6 +15,7 @@ import {
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
+import { AMBIGUOUS_STATUSES, mayHaveReachedServer } from './delivery.ts';
 
 export type DiscordOptions = {
   token: string;
@@ -69,11 +70,14 @@ type DiscordMessage = {
 class DiscordApiError extends Error {
   readonly status: number;
   readonly retryAfterSec: number | undefined;
-  constructor(status: number, message: string, retryAfterSec?: number) {
+  /** The request may have been carried out (timeout, reset, unreadable success response). */
+  readonly maybeDelivered: boolean;
+  constructor(status: number, message: string, retryAfterSec?: number, maybeDelivered = false) {
     super(message);
     this.name = 'DiscordApiError';
     this.status = status;
     this.retryAfterSec = retryAfterSec;
+    this.maybeDelivered = maybeDelivered;
   }
 }
 
@@ -221,12 +225,14 @@ export class DiscordChannel implements ChannelAdapter {
       }
       try {
         const sent = (await this.#api('POST', `/channels/${message.chatId}/messages`, body, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { id?: string } | null;
-        if (typeof sent?.id !== 'string') throw new DiscordApiError(502, 'Discord returned no message id');
+        if (typeof sent?.id !== 'string') throw new DiscordApiError(502, 'Discord returned no message id', undefined, true);
         externalIds.push(sent.id);
         this.#lastSuccessAt = Date.now();
       } catch (e) {
-        const err = e instanceof DiscordApiError ? e : new DiscordApiError(0, this.#redact(errorMessage(e)));
+        const err = e instanceof DiscordApiError ? e : new DiscordApiError(0, this.#redact(errorMessage(e)), undefined, true);
         const partial = externalIds.length ? ` (after sending ${externalIds.length} of ${chunks.length} chunks)` : '';
+        // Resending after an ambiguous failure could duplicate the message; the gateway leaves it for the owner.
+        if (err.maybeDelivered) return { status: 'uncertain', error: `${err.message}${partial}` };
         const retryable = err.status === 0 || err.status === 429 || err.status >= 500;
         return {
           status: 'failed',
@@ -472,7 +478,7 @@ export class DiscordChannel implements ChannelAdapter {
         signal,
       });
     } catch (e) {
-      throw new DiscordApiError(0, `Discord ${label} request failed: ${this.#redact(errorMessage(e))}`);
+      throw new DiscordApiError(0, `Discord ${label} request failed: ${this.#redact(errorMessage(e))}`, undefined, mayHaveReachedServer(e));
     }
     let payload: { message?: string; retry_after?: number } & Record<string, unknown> = {};
     try {
@@ -488,6 +494,6 @@ export class DiscordChannel implements ChannelAdapter {
       if (Number.isFinite(header) && header >= 0) retryAfter = header;
     }
     const description = this.#redact(typeof payload.message === 'string' ? payload.message : (res.statusText ?? ''));
-    throw new DiscordApiError(res.status, `Discord ${label} failed with ${res.status}${description ? `: ${description}` : ''}`, retryAfter);
+    throw new DiscordApiError(res.status, `Discord ${label} failed with ${res.status}${description ? `: ${description}` : ''}`, retryAfter, AMBIGUOUS_STATUSES.has(res.status));
   }
 }
