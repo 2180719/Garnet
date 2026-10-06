@@ -7,7 +7,7 @@ import type { Scope } from './keys.ts';
  */
 export interface AdminBackend {
   overview(): unknown;
-  getConfig(): { config: unknown; schema: unknown };
+  getConfig(): { config: unknown; schema: unknown; protectedPaths: readonly string[] };
   putConfig(raw: unknown): { restartRequired: boolean };
   approvals(): unknown;
   decideApproval(code: string, decision: 'approved' | 'denied'): Promise<unknown>;
@@ -77,7 +77,7 @@ function pick<K extends string>(query: URLSearchParams, names: K[]): Partial<Rec
   return out;
 }
 
-/** Route table for /api/*. Reads need `read`; changes need `admin`. */
+/** Route table for /api/*. Reads need `read`; changes need `admin`, except recording a harmless easter egg (see below). */
 export function adminRoutes(b: AdminBackend): AdminRoute[] {
   const r = (method: string, pattern: RegExp, scope: Scope, handle: Handler): AdminRoute => ({ method, pattern, scope, handle });
   // Matched against the decoded path, so IDs with characters like @ work.
@@ -129,6 +129,8 @@ export function adminRoutes(b: AdminBackend): AdminRoute[] {
     r('DELETE', new RegExp(`^/api/conversations/${NAME}$`), 'admin', ({ params }) => ({ removed: b.unlinkConversation(params[0]!) })),
     r('DELETE', new RegExp(`^/api/pairing/${NAME}$`), 'admin', ({ params }) => ({ removed: b.denyPairing(params[0]!) })),
     r('GET', /^\/api\/achievements$/, 'read', () => b.achievements()),
+    // Deliberate exception to "changes need admin": easter eggs are cosmetic, cannot unlock earned achievements,
+    // and the dashboard fires them for read-only keys too.
     r('POST', new RegExp(`^/api/achievements/${NAME}/unlock$`), 'read', ({ params }) => ({ unlocked: b.unlockEasterEgg(params[0]!) })),
   ];
 }

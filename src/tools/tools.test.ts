@@ -160,3 +160,14 @@ test('file tools never write or read through symlinks that leave the workspace',
   assert.equal(r.status === 'error' && r.category, 'denied');
   assert.equal((await call('list_files', { path: 'out' })).status, 'error');
 });
+
+test('a registered tool absent from the frozen tool list is refused', async () => {
+  const { registry, workspace } = setup();
+  const executor = new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'approved' });
+  const run = (allowedTools: string[]) =>
+    executor.execute({ type: 'tool_call', id: 'c', name: 'list_files', input: {} }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal, allowedTools });
+  const refused = await run(['read_file']);
+  assert.equal(refused.status, 'error');
+  assert.match(refused.content, /not available in this session/);
+  assert.equal((await run(['list_files'])).status, 'ok');
+});

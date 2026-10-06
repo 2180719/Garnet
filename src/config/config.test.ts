@@ -56,6 +56,21 @@ test('redact hides secrets but keeps env var names', () => {
   assert.equal(out.note, 'key [redacted] here');
 });
 
+test('redact hides Ruby API keys in strings', () => {
+  const key = `ruby_${'a1B2c3D4'}_${'x'.repeat(32)}`;
+  assert.equal(redact(`using ${key} now`), 'using [redacted] now');
+});
+
+test('protected config paths', async () => {
+  const { isProtectedConfigPath, changedProtectedPaths } = await import('./index.ts');
+  assert.ok(isProtectedConfigPath('permissions.exec'));
+  assert.ok(isProtectedConfigPath('channels.telegram.tokenEnv'));
+  assert.ok(isProtectedConfigPath('model.apiKeyEnv'));
+  assert.ok(!isProtectedConfigPath('persona'));
+  assert.ok(!isProtectedConfigPath('api.rateLimitPerMinute'));
+  assert.deepEqual(changedProtectedPaths({ a: 1, model: { baseUrl: 'x' } }, { a: 2, model: { baseUrl: 'y' } }), ['model.baseUrl']);
+});
+
 test('env file loads without overriding existing variables', async () => {
   const { loadEnvFile } = await import('./index.ts');
   const home = tempDir();

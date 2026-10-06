@@ -57,6 +57,10 @@ export class ToolExecutor {
       return fail('invalid_input', `Unknown tool "${call.name}". Available tools: ${this.deps.registry.names().join(', ')}.`);
     }
 
+    if (ctx.allowedTools && !ctx.allowedTools.includes(tool.name)) {
+      return fail('invalid_input', `Tool "${tool.name}" is not available in this session. Available tools: ${ctx.allowedTools.join(', ')}.`);
+    }
+
     const parsed = tool.input.safeParse(call.input);
     if (!parsed.success) {
       const issues = parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ');

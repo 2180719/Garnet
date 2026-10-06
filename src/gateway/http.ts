@@ -178,7 +178,11 @@ export class ApiServer {
       this.require(ctx, 'read');
       const id = events[1]!;
       if (!this.deps.sessions.getSession(id)) throw new HttpError(404, 'No such session.');
-      return send(res, 200, { events: this.deps.sessions.events(id, Number(url.searchParams.get('after') ?? 0)) });
+      const after = Number(url.searchParams.get('after') ?? 0);
+      // Sanitized view (no thinking, no frozen prompt) for read keys; raw events only for admin without a backend.
+      if (this.deps.admin) return send(res, 200, this.deps.admin.sessionEvents(id, after, 200));
+      this.require(ctx, 'admin');
+      return send(res, 200, { events: this.deps.sessions.events(id, after) });
     }
     // Match per decoded segment so encoded characters (e.g. %40) work but an encoded "/" cannot split a segment.
     let decoded: string;

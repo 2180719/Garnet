@@ -182,10 +182,15 @@ function jobAgents(ruby: Ruby): Map<string, Agent> {
   return agents;
 }
 
-/** Starts the long-running service: gateway, channels and (if enabled) the HTTP API. */
+/** Wraps a logger so every message is redacted before it is written. */
+export function redactingLog(log: LogFn): LogFn {
+  return (level, message) => log(level, redact(message));
+}
+
 /** Wires the gateway and scheduler without starting anything. `deliver` is false for short-lived CLI processes. */
-export function buildService(ruby: Ruby, log: LogFn, channels: ChannelAdapter[], deliver: boolean): { gateway: Gateway; scheduler: Scheduler; channels: ChannelAdapter[] } {
+export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter[], deliver: boolean): { gateway: Gateway; scheduler: Scheduler; channels: ChannelAdapter[] } {
   const { config } = ruby;
+  const log = redactingLog(rawLog);
   const agents = jobAgents(ruby);
   const gateway = new Gateway({
     store: ruby.gatewayStore,
@@ -198,7 +203,7 @@ export function buildService(ruby: Ruby, log: LogFn, channels: ChannelAdapter[],
     routes: config.routes,
     pairingTtlMinutes: config.gateway.pairingTtlMinutes,
     deliveryEnabled: deliver,
-    log: (level, message) => log(level, redact(message)),
+    log,
   });
   const scheduler = new Scheduler({
     jobs: config.jobs,
@@ -218,8 +223,9 @@ export function buildService(ruby: Ruby, log: LogFn, channels: ChannelAdapter[],
 }
 
 /** Starts the long-running service: gateway, channels, scheduler and (if enabled) the HTTP API. */
-export async function startService(ruby: Ruby, log: LogFn, overrides: { channels?: ChannelAdapter[] } = {}): Promise<Service> {
+export async function startService(ruby: Ruby, rawLog: LogFn, overrides: { channels?: ChannelAdapter[] } = {}): Promise<Service> {
   const { config } = ruby;
+  const log = redactingLog(rawLog);
   const { gateway, scheduler, channels } = buildService(ruby, log, overrides.channels ?? createChannels(config, ruby.secret), true);
   let api: ApiServer | null = null;
   try {

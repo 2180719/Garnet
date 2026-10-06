@@ -1,7 +1,7 @@
 // Part of the composition root: implements the dashboard/admin API on top of
 // every module. Keeps the gateway free of memory, skills and scheduler imports.
 import { Achievements, type Stats } from './achievements/index.ts';
-import { configSchema, parseConfig, redact, writeConfig } from './config/index.ts';
+import { changedProtectedPaths, configSchema, loadConfig, PROTECTED_CONFIG_PATHS, parseConfig, redact, writeConfig } from './config/index.ts';
 import { RubyError, type ContentBlock, type SessionEvent } from './contracts/index.ts';
 import { approvePairing, type AdminBackend, type Gateway, type Scope } from './gateway/index.ts';
 import { isMemoryFile } from './memory/index.ts';
@@ -86,9 +86,18 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
       scheduler: { enabled: ruby.config.scheduler.enabled, jobs: ruby.config.jobs.length },
       api: { host: ruby.config.api.host, port: ruby.config.api.port },
     }),
-    getConfig: () => ({ config: ruby.config, schema: configSchema.toJSONSchema({ io: 'input', unrepresentable: 'any' }) }),
+    // The file, not the startup config: after a PUT the page must show what was saved.
+    getConfig: () => ({
+      config: loadConfig(ruby.paths.home).config,
+      schema: configSchema.toJSONSchema({ io: 'input', unrepresentable: 'any' }),
+      protectedPaths: PROTECTED_CONFIG_PATHS,
+    }),
     putConfig: (raw) => {
       const parsed = parseConfig(raw); // throws a config error listing every problem
+      const changed = changedProtectedPaths(loadConfig(ruby.paths.home).config, parsed);
+      if (changed.length > 0) {
+        throw new RubyError('denied', `These settings can only be changed with the CLI (ruby config), not over the API: ${changed.join(', ')}.`, { paths: changed });
+      }
       writeConfig(ruby.paths.home, parsed);
       return { restartRequired: true };
     },

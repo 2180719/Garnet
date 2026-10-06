@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { tempDir } from './helpers.ts';
@@ -192,4 +192,48 @@ test('routing is readable with read scope; unlinking and denying need admin', as
   assert.equal(((await (await s.call('DELETE', '/api/conversations/telegram%3Amain%3A1', s.admin)).json()) as any).removed, false);
   assert.equal(((await (await s.call('DELETE', '/api/pairing/ABCD2345', s.admin)).json()) as any).removed, true);
   assert.equal(s.ruby.gatewayStore.pairings(new Date().toISOString()).length, 0);
+});
+
+test('protected config fields cannot be changed over the API; GET returns the file', async () => {
+  const s = await boot();
+  const file = join(s.home, 'config.json');
+  const { config } = (await (await s.call('GET', '/api/config', s.admin)).json()) as any;
+  const before = readFileSync(file, 'utf8');
+  for (const bad of [
+    { ...config, model: { ...config.model, apiKeyEnv: 'HOME', baseUrl: 'https://evil.example/v1' } },
+    { ...config, sandbox: { ...config.sandbox, backend: 'local' }, permissions: { ...config.permissions, exec: 'allow' } },
+  ]) {
+    const r = await s.call('PUT', '/api/config', s.admin, bad);
+    assert.equal(r.status, 403);
+    assert.match(((await r.json()) as any).error.message, /model\.apiKeyEnv|sandbox\.backend/);
+  }
+  assert.equal(readFileSync(file, 'utf8'), before, 'file unchanged');
+  assert.equal((await s.call('PUT', '/api/config', s.admin, { ...config, persona: 'Be terse.' })).status, 200);
+  const after = (await (await s.call('GET', '/api/config', s.reader)).json()) as any;
+  assert.equal(after.config.persona, 'Be terse.', 'GET reflects the saved file');
+  assert.ok(after.protectedPaths.includes('model.apiKeyEnv'));
+});
+
+test('raw session events are sanitized for read keys', async () => {
+  const s = await boot();
+  const session = s.ruby.store.createSession('x');
+  s.ruby.store.append(session.id, { type: 'context_frozen', system: 'SYSTEM with memory: likes tea' });
+  s.ruby.store.append(session.id, {
+    type: 'assistant_message',
+    stopReason: 'end_turn',
+    model: 'fake',
+    usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: null, cacheWriteTokens: null },
+    message: { role: 'assistant', content: [{ type: 'provider', provider: 'anthropic', data: { thinking: 'SECRET THOUGHTS' }, bound: true }] },
+  });
+  const res = await s.call('GET', `/api/sessions/${session.id}/events`, s.reader);
+  assert.equal(res.status, 200);
+  const text = JSON.stringify(await res.json());
+  assert.ok(!text.includes('likes tea') && !text.includes('SECRET THOUGHTS'), 'frozen prompt and thinking are not exposed');
+});
+
+test('redactingLog hides key-shaped values before they reach the sink', async () => {
+  const { redactingLog } = await import('../src/main.ts');
+  const seen: string[] = [];
+  redactingLog((_l, m) => seen.push(m))('info', `key ruby_${'a'.repeat(8)}_${'b'.repeat(32)} and sk-abcdefghijklmnopqrstuvwxyz`);
+  assert.ok(!seen[0]!.includes('ruby_a') && !seen[0]!.includes('sk-abc'));
 });
