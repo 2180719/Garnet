@@ -10,7 +10,7 @@ export type SystemPromptInput = {
 /**
  * The stable instruction prefix. Keep it deterministic: anything that changes
  * per turn (time, task state) belongs in messages, not here, so provider
- * prompt caching keeps working. It is frozen per session (see `frozenSystem`).
+ * prompt caching keeps working. It is frozen per session (see `frozenContext`).
  */
 export function systemPrompt(input: SystemPromptInput): string {
   const parts = [
@@ -30,16 +30,8 @@ export type FrozenContext = { system: string; tools: ToolSchema[] | undefined };
 
 /** The system prompt and tool schemas most recently frozen for this session, if any. */
 export function frozenContext(events: SessionEvent[]): FrozenContext | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i]!;
-    if (e.type === 'context_frozen') return { system: e.system, tools: e.tools };
-  }
-  return undefined;
-}
-
-/** The system prompt most recently frozen for this session, if any. */
-export function frozenSystem(events: SessionEvent[]): string | undefined {
-  return frozenContext(events)?.system;
+  const e = events.findLast((e) => e.type === 'context_frozen');
+  return e?.type === 'context_frozen' ? { system: e.system, tools: e.tools } : undefined;
 }
 
 /**

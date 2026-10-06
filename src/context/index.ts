@@ -1,6 +1,5 @@
 export {
   systemPrompt,
-  frozenSystem,
   frozenContext,
   messagesFromEvents,
   planCompaction,
