@@ -11,7 +11,7 @@ import { openDb, SessionStore } from '../store/index.ts';
 import { ToolExecutor, ToolRegistry, fileTools } from '../tools/index.ts';
 import { Agent, LaneQueue, type RuntimeEvent } from './index.ts';
 
-function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: Approver; sections?: () => string[]; compactAtTokens?: number } = {}) {
+function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: Approver; sections?: () => string[]; compactAtTokens?: number; refuse?: () => string | null } = {}) {
   const workspace = tempDir();
   const store = new SessionStore(openDb(':memory:'));
   const registry = new ToolRegistry();
@@ -24,6 +24,7 @@ function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: 
     budget: { ...config.budgets, ...opts.budget },
     ...(opts.sections ? { promptSections: opts.sections } : {}),
     ...(opts.compactAtTokens ? { compactAtTokens: opts.compactAtTokens, keepTurns: 1 } : {}),
+    ...(opts.refuse ? { refuse: opts.refuse } : {}),
     sleep: async () => {},
   });
   const session = store.createSession();
@@ -273,4 +274,13 @@ test('a failed compact() keeps the full history', async () => {
   for (const m of ['a', 'b', 'c']) await t.run(m);
   assert.equal((await t.agent.compact(t.session.id)).status, 'failed');
   assert.ok(!t.store.events(t.session.id).some((e) => e.type === 'checkpoint'));
+});
+
+test('a refusing spending cap stops the task before any model call and keeps the message out of history', async () => {
+  const t = setup([{ text: 'never sent' }], { refuse: () => 'Daily spending cap reached.' });
+  const task = await t.run('hello');
+  assert.equal(task.status, 'budget_exhausted');
+  assert.equal(task.reason, 'Daily spending cap reached.');
+  assert.equal(t.model.requests.length, 0);
+  assert.equal(t.store.events(t.session.id).some((e) => e.type === 'user_message'), false);
 });

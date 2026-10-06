@@ -14,3 +14,4 @@ SQLite persistence through `node:sqlite` (WAL mode, foreign keys on).
 - `inbox.attachments`/`inbox.unsupported` and `outbox.attachments` hold the JSON of the contract shapes (references, not bytes). `lastChatForSession` answers where a session's files go.
 - Retention (`retention.ts`, config `retention.*Days`, run by `runRetention` in `main.ts` at service start and daily): deletes only finished inbox/outbox/job_runs/approvals/sent_messages rows older than the cutoff (never pending, in-flight or unexpired ones; the newest run of each job stays) and never the event log. `mediaIdsInUse` finds media ids referenced by events, inbox or outbox so the media store can keep them.
 - Must not: interpret event payloads beyond storing them, or call models or tools.
+- Cost: `costOf`/`resolvePricing` live in `src/contracts/cost.ts`; `StatsStore.usageByDay`/`sessionPage` take pricing and return `costUsd` (null = unknown).

@@ -161,3 +161,15 @@ test('media: safe defaults, transcription validation, protected host commands, s
   assert.ok(secretNames(withKey).includes('GROQ_API_KEY'));
   assert.ok(!secretNames(c).includes('GROQ_API_KEY'));
 });
+
+test('model.pricing and budgets.dailyUsd are optional and validated', () => {
+  const c = defaultConfig();
+  assert.equal(c.model.pricing, undefined);
+  assert.equal(c.budgets.dailyUsd, undefined);
+  const p = parseConfig({ version: CONFIG_VERSION, model: { pricing: { input: 3, output: 15 } }, budgets: { dailyUsd: 5 } });
+  assert.deepEqual(p.model.pricing, { input: 3, output: 15 });
+  assert.equal(p.budgets.dailyUsd, 5);
+  for (const bad of [{ model: { pricing: { input: -1, output: 1 } } }, { model: { pricing: { input: 1 } } }, { budgets: { dailyUsd: 0 } }]) {
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, ...bad }), (e) => isGarnetError(e, 'config'));
+  }
+});

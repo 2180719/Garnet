@@ -12,6 +12,7 @@ The agent loop and task lifecycle.
 - Context: the system prompt (from `promptSections`: memory snapshot, skills index) and the tool schemas are frozen per session (`context_frozen`). Tools registered or changed later are not sent until the next freeze. Before a task, if the last request used ≥ `compactAtTokens`, the runtime summarizes older turns (keep-tail) with the frozen prompt and tools, records a `checkpoint`, and re-freezes both so memory and tool changes apply.
 - Time: with `timeZone` (the owner's, wired in `main.ts`), each user message is shown to the model with its send time; see `context`. The system prompt is not changed per turn.
 - Retries: only `provider_transient`, only when no text was streamed yet, with backoff or `retry-after`, and never past the task's `maxWallMs` (a longer `retry-after` fails the task instead of holding the lane).
+- Spending cap: `deps.refuse()` (wired in `main.ts` from `budgets.dailyUsd` and the day's known cost) is checked at the start of `run`; a message finishes the task as `budget_exhausted` before any model call and without appending the user message. Script and reminder jobs never reach `run`.
 - Tool calls from a `max_tokens` or `refusal` turn are never executed. A compaction summary that stopped at `max_tokens` is discarded (compaction fails; history stays whole).
 - An unexpected exception (store failure, bug) marks the task `failed` before it propagates, so no task is left `running`.
 - `LaneQueue` hands a finished job's slot straight to the next waiter, so the global cap holds.

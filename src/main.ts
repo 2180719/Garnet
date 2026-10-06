@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
 import { loadConfig, redact, garnetHome, type Paths, type GarnetConfig } from './config/index.ts';
 import { assistantName, projectInstructionsSection } from './context/index.ts';
-import { errorMessage, GarnetError, type Budget, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
+import { errorMessage, formatUsd, GarnetError, resolvePricing, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue } from './runtime/index.ts';
-import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, type Db } from './store/index.ts';
+import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, StatsStore, type Db } from './store/index.ts';
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
@@ -67,6 +67,8 @@ export type Garnet = {
   mediaStore: MediaStore | null;
   agent: Agent;
   model: ModelAdapter;
+  /** USD per million tokens for the main model (config or built-in); undefined means cost shows `?`. */
+  pricing: Pricing | undefined;
   close: () => void;
 };
 
@@ -183,6 +185,16 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
         saveText: (sessionId, text) => artifacts.save(sessionId, text),
       })
     : null;
+  const pricing = resolvePricing(config.model.provider, config.model.name, config.model.pricing);
+  const stats = new StatsStore(db);
+  /** The daily spending cap (budgets.dailyUsd): refuses new model-calling tasks once today's known cost reaches it. */
+  const refuse = (): string | null => {
+    const cap = config.budgets.dailyUsd;
+    if (cap === undefined) return null;
+    const spent = stats.knownCostSince(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`, pricing);
+    if (spent === null || spent < cap) return null;
+    return `Daily spending cap reached: ${formatUsd(spent)} spent today (UTC) of ${formatUsd(cap)} (budgets.dailyUsd). New model tasks are refused until 00:00 UTC; the owner can raise or remove the cap in config.json.`;
+  };
   /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
   const makeAgent = (policy: Policy, budget: Budget): Agent =>
     new Agent({
@@ -191,6 +203,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       registry,
       executor: new ToolExecutor({ registry, policy, approver, artifacts }),
       budget,
+      refuse,
       workspace: paths.workspace,
       persona: config.persona,
       promptSections: (ns) => [projectInstructionsSection(paths.workspace), memory.snapshot(ns), skills.index(), importedArchiveSection(paths.workspace)],
@@ -230,6 +243,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     mediaStore,
     agent,
     model,
+    pricing,
     close: () => db.close(),
   };
 }
@@ -380,7 +394,7 @@ export function buildService(garnet: Garnet, rawLog: LogFn, channels: ChannelAda
     routes: config.routes,
     pairingTtlMinutes: config.gateway.pairingTtlMinutes,
     deliveryEnabled: deliver,
-    model: { id: garnet.model.id, contextWindow: garnet.model.capabilities.contextWindow },
+    model: { id: garnet.model.id, contextWindow: garnet.model.capabilities.contextWindow, pricing: garnet.pricing },
     assistantName: assistantName(config.persona),
     log,
     ...(garnet.media ? { media: garnet.media } : {}),
@@ -472,6 +486,7 @@ export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { c
   if (jobs.length) {
     log('info', `Scheduler: ${jobs.filter((j) => j.enabled).length} of ${jobs.length} job(s) enabled (${garnet.timezone})${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
   }
+  if (config.budgets.dailyUsd !== undefined && !garnet.pricing) log('warn', 'budgets.dailyUsd is set but the model has no known price (set model.pricing), so the daily cap cannot take effect.');
   for (const p of garnet.jobBook.problems()) log('warn', `job ${p.id} is not scheduled: ${p.problem}`);
   if (channels.length === 0 && !api) log('warn', 'No channels or API enabled; Garnet is idle. Enable one in config.json.');
   return {

@@ -1,6 +1,6 @@
 // Pure renderers for the chat's visual blocks. Each returns terminal rows.
 
-import { addUsage, billedTokens, unknownUsage, type SessionEvent, type TaskRecord, type ToolCallBlock, type ToolResult, type Usage } from '../../contracts/index.ts';
+import { addUsage, billedTokens, costOf, eventsCost, formatUsd, type Pricing, unknownUsage, type SessionEvent, type TaskRecord, type ToolCallBlock, type ToolResult, type Usage } from '../../contracts/index.ts';
 import type { ApprovalRequest } from '../../policy/index.ts';
 import { COMMANDS, SHORTCUTS, type SlashCommand } from './commands.ts';
 import { renderMarkdown } from './markdown.ts';
@@ -92,11 +92,11 @@ export function toolExpandedRows(call: ToolCallBlock, result: ToolResult, theme:
   return rows;
 }
 
-export function turnSummary(task: TaskRecord, elapsedMs: number, theme: Theme, width: number): string[] {
+export function turnSummary(task: TaskRecord, elapsedMs: number, theme: Theme, width: number, pricing?: Pricing): string[] {
   const u = task.usage;
   const tools = task.toolCalls ? ` · ${task.toolCalls} tool call${task.toolCalls === 1 ? '' : 's'}` : '';
   const cached = u.cacheReadTokens ? ` (${formatTokens(u.cacheReadTokens)} cached)` : '';
-  const tokens = ` · ${formatTokens(u.inputTokens)} in${cached} · ${formatTokens(u.outputTokens)} out`;
+  const tokens = ` · ${formatTokens(u.inputTokens)} in${cached} · ${formatTokens(u.outputTokens)} out${task.modelCalls ? ` · ${formatUsd(costOf(u, pricing))}` : ''}`;
   const stats = `${formatDuration(elapsedMs)}${tools}${tokens}`;
   const status = statusLabel(task.status, theme);
   const reason = task.reason ? ` — ${sanitize(task.reason)}` : '';
@@ -148,10 +148,12 @@ export type SessionTotals = {
   turns: number;
   /** Sources of untrusted content this session has read (empty: none). */
   untrusted: string[];
+  /** USD for the session's model calls; null if unknown (no price, or unreported tokens). */
+  costUsd: number | null;
 };
 
 /** Token totals for a session (assistant turns and compaction calls) and the size of the latest request. */
-export function sessionTotals(events: SessionEvent[]): SessionTotals {
+export function sessionTotals(events: SessionEvent[], pricing?: Pricing): SessionTotals {
   let usage = unknownUsage();
   let contextTokens: number | null = null;
   let turns = 0;
@@ -170,7 +172,7 @@ export function sessionTotals(events: SessionEvent[]): SessionTotals {
       untrusted.push(e.source);
     }
   }
-  return { usage, contextTokens, turns, untrusted };
+  return { usage, contextTokens, turns, untrusted, costUsd: eventsCost(events, pricing) };
 }
 
 export type FooterInfo = { model: string; sessionId: string; totals: SessionTotals; contextWindow: number; notice?: string | undefined };
@@ -186,6 +188,7 @@ export function footer(info: FooterInfo, theme: Theme, width: number): string {
     stats.push(`context ${formatTokens(t.contextTokens)}/${formatTokens(info.contextWindow)} (${pct}%)`);
   }
   if (t.turns) stats.push(`${formatTokens(billedTokens(t.usage))} tokens`);
+  if (t.turns && t.costUsd !== null) stats.push(formatUsd(t.costUsd)); // the exact figure or "?" is in /usage; the footer has little room
   // Most detail that fits; the least useful parts go first when narrow.
   const variants = [
     [info.model, info.sessionId, ...stats, '/help'],

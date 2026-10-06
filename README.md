@@ -104,6 +104,10 @@ In any chat, `/help` lists the commands: `/new`, `/stop`, `/retry`, `/usage`, `/
 
 Garnet keeps its data in `~/.garnet` (override with `GARNET_HOME`). Tools can only touch `~/.garnet/workspace`; writes ask for your approval by default. A `workspace` setting that would contain `~/.garnet` itself is refused, since tools could then rewrite Garnet's config and secrets.
 
+### Cost
+
+Garnet shows dollar cost beside token usage (terminal turn summary and `/usage`, chat `/usage`, the dashboard Usage page, `GET /api/usage`). Prices for current Anthropic models are built in (from Anthropic's pricing page); for any other model set `model.pricing` in `config.json`: USD per million tokens as `{ "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }`. Without a price, or when the provider does not report tokens, cost shows `?`, never `$0`. Set `budgets.dailyUsd` to refuse new chat turns and agent jobs once today's (UTC) known cost reaches the cap; script and reminder jobs are unaffected. It is off by default.
+
 ### Web access and untrusted content
 
 `web_fetch` reads a page as Markdown and `web_search` searches the web. Both ask first by default (`permissions.net.fetch`); list hosts you trust in `web.allowHosts` to skip the question for them, or set `net.fetch` to `allow`. They only reach public internet addresses: private, loopback, link-local and cloud-metadata addresses are refused, after DNS and on every redirect. Search uses DuckDuckGo's HTML page by default, which needs no key but is unofficial and may be rate limited; `web.search.backend` can be `searxng` (your instance), `brave` or `tavily` (keys by secret name, e.g. `garnet secrets set BRAVE_API_KEY`).
