@@ -121,8 +121,8 @@ const plain = (s: string) => s;
 export function makeStyle(color: boolean): Style {
   if (!color) return { accent: plain, muted: plain, bold: plain, ok: plain, warn: plain, bad: plain };
   return {
-    accent: paint('1;38;2;255;102;128'),
-    muted: paint('38;2;163;166;173'),
+    accent: paint('1;38;2;232;89;107'),
+    muted: paint('38;2;180;168;172'),
     bold: paint('1'),
     ok: paint('32'),
     warn: paint('33'),
