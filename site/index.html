@@ -3,29 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ruby, a personal agent you can read</title>
-<meta name="description" content="Ruby is a self-hosted personal AI agent. It answers on Telegram, Signal and Discord, keeps its memory in two capped Markdown files and asks before it writes. Open source, pre-release.">
+<title>Garnet, a personal agent you can read</title>
+<meta name="description" content="Garnet is a self-hosted personal AI agent that answers on Telegram, Signal, Discord and in your terminal. Small enough to read, locked down by default, honest about what it can do. Open source, pre-release.">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f5f5f2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#101113" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fbf7f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#150a0d" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Garnet, a personal agent you can read">
+<meta property="og:description" content="A persistent personal agent: self-hosted, small, secure by default, and honest.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
-<script>try{var t=localStorage.getItem('ruby-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+<script>try{var t=localStorage.getItem('garnet-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 </head>
 <!--
-  Optional "Talk to Ruby" demo. Hidden unless data-demo-endpoint is non-empty.
-  To enable: set data-demo-endpoint to your gateway's base URL (no trailing slash,
-  e.g. https://demo.example.com). That Ruby needs api.demo.enabled with this site's origin in api.demo.allowedOrigins; the demo is keyless, tool-less and rate-limited.
-  See site/README.md. The page POSTs to {endpoint}/v1/demo/chat/completions.
+  Optional "Talk to Garnet" demo. Hidden unless data-demo-endpoint is non-empty.
+  Set it to your gateway's base URL (no trailing slash, e.g. https://demo.example.com).
+  That Garnet needs api.demo.enabled with this site's origin in api.demo.allowedOrigins;
+  the demo is keyless, tool-less and rate-limited. See site/README.md.
+  The page POSTs to {endpoint}/v1/demo/chat/completions.
 -->
 <body data-demo-endpoint="">
 <a class="skip" href="#main">Skip to content</a>
 <header class="top wrap">
-  <a class="brand" href="./" aria-label="Ruby, home"><svg viewBox="0 0 64 64" aria-hidden="true"><path class="g1" d="M18 8h28l14 16-28 34L4 24z"/><path class="g2" d="M4 24h56L32 58z"/><path class="g3" d="M18 8h28l-6 16H24z"/><path class="g4" d="M24 24h16L32 58z"/></svg>Ruby</a>
+  <a class="brand" href="./" aria-label="Garnet, home"><svg viewBox="0 0 64 64" aria-hidden="true"><path class="g1" d="M18 8h28l14 16-28 34L4 24z"/><path class="g2" d="M4 24h56L32 58z"/><path class="g3" d="M18 8h28l-6 16H24z"/><path class="g4" d="M24 24h16L32 58z"/></svg>Garnet</a>
   <nav aria-label="Primary">
-    <a href="#status">Status</a>
-    <a href="#install">Install</a>
-    <a href="https://github.com/2180719/Ruby">Source</a>
+    <a href="#features">Features</a>
+    <a href="#security">Security</a>
+    <a href="#compare">Compare</a>
+    <a href="#switch">Switch</a>
+    <a class="keep" href="#install">Install</a>
+    <a class="keep" href="https://github.com/2180719/Garnet">GitHub</a>
   </nav>
   <button id="theme-toggle" class="theme" type="button" aria-label="Toggle color theme" aria-pressed="false">
     <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
@@ -34,185 +40,184 @@
 
 <main id="main">
 <section class="hero wrap" aria-labelledby="h-top">
-  <div class="hero-meta"><span>Personal intelligence. Under your control.</span><span>Open source / v0.1.0</span></div>
-  <div class="wordmark" aria-hidden="true">ruby<span class="wordmark-dot">.</span></div>
-  <div class="hero-layout">
-    <div class="hero-text">
-      <p class="eyebrow">An agent with a place to call home</p>
-      <h1 id="h-top">Your world.<br>Your agent.<br><em>Your rules.</em></h1>
-      <p class="lede">A personal agent that stays with you. Self-hosted, with memory you can read and permissions you control. Reach it from your terminal, dashboard, or favorite messenger.</p>
-      <p class="links"><a class="primary-link" href="#install">Make room for Ruby</a><a href="https://github.com/2180719/Ruby">Explore the source</a></p>
-      <p class="hero-note">Node.js + SQLite. Two runtime dependencies.<br>Pre-release. <a href="#status">See what’s ready.</a></p>
+  <svg class="gem-bg" viewBox="0 0 64 64" aria-hidden="true"><path class="g1" d="M18 8h28l14 16-28 34L4 24z"/><path class="g2" d="M4 24h56L32 58z"/><path class="g3" d="M18 8h28l-6 16H24z"/><path class="g4" d="M24 24h16L32 58z"/></svg>
+  <div>
+    <p class="eyebrow">Open source · self-hosted · pre-release</p>
+    <h1 id="h-top">A personal agent<br>you can <em>read.</em></h1>
+    <p class="lede"><strong>Garnet</strong> lives on your own computer or server and answers on Telegram, Signal, Discord, in your terminal, or over an API. It is small enough to audit, locked down until you say otherwise, and plain about what it can and cannot do.</p>
+    <div class="cta">
+      <a class="btn" href="#install">Install in one line</a>
+      <a href="https://github.com/2180719/Garnet">Read the source</a>
     </div>
-    <div class="instrument" aria-label="Illustrative Ruby interface preview">
-      <div class="instrument-bar"><span><span class="mini-gem">◆</span> RUBY / WORKSPACE</span><span>INTERFACE PREVIEW</span></div>
-      <div class="preview-controls" role="group" aria-label="Preview a Ruby surface">
-        <button type="button" data-preview="terminal" aria-pressed="true">01 / Terminal</button>
-        <button type="button" data-preview="dashboard" aria-pressed="false">02 / Dashboard</button>
-        <button type="button" data-preview="memory" aria-pressed="false">03 / Memory</button>
-      </div>
-      <div class="preview-panel" id="preview-terminal">
-        <div class="console-heading"><strong>◆ ruby</strong><span>TERMINAL CHAT</span></div>
-        <p class="console-meta">A conversation that lives on your machine.</p>
-        <div class="console-message"><span>YOU</span><p>Tidy notes.md and put today's date at the top.</p></div>
-        <div class="console-message"><span class="ruby-label">RUBY</span><p>I need your approval to continue:</p></div>
-        <div class="permission"><span>PERMISSION REQUEST</span><strong>write_file <span>notes.md</span></strong><p>/approve 8RWQD <span>/deny 8RWQD</span></p></div>
-        <div class="console-prompt"><span>you ›</span><span class="cursor" aria-hidden="true"></span></div>
-      </div>
-      <div class="preview-panel dashboard-preview" id="preview-dashboard" hidden>
-        <div class="console-heading"><strong>Overview</strong><span>YOUR CONTROL ROOM</span></div>
-        <div class="preview-stats"><div><span>APPROVALS</span><strong>01</strong></div><div><span>MEMORY FILES</span><strong>02</strong></div></div>
-        <div class="permission"><span>WAITING FOR YOU</span><strong>Write to notes.md</strong><p>Review each operation before it runs.</p></div>
-        <div class="preview-menu"><span>Memory</span><span>Skills</span><span>Schedules</span><span>Usage</span></div>
-      </div>
-      <div class="preview-panel" id="preview-memory" hidden>
-        <div class="console-heading"><strong>MEMORY.md</strong><span>PLAIN TEXT / VERSIONED</span></div>
-        <p class="console-meta">Ruby's notes. Yours to inspect.</p>
-        <pre class="memory-sample"># Working notes
-
-Keep project notes in the workspace.
-Ask before editing files.
-
-# Next time
-
-Pick up where we left off.</pre>
-        <div class="memory-budget"><span>MEMORY.md</span><span>2,200 character limit</span></div>
-        <p class="console-meta">Bounded by design. Every edit has a history.</p>
-      </div>
-      <div class="instrument-foot"><span>LOCAL FIRST</span><span>REMEMBERS. ASKS. CONTINUES.</span></div>
-    </div>
+    <p class="hero-note">TypeScript on Node.js, SQLite, two runtime dependencies. About 22,000 lines of non-test code.</p>
   </div>
-</section>
-<div class="principles wrap" aria-label="Ruby principles">
-  <div><span>01 / PERSISTENT</span><p>Tomorrow starts where<br>today left off.</p></div>
-  <div><span>02 / PERSONAL</span><p>Your machine.<br>Your memory.</p></div>
-  <div><span>03 / PERMISSIONED</span><p>It asks.<br>You decide.</p></div>
-</div>
+  <figure class="term" aria-label="Illustrative Garnet interface">
+    <div class="bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>illustration, not a live session</span></div>
+    <div class="tabs" role="group" aria-label="Choose a specimen">
+      <button class="tab" type="button" data-preview="terminal" aria-pressed="true">Terminal</button>
+      <button class="tab" type="button" data-preview="telegram" aria-pressed="false">Telegram</button>
+    </div>
+    <div class="panel" id="preview-terminal">
+<pre><span class="ta">◆ garnet</span> <span class="tm">terminal chat</span>
+<span class="tm">›</span> remind me at 5pm to call mom, and tidy notes.md
 
-<section class="sec wrap" id="what" aria-labelledby="h-what">
-  <h2 id="h-what"><span class="section-index">01 / CAPABILITIES</span>Small agent.<br>Long memory.</h2>
-  <div class="body">
-    <p class="intro">One process holds everything: the chat channels, a durable inbox and outbox in SQLite, the agent loop, the scheduler and an optional HTTP API. A message is stored before Ruby acts on it, so a restart picks up where it left off and a duplicate delivery doesn't run twice.</p>
-    <dl class="rows">
-      <div><dt>Channels</dt><dd>Telegram through the bot API, Signal through a local <code>signal-cli</code> daemon, and Discord direct messages. Someone Ruby doesn't know gets a six-character pairing code and nothing else until you run <code>ruby pair approve</code> on the host.</dd></div>
-      <div><dt>Approvals</dt><dd>
-        <p>Every tool capability is set to allow, ask or deny. Out of the box, reading files is allowed, writing asks, and running commands is off. An approval covers one operation and expires after a day. In chat it looks like this:</p>
-        <figure class="term chat" aria-label="Approval over chat">
-          <div class="chatlog"><span class="w">you</span><span>tidy notes.md and put today's date at the top</span><span class="w">ruby</span><span>I need your approval to continue:
-• write_file on notes.md {"path":"notes.md",…}
-  /approve 8RWQD   /deny 8RWQD</span><span class="w">you</span><span>/approve 8RWQD</span></div>
-        </figure>
-      </dd></div>
-      <div><dt>Memory</dt><dd><code>MEMORY.md</code> holds Ruby's own notes, capped at 2,200 characters. <code>USER.md</code> holds what it knows about you, capped at 1,400. When a file is full, Ruby has to consolidate instead of appending forever. Every change is versioned, so <code>ruby memory rollback</code> undoes a bad edit.</dd></div>
-      <div><dt>Skills</dt><dd>Folders with a <code>SKILL.md</code>, in the agentskills.io format. Only each skill's name and a one-line summary go into the prompt. If you edit a skill by hand it becomes locked, and Ruby can only propose a diff for you to accept. It never downloads skills from anywhere.</dd></div>
-      <div><dt>Schedules</dt><dd>Cron jobs and heartbeats, each with its own token budget and timeout. A heartbeat can watch a file or a URL and only wake the model when it changes, so an hour in which nothing happened costs no tokens.</dd></div>
-      <div><dt>Long chats</dt><dd>When a conversation gets large, older turns are summarized and the last two are kept word for word. The system prompt stays fixed for the session so the provider's prompt cache keeps working.</dd></div>
-      <div><dt>Commands</dt><dd><code>run_command</code> runs each command in a fresh Docker container: <code>debian:stable-slim</code>, no network, 512&nbsp;MB of memory, and never as root. There is also a <code>local</code> backend, and the config says plainly that it is not a security boundary.</dd></div>
-      <div><dt>API</dt><dd>Off until you run <code>ruby api enable</code>. Then it serves an OpenAI-compatible <code>/v1/chat/completions</code> on <code>127.0.0.1:7311</code>, so existing chat apps can connect with a scoped key. Keys are stored hashed and every request is rate-limited.</dd></div>
-      <div><dt>Dashboard</dt><dd>Optional, served by the same process once you turn it on. It shows pending approvals, memory, skills, schedules, pairing and routing, a read-only log of sessions and API requests, usage, and a settings form. Settings that decide where secrets go or what runs on the host, such as permissions and the sandbox, are read-only there and change only from the command line.</dd></div>
-      <div><dt>Secrets</dt><dd>Bot tokens and API keys can live in an encrypted file, <code>ruby secrets</code>, unlocked by a key file or passphrase. An environment variable of the same name wins over the stored value.</dd></div>
-      <div><dt>Models</dt><dd>Anthropic, or anything that speaks the OpenAI API: OpenRouter, Ollama, llama.cpp, vLLM, LM Studio.</dd></div>
-      <div><dt>Housekeeping</dt><dd><code>ruby service install</code> writes a systemd unit or a launchd plist. <code>ruby backup</code> copies the database, config, memory, skills and workspace. <code>ruby import openclaw</code> (or <code>hermes</code>) brings over memory, persona and skills, as a dry run unless you add <code>--apply</code>. It never copies secrets.</dd></div>
-    </dl>
+<span class="ta">◆</span> I can do both. Both need your approval.
+  <span class="ty">? schedule</span>  reminder 17:00 Europe/London
+  <span class="ty">? write_file</span> notes.md
+  <span class="tm">y once · a always this chat · n deny</span>
+<span class="tm">›</span> y
+  <span class="tg">✓</span> schedule   next run today 17:00
+  <span class="tg">✓</span> write_file notes.md
+<span class="tm">3.1s · 2 tool calls · 4,812 tokens</span></pre>
+    </div>
+    <div class="panel" id="preview-telegram" hidden>
+<pre class="wrapit"><span class="tm">you</span>   Summarize this page: https://example.com/post
+<span class="ta">garnet</span>  I need approval to fetch that page.
+        /approve 8RWQD   /deny 8RWQD
+<span class="tm">you</span>   /approve 8RWQD
+<span class="ta">garnet</span>  Summary: three points. <span class="ty">⚠ I read a web page, so I will ask before writing files, running commands or sending messages until you send /new.</span></pre>
+    </div>
+  </figure>
+</section>
+
+<section class="sec" id="why" aria-labelledby="h-why">
+  <div class="wrap">
+    <span class="kicker">Why Garnet</span>
+    <h2 id="h-why">Small. Secure by default. Honest.</h2>
+    <p class="intro">Personal agents get a lot of access to your files, accounts and chats. Garnet is built on the idea that you should be able to see what it does and decide what it may do.</p>
+    <ol class="principles">
+      <li><h3>Small enough to read</h3><p>One TypeScript codebase, run directly by Node with no build step, SQLite for storage, and two runtime dependencies. Every module has a short guide for people and agents. Its memory is two Markdown files you can open in an editor.</p></li>
+      <li><h3>Closed until you open it</h3><p>Writing files, sending messages, fetching URLs, changing memory and scheduling all ask first. Running commands is denied. The API will not listen on a public address until an API key exists.</p></li>
+      <li><h3>Honest about itself</h3><p>Garnet reports what it did and did not do, says when it cannot read a voice note instead of going silent, and this page lists what is not built yet. Pre-release means pre-release.</p></li>
+    </ol>
   </div>
 </section>
 
-<section class="sec wrap" id="defaults" aria-labelledby="h-defaults">
-  <h2 id="h-defaults"><span class="section-index">02 / CONTROL</span>Trust begins<br>with boundaries.</h2>
-  <div class="body">
-    <p class="intro">Ruby exists partly because of what went wrong elsewhere: agent gateways left open on the internet, heartbeats that paid a large model to report that nothing had changed, skills from public registries that turned out to be malware. So the defaults are conservative, and loosening them is a config edit you make on purpose.</p>
-    <div class="pair">
-    <figure class="term">
-      <figcaption>An excerpt of <code>~/.ruby/config.json</code>, as <code>ruby init</code> writes it</figcaption>
-<pre class="json"><code>{
-  <span class="k">"api"</span>: {
-    <span class="k">"enabled"</span>: false,
-    <span class="k">"host"</span>: <span class="s">"127.0.0.1"</span>,
-    <span class="k">"port"</span>: 7311
-  },
-  <span class="k">"permissions"</span>: {
-    <span class="k">"fs.read"</span>: <span class="s">"allow"</span>,
-    <span class="k">"fs.write"</span>: <span class="s">"ask"</span>,
-    <span class="k">"net.fetch"</span>: <span class="s">"ask"</span>,
-    <span class="k">"exec"</span>: <span class="s">"deny"</span>,
-    <span class="k">"message.send"</span>: <span class="s">"ask"</span>
-  },
-  <span class="k">"sandbox"</span>: {
-    <span class="k">"backend"</span>: <span class="s">"docker"</span>,
-    <span class="k">"network"</span>: <span class="s">"none"</span>,
-    <span class="k">"memory"</span>: <span class="s">"512m"</span>
-  },
-  <span class="k">"memory"</span>: {
-    <span class="k">"memoryChars"</span>: 2200,
-    <span class="k">"userChars"</span>: 1400
-  }
-}</code></pre>
+<section class="sec alt" id="features" aria-labelledby="h-features">
+  <div class="wrap">
+    <span class="kicker">What it does</span>
+    <h2 id="h-features">Everything here is built and tested.</h2>
+    <p class="intro">The automated suite runs offline against a fake model and fake channels. Features marked live-tested have also been run against real services; the rest still need that.</p>
+    <div class="grid c3">
+      <article class="card"><div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></div>
+        <h3>Where you talk to it</h3>
+        <ul><li>Telegram, Signal (through <code>signal-cli</code>) and Discord</li><li>A terminal chat with streamed Markdown, tool rows, inline approvals and a multi-line editor</li><li>An opt-in web dashboard and an OpenAI-compatible API for Open WebUI, LibreChat and friends</li><li>Chat commands: <code>/new</code>, <code>/stop</code>, <code>/retry</code>, <code>/usage</code>, <code>/status</code>, <code>/approve</code>, <code>/deny</code></li></ul></article>
+      <article class="card"><div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
+        <h3>The web</h3>
+        <ul><li><code>web_fetch</code> reads a public page as Markdown; <code>web_search</code> uses DuckDuckGo with no key, or SearXNG, Brave or Tavily</li><li>Asks first by default; list trusted hosts to skip the question</li><li>Private, loopback and cloud-metadata addresses are refused, after DNS and on every redirect</li></ul></article>
+      <article class="card"><div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="m21 16-5-4-6 6"/></svg></div>
+        <h3>Photos, PDFs and voice</h3>
+        <ul><li>Send photos, PDFs, text and CSV files; models that support images and PDFs receive them natively</li><li>Voice notes are transcribed by an OpenAI-compatible endpoint or a local command, if you configure one</li><li><code>send_file</code> returns workspace files to your chat, with your approval</li></ul></article>
+      <article class="card"><div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6"/></svg></div>
+        <h3>Reminders and schedules</h3>
+        <ul><li>Ask in chat: "remind me at 5pm", "every weekday at 9 summarize my notes"</li><li>Reminders never call the model; script-only jobs message you only when there is output</li><li>Cron jobs and heartbeats with cheap pre-checks, budgets, catch-up and pause-on-failure</li><li><code>send_message</code> lets it reach paired chats on its own, with approval and a rate limit</li></ul></article>
+      <article class="card"><div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M9 11h6M9 15h6"/></svg></div>
+        <h3>Memory and skills</h3>
+        <ul><li>Bounded <code>MEMORY.md</code> and <code>USER.md</code>, versioned, frozen into each session</li><li>Skills in the open <code>SKILL.md</code> format, with provenance; ones you edit are locked against the agent, which can only propose changes</li><li>Compaction keeps the recent tail and your constraints</li></ul></article>
+      <article class="card"><div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div>
+        <h3>Models and keys</h3>
+        <ul><li>Anthropic, OpenRouter, local servers (Ollama, LM Studio, llama.cpp, vLLM) or any OpenAI-compatible API</li><li>Keys live in an encrypted store (AES-256-GCM, scrypt), in a mode-600 env file, or in your environment. Config stores only the name</li><li>Per-task budgets for model calls, tokens, tool calls and time</li></ul></article>
+    </div>
+    <p class="fine">Setup and upkeep: <code>garnet setup</code> is a guided, re-runnable wizard, <code>garnet doctor</code> checks the install and says how to fix what it finds, and <code>garnet service install</code> keeps it running under systemd or launchd. Backup and restore are built in.</p>
+  </div>
+</section>
+
+<section class="sec" id="security" aria-labelledby="h-sec">
+  <div class="wrap">
+    <span class="kicker">Security posture</span>
+    <h2 id="h-sec">Defaults you would choose yourself.</h2>
+    <p class="intro">Nothing here is a promise that Garnet cannot be fooled. It is a set of small, checkable rules in the code, so a mistake costs less.</p>
+    <ul class="defaults">
+      <li><strong>Commands denied by default</strong>When you allow them, they run in a Docker container: non-root, no network unless you enable it. The local backend exists but is not a security boundary, and says so.</li>
+      <li><strong>Prompt-injection containment</strong>After a conversation reads a web page or search results, actions that could do harm or leak data ask first, even ones you set to allow, until you send <code>/new</code>. The approval says why.</li>
+      <li><strong>SSRF guard</strong>Web tools reach only public addresses, with DNS pinned and every redirect re-checked.</li>
+      <li><strong>Approvals you can see</strong>Approve or deny in the terminal, in chat with <code>/approve</code> and <code>/deny</code>, or in the dashboard. The full operation is shown first.</li>
+      <li><strong>Pairing, not open doors</strong>Unknown senders get a pairing code you approve from the CLI. Messages to others go only to paired chats.</li>
+      <li><strong>Workspace containment</strong>Tools touch only <code>~/.garnet/workspace</code>. A workspace that would contain Garnet's own config and secrets is refused.</li>
+      <li><strong>API behind keys</strong>Off by default. No public bind until a key exists, and the one-time dashboard link expires in 15 minutes.</li>
+      <li><strong>An append-only log</strong>The event log is never rewritten; cleaned views are derived from it. Secrets stay out of config, prompts, logs and tool output.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="sec alt" id="compare" aria-labelledby="h-compare">
+  <div class="wrap">
+    <span class="kicker">Compared with OpenClaw and Hermes</span>
+    <h2 id="h-compare">Different bets, stated plainly.</h2>
+    <p class="intro">OpenClaw and Hermes Agent are larger, more established projects with wider reach. Garnet is smaller on purpose and younger. This table describes Garnet; where it falls short of them, it says so.</p>
+    <div class="tablewrap" role="region" aria-label="Comparison table" tabindex="0">
+      <table>
+        <caption>Garnet as of the current pre-release. Statements about other projects are general and not a feature-by-feature audit.</caption>
+        <thead><tr><th scope="col">Area</th><th scope="col">Garnet today</th><th scope="col">Where OpenClaw and Hermes go further</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Size</th><td class="g">About 22,000 lines of non-test TypeScript, two runtime dependencies.</td><td>Larger surfaces with more built in.</td></tr>
+          <tr><th scope="row">Command execution</th><td class="g">Denied by default; Docker sandbox with no network when enabled.</td><td>Garnet's sandbox is stricter than a typical host shell, but it cannot run host CLI tools such as <code>gh</code>, so many imported skills will not work yet.</td></tr>
+          <tr><th scope="row">Untrusted content</th><td class="g">Containment after reading the web, with approvals that explain why.</td><td>Not a guarantee against prompt injection; it narrows what a bad page can make the agent do.</td></tr>
+          <tr><th scope="row">Memory</th><td class="g">Two capped, versioned Markdown files, frozen per session.</td><td>No automatic learning loop (Hermes is known for one) and no session search yet.</td></tr>
+          <tr><th scope="row">Channels</th><td class="g">Telegram, Signal, Discord, terminal, dashboard, API.</td><td>No WhatsApp, Slack or Matrix. Group chats are ignored.</td></tr>
+          <tr><th scope="row">Integrations</th><td class="g">Files, commands, memory, skills, web, scheduling, messaging, media.</td><td>No MCP client yet, so no ready-made email, calendar or browser control. Skill ecosystems are bigger elsewhere.</td></tr>
+          <tr><th scope="row">Maturity</th><td class="g">Pre-release. Telegram, Signal and Discord still need more live testing.</td><td>Established projects with real-world mileage.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="fine">Not built yet, so not claimed: MCP, subagents, session search, group chats, model fallbacks, a host-tools exec profile. They are on the <a href="https://github.com/2180719/Garnet/blob/main/docs/FEATURE-GAPS.md">roadmap</a>, not in the code.</p>
+  </div>
+</section>
+
+<section class="sec" id="switch" aria-labelledby="h-switch">
+  <div class="wrap">
+    <span class="kicker">Switching</span>
+    <h2 id="h-switch">Bring your agent with you.</h2>
+    <p class="intro"><code>garnet import openclaw</code> or <code>garnet import hermes</code> previews what it can bring over, and changes nothing until you confirm. It never copies secrets.</p>
+    <ol class="steps">
+      <li><strong>Preview</strong>A dry run shows what would come across, what would be skipped and why.</li>
+      <li><strong>Import</strong>Memory (with bigger caps if yours was larger), persona and name, skills with their requirements flagged, and the people on your allowlists, paired only if you say so.</li>
+      <li><strong>Review</strong>Scheduled jobs and heartbeat checklists arrive disabled so you can check them first. Skills that need host tools say so.</li>
+    </ol>
+    <figure class="term gap">
+<pre><span class="tm">$</span> garnet import openclaw        <span class="tm"># dry run: lists, changes nothing</span>
+<span class="tm">$</span> garnet import openclaw --apply
+<span class="tm">$</span> garnet jobs                       <span class="tm"># review imported schedules, then resume</span></pre>
     </figure>
-    <p>A few things aren't settings at all. Ruby refuses to listen on a public address until at least one API key exists. Tools can only touch one workspace directory, <code>~/.ruby/workspace</code> unless you point it elsewhere. API keys and bot tokens are referenced by the name of an environment variable, never stored in the config, and are redacted from logs. If you ask for the Docker sandbox and Docker isn't there, you get an error rather than a quiet fallback to running on the host. <code>ruby config explain</code> prints every setting with its default.</p>
+    <p class="fine"><code>garnet setup</code> offers the same import when it finds an existing OpenClaw or Hermes home. Run <code>garnet import --help</code> for the flags that decide how memory, persona and pairings are merged.</p>
+  </div>
+</section>
+
+<section class="sec alt" id="install" aria-labelledby="h-install">
+  <div class="wrap">
+    <span class="kicker">Install</span>
+    <h2 id="h-install">One line. No sudo.</h2>
+    <p class="intro">You need Node.js 22.18 or newer and git. The installer tells you how to get Node.js if it is missing.</p>
+    <figure class="term gap">
+      <div class="bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>shell</span><button id="copy-btn" class="copy" type="button" aria-describedby="install-code">Copy</button></div>
+<pre class="wrapit"><code id="install-code">curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh</code></pre>
+    </figure>
+    <p class="after">It clones Garnet into <code>~/.local/share/garnet</code>, adds a <code>garnet</code> command to <code>~/.local/bin</code> and starts <code>garnet setup</code>: pick a model, paste your key (stored encrypted, never in config), name your assistant, connect a channel, install the service and pair your own account. Everything Garnet keeps is in <code>~/.garnet</code>. Run the installer again to update; it leaves local changes alone.</p>
+    <p>Prefer to read first? <code>git clone https://github.com/2180719/Garnet</code>, then <code>npm install</code> and <code>npm link</code>. Try it with no key at all: <code>garnet chat --fake</code>.</p>
+  </div>
+</section>
+
+<section class="sec" id="faq" aria-labelledby="h-faq">
+  <div class="wrap">
+    <span class="kicker">FAQ</span>
+    <h2 id="h-faq">Questions people ask.</h2>
+    <div class="faq">
+      <details><summary>Is it ready to rely on?</summary><p>Not yet. It is pre-release. The offline test suite is extensive, and live Anthropic chat, streaming, tools, prompt caching and dashboard chat have been verified on a Linux host. Telegram, Signal and Discord need more live testing, so expect rough edges the first time it meets a real bot.</p></details>
+      <details><summary>Where does my data go?</summary><p>Conversations, memory and files stay in <code>~/.garnet</code> on your machine. Your messages go to whichever model provider you pick, and to the messaging platform you use. Garnet has no telemetry, and this website sets no cookies.</p></details>
+      <details><summary>What does it cost to run?</summary><p>Garnet is free and open source (Apache-2.0). You pay your model provider, or nothing if you use a local model. Each task has token, call and time budgets, and <code>/usage</code> shows what a conversation has used.</p></details>
+      <details><summary>Can it run commands on my computer?</summary><p>Only if you allow it. Commands are denied by default and, when allowed, run in a Docker container without network access. The local backend runs on your host and is not a security boundary.</p></details>
+      <details><summary>Which models work?</summary><p>Anthropic, OpenRouter, local servers such as Ollama, LM Studio, llama.cpp and vLLM, and any OpenAI-compatible API. Image and PDF input depends on the model.</p></details>
+      <details><summary>Is it related to Ruby the programming language?</summary><p>No. Garnet was previously named Ruby and is unrelated to the language. Its command is <code>garnet</code>, so it will not collide with the <code>ruby</code> interpreter.</p></details>
     </div>
   </div>
 </section>
 
-<section class="sec wrap" id="code" aria-labelledby="h-code">
-  <h2 id="h-code"><span class="section-index">03 / SOURCE</span>Read it.<br>Make it yours.</h2>
-  <div class="body">
-    <p class="intro">Node 22.18 runs the TypeScript directly, so there is no build step. Storage is SQLite through the built-in <code>node:sqlite</code>. The only runtime dependencies are <code>zod</code> and the Anthropic SDK, and the lint script fails if someone adds a third without a reason.</p>
-    <figure class="tree">
-      <figcaption><code>src/</code>, one job per folder</figcaption>
-<dl>
-<dt>contracts/</dt><dd>shared types; the only module everyone imports</dd>
-<dt>config/</dt><dd>schema, loading, migrations, redaction</dd>
-<dt>store/</dt><dd>SQLite: sessions, event log, inbox/outbox, keys</dd>
-<dt>runtime/</dt><dd>agent loop, budgets, cancellation, session lanes</dd>
-<dt>models/</dt><dd>anthropic, openai-compatible, and a fake for tests</dd>
-<dt>tools/</dt><dd>registry, executor, file and command tools</dd>
-<dt>policy/</dt><dd>permissions, approvals, path containment</dd>
-<dt>context/</dt><dd>system prompt, history, compaction</dd>
-<dt>memory/</dt><dd>MEMORY.md and USER.md, versioned</dd>
-<dt>skills/</dt><dd>SKILL.md files, locks, proposals</dd>
-<dt>gateway/</dt><dd>pairing, routing, delivery, HTTP API</dd>
-<dt>channels/</dt><dd>telegram, signal, discord</dd>
-<dt>scheduler/</dt><dd>cron, heartbeats, pre-checks</dd>
-<dt>sandbox/</dt><dd>docker or local command execution</dd>
-<dt>service/</dt><dd>systemd and launchd</dd>
-<dt>migrate/</dt><dd>import from OpenClaw and Hermes</dd>
-<dt>cli/</dt><dd>the ruby command</dd>
-<dt>main.ts</dt><dd>the one place modules are wired together</dd>
-</dl>
-    </figure>
-    <p>Modules talk to each other only through their <code>index.ts</code>, and each folder has an <code>AGENTS.md</code> saying what it owns and what it must not do. Despite the name, those files are written for people as much as for agents. They also let a coding agent asked to change Ruby find the right file without reading everything first. <code>npm run check</code> runs lint, the type checker and the tests, offline, in one go.</p>
-  </div>
-</section>
-
-<section class="sec wrap" id="status" aria-labelledby="h-status">
-  <h2 id="h-status"><span class="section-index">04 / STATUS</span>Built in<br>the open.</h2>
-  <div class="body">
-    <div class="note">
-      <p><strong>Pre-release, version 0.1.0.</strong> Everything described above is in the repository, with tests. The automated suite runs offline against a fake model and fake channels. Live Anthropic chat, streaming, a file-reading tool, prompt caching, and dashboard chat have also been verified on a Linux host. Telegram, Signal and Discord still need live testing. Expect rough edges the first time it meets a real bot.</p>
-      <p>The dashboard and the encrypted secret store are built and tested; failure-injection tests exist too. Still to come before a 1.0: a docs site and the remaining live channel and sandbox tests. Secrets can stay in an env file with mode 600 or move into the store with <code>ruby secrets</code>. The <a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">plan</a> tracks each phase.</p>
-    </div>
-  </div>
-</section>
-
-<section class="sec wrap" id="install" aria-labelledby="h-install">
-  <h2 id="h-install"><span class="section-index">05 / GET STARTED</span>A new home<br>for Ruby.</h2>
-  <div class="body">
-    <p class="intro">One line, no sudo. You need Node.js 22.18 or newer and git; the installer tells you how to get Node.js if it is missing.</p>
-    <figure class="term">
-      <figcaption class="bar"><span>Shell</span><button id="copy-btn" class="copy" type="button" aria-describedby="install-code">Copy</button></figcaption>
-<pre><code id="install-code">curl -fsSL https://raw.githubusercontent.com/2180719/Ruby/main/install.sh | sh</code></pre>
-    </figure>
-    <p>It clones Ruby into <code>~/.local/share/ruby</code>, adds a <code>ruby</code> command to <code>~/.local/bin</code>, and starts <code>ruby setup</code>: pick a model (Anthropic, OpenRouter or one running on your machine), paste your key, which goes into an encrypted store and never into config, give your assistant a name, and connect Telegram, Discord or Signal if you like. Setup can install the background service and walk you through pairing your own account. Run <code>ruby setup</code> again to change any of it, and <code>ruby doctor</code> to check that everything is wired up.</p>
-    <p>Already have the Ruby programming language? Its command is also <code>ruby</code>; the installer never overwrites it, and <code>--name rubyagent</code> keeps both. Prefer to read the code first? <code>git clone https://github.com/2180719/Ruby</code>, then <code>npm install</code> and <code>npm link</code>. The <a href="https://github.com/2180719/Ruby#readme">README</a> covers the rest, including scripted setup and the API.</p>
-  </div>
-</section>
-
-<section class="sec wrap" id="demo" aria-labelledby="h-demo" hidden>
-  <h2 id="h-demo">Talk to it</h2>
-  <div class="body">
-    <p class="intro">This box talks to a Ruby instance running a small model with no tools and no memory, on a daily budget. Whatever you type is sent to that server, so leave out anything private.</p>
+<section class="sec" id="demo" aria-labelledby="h-demo" hidden>
+  <div class="wrap">
+    <h2 id="h-demo">Talk to it</h2>
+    <p class="intro">This box talks to a Garnet instance running a small model with no tools and no memory, on a daily budget. Whatever you type is sent to that server, so leave out anything private.</p>
     <div class="demo-box">
-      <div id="demo-log" class="log" role="log" aria-live="polite" aria-label="Conversation with Ruby"></div>
+      <div id="demo-log" class="log" role="log" aria-live="polite" aria-label="Conversation with Garnet"></div>
       <form id="demo-form" class="demo-form">
         <label for="demo-input" class="sr">Your message</label>
         <input id="demo-input" type="text" maxlength="500" autocomplete="off" placeholder="Say hello (500 characters max)">
@@ -225,9 +230,8 @@ Pick up where we left off.</pre>
 </main>
 
 <footer class="foot wrap">
-  <p>Ruby is open source under the <a href="https://github.com/2180719/Ruby/blob/main/LICENSE">Apache License 2.0</a>. Code and issues are on <a href="https://github.com/2180719/Ruby">GitHub</a>.</p>
-  <p>This page sets no cookies and loads nothing from anyone else's servers. The theme button remembers your choice in your browser's local storage, and that is all it stores.</p>
-  <p class="aside">There is also <code>ruby --sparkle</code>. It prints a gem.</p>
+  <p>Garnet is open source under the <a href="https://github.com/2180719/Garnet/blob/main/LICENSE">Apache License 2.0</a>. Code and issues are on <a href="https://github.com/2180719/Garnet">GitHub</a>.</p>
+  <p>This page sets no cookies, runs no trackers and loads nothing from anyone else's servers. The theme button remembers your choice in your browser's local storage, and that is all it stores.</p>
 </footer>
 <script src="main.js" defer></script>
 </body>

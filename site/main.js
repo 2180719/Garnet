@@ -1,7 +1,7 @@
 (function () {
   'use strict';
   var root = document.documentElement;
-  var KEY = 'ruby-theme';
+  var KEY = 'garnet-theme';
 
   function safeGet() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function safeSet(v) { try { localStorage.setItem(KEY, v); } catch (e) {} }
@@ -92,19 +92,19 @@
       history.push({ role: 'user', content: text });
       history = history.slice(-6);
       sendBtn.disabled = true;
-      status.textContent = 'Ruby is thinking…';
+      status.textContent = 'Garnet is thinking…';
       var headers = { 'Content-Type': 'application/json' };
       fetch(endpoint + '/v1/demo/chat/completions', {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify({ model: 'ruby-demo', stream: false, messages: history })
+        body: JSON.stringify({ model: 'garnet-demo', stream: false, messages: history })
       }).then(function (r) {
         if (!r.ok) throw new Error('status ' + r.status);
         return r.json();
       }).then(function (data) {
         var reply = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
         if (typeof reply !== 'string' || !reply) throw new Error('empty');
-        add('ruby', reply);
+        add('garnet', reply);
         history.push({ role: 'assistant', content: reply });
         status.textContent = '';
       }).catch(function () {
