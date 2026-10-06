@@ -119,7 +119,7 @@ Disabled by default. Enable it with `ruby api enable`.
 
 1. Load the session and task; check cancellation, budget and permissions.
 2. Build context: stable prefix (instructions, persona, tool index) → memory snapshot → task state/checkpoint → recent turns → selected results.
-3. Stream the model call; forward text to channels that support streaming.
+3. Stream the model call; forward text to channels that support streaming (not built yet: channels receive the finished reply; the terminal chat streams).
 4. Validate tool calls; apply only unambiguous repairs; authorize via policy; persist intent; execute with deadline and cancellation; store large output as artifacts.
 5. Repeat until completion, waiting for the user, cancellation, or budget exhaustion.
 6. Persist the final state and enqueue the reply. Completion reports state what was done, what was verified, and what remains.
@@ -131,15 +131,15 @@ Task states: `running`, `waiting_for_user`, `waiting_for_approval`, `completed`,
 ## Memory and skills
 
 - **Memory files** per namespace: `MEMORY.md` (agent notes) and `USER.md` (owner profile), each with a hard character cap (defaults 2,200 and 1,400). They are injected as a frozen snapshot at session start, so mid-session writes go to disk without breaking the cache. When full, the agent must consolidate or replace entries. Every change is versioned and can be inspected, edited and rolled back from the CLI or dashboard.
-- **Session search:** FTS5 over past sessions, retrieved on demand through a tool rather than injected.
+- **Session search (not built yet):** FTS5 over past sessions, retrieved on demand through a tool rather than injected.
 - **Skills:** `SKILL.md` folders in the agentskills.io format. Only the index (name plus one line) is in the prompt; bodies load on demand. The agent may create skills; each records provenance (`agent`/`user`), usage count and last-used date. A user-edited skill is locked: the agent can only propose a diff for approval. Stale or unused agent skills are surfaced for archival, never silently deleted. Third-party skills are never fetched automatically.
 
 ## Policy and sandboxes
 
 - Permission profiles grant capabilities: `fs.read`, `fs.write`, `net.fetch`, `exec`, `message.send`, `schedule.edit`, `memory.write`, and so on. Each is `allow`, `ask` or `deny`, plus path and host scopes.
-- Approvals are persisted, bound to one pending operation, accepted only from an authorized identity, and expire (default 24h). In chat they use inline buttons where available, otherwise a short code.
-- Sandbox backends: `local` (workspace roots only; not an isolation boundary), `docker`, then `ssh`. A profile marked isolated must use a real boundary; an unavailable backend is an error, never a silent downgrade.
-- Credentials are injected into tools by name, never placed in prompts, and redacted from logs and tool output.
+- Approvals are persisted, bound to one pending operation, accepted only from an authorized identity, and expire (default 24h). In chat they use inline buttons where available, otherwise a short code (today: short code only).
+- Sandbox backends: `local` (workspace roots only; not an isolation boundary), `docker`, then `ssh` (not built yet). A profile marked isolated must use a real boundary; an unavailable backend is an error, never a silent downgrade.
+- Credentials are injected into tools by name, never placed in prompts, and redacted from logs and tool output (redaction is built; injecting named secrets into commands is not yet).
 
 ## Scheduler
 
@@ -174,6 +174,7 @@ Static, no tracking, no cookies, no third-party requests, no frameworks; fast on
 | 4. Scheduler, chat approvals, Signal, OpenAI-compatible models, Docker sandbox | Done |
 | 5. Dashboard and website | Done: website, demo endpoint, dashboard (all pages including sessions, logs and routing, achievements, easter eggs). Keyboard navigation not yet checked by hand |
 | 6. Release hardening | Discord, importer, backup/restore, encrypted secret store, failure-injection tests, one-line installer, `ruby setup` and `ruby doctor` done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)), v1.0 tag |
+| Next | Missing features ranked from research into OpenClaw, Hermes and the wider field: [docs/FEATURE-GAPS.md](docs/FEATURE-GAPS.md) |
 
 ## Build phases
 
