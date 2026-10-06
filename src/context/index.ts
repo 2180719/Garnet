@@ -14,3 +14,4 @@ export {
   type FrozenContext,
 } from './builder.ts';
 export { prepareAttachments, type AttachmentView } from './attachments.ts';
+export { projectInstructionsSection, MAX_PROJECT_INSTRUCTIONS } from './workspace.ts';

@@ -1,23 +1,32 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '../contracts/index.ts';
-import { MAX_BODY, MAX_DESCRIPTION, type SkillStore } from './store.ts';
+import { MAX_BODY, MAX_DESCRIPTION, MAX_SKILL_FILE, type SkillStore } from './store.ts';
 
 const name = z.string().min(1).max(64).describe('Skill name: lowercase letters, digits and hyphens.');
 const description = z.string().min(1).max(MAX_DESCRIPTION).describe('One line saying what the skill does and when to use it.');
 const body = z.string().min(1).max(MAX_BODY).describe('Markdown instructions: generic, numbered steps, no one-off details.');
 
 export function skillTools(store: SkillStore): ToolDefinition[] {
-  const view: ToolDefinition<{ name: string }> = {
+  const view: ToolDefinition<{ name: string; file?: string | undefined }> = {
     name: 'skill_view',
     version: 1,
-    description: 'Load the full instructions of a skill from the skills index. Call this before following a skill.',
-    input: z.object({ name }),
+    description:
+      'Load the full instructions of a skill from the skills index, plus the list of files bundled with it (references/, scripts/, assets). Call this before following a skill. Pass "file" (a relative path from that list, e.g. references/api.md) to read one bundled text file instead.',
+    input: z.object({
+      name,
+      file: z.string().min(1).max(256).optional().describe('Relative path of a bundled text file, as listed by skill_view.'),
+    }),
     capability: 'fs.read',
     idempotent: true,
-    maxOutputChars: MAX_BODY + 1000,
-    async run({ name }) {
+    maxOutputChars: Math.max(MAX_BODY, MAX_SKILL_FILE) + 1000,
+    async run({ name, file }) {
+      if (file !== undefined) return { content: store.readFile(name, file), data: { name, file } };
       const s = store.view(name);
-      return { content: `# Skill: ${s.name}\n${s.description}\n\n${s.body}`, data: { name: s.name } };
+      const files = store.files(name);
+      const list = files.length
+        ? `\n\n## Bundled files\nRead one with skill_view {"name": "${s.name}", "file": "<path>"}. Scripts are text to read; run them only through your normal tools.\n${files.map((f) => `- ${f}`).join('\n')}`
+        : '';
+      return { content: `# Skill: ${s.name}\n${s.description}\n\n${s.body}${list}`, data: { name: s.name } };
     },
   };
 

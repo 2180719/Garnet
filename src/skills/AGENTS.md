@@ -3,6 +3,7 @@
 Reusable procedures in the agentskills.io format: `<root>/<name>/SKILL.md` (YAML frontmatter with `name` and `description`, then markdown).
 
 - Public API: `SkillStore` (list, index, view, create, update, proposal/acceptProposal/rejectProposal, archive/unarchive, stale, problems) and `skillTools(store)` (`skill_view`, `skill_create`, `skill_update`).
+- Bundled files (`references/`, `scripts/`, assets): `files(name)` lists them (no SKILL.md, PROPOSED.md, dotfiles, symlinks) and `readFile(name, file)` reads one, contained to the skill dir (relative path, no `..`, realpath check, no symlinks, regular UTF-8 text, at most `MAX_SKILL_FILE`). `skill_view {name, file?}` exposes both; reading a file does not count as a use.
 - Only `index()` goes in the prompt (name + description, no counts or timestamps so the cache stays stable). Bodies load on demand through `skill_view`.
 - Garnet metadata lives in a sidecar `.garnet.json`; `SKILL.md` is never touched by `view`, `archive` or usage tracking.
 - Lock rule: a skill is locked if provenance is `user`, there is no sidecar, or the SKILL.md hash differs from `agentHash` (the owner edited it). The agent can never overwrite a locked skill: `update` writes `PROPOSED.md` and returns `proposed`. Only the owner accepts or rejects proposals.

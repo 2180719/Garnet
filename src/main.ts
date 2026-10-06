@@ -14,6 +14,7 @@ import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
+import { projectInstructionsSection } from './context/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
@@ -190,7 +191,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       budget,
       workspace: paths.workspace,
       persona: config.persona,
-      promptSections: (ns) => [memory.snapshot(ns), skills.index(), importedArchiveSection(paths.workspace)],
+      promptSections: (ns) => [projectInstructionsSection(paths.workspace), memory.snapshot(ns), skills.index(), importedArchiveSection(paths.workspace)],
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       maxOutputTokens: config.model.maxOutputTokens,
