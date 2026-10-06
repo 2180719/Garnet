@@ -32,6 +32,16 @@ test('applyProfile rejects bad input without writing anything', () => {
   assert.equal(readFileSync(join(home, 'config.json'), 'utf8'), before);
 });
 
+test('applyProfile: a whitespace-only owner name is rejected and does not clear the stored owner', () => {
+  const home = tempDir();
+  writeConfig(home, defaultConfig());
+  applyProfile(home, { name: 'Ruby', owner: 'Sam' });
+  for (const bad of ['  ', ' ', 'Sam Evil', 'a\u0085b']) {
+    assert.throws(() => applyProfile(home, { owner: bad }), /single line|control|only spaces/i, JSON.stringify(bad));
+  }
+  assert.equal(readPersona(loadConfig(home).config.persona).owner, 'Sam');
+});
+
 test('set_profile: needs the memory.write permission and summarizes what it saves', async () => {
   const home = tempDir();
   const tool = profileTool(home);
