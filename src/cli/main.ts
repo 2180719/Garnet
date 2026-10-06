@@ -8,6 +8,7 @@ import { api, dashboard, jobs, pair, service, start } from './admin.ts';
 import { memory, skills } from './knowledge.ts';
 import { backup, restore } from './backup.ts';
 import { runImport } from '../migrate/index.ts';
+import { importDeps } from './import.ts';
 import { unlockWarnings } from '../secrets/index.ts';
 import { secrets } from './secrets.ts';
 import { doctor } from './doctor.ts';
@@ -113,14 +114,16 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
       case 'import': {
         const ruby = createRuby({ noModel: true });
         try {
-          const { config, paths } = ruby;
-          return runImport(rest, io, {
-            memory: ruby.memory,
-            skills: ruby.skills,
-            workspace: paths.workspace,
-            getPersona: () => config.persona,
-            setPersona: (persona) => writeConfig(paths.home, { ...config, persona }),
-          });
+          let config = ruby.config;
+          const save = (c: typeof config) => {
+            config = c;
+            writeConfig(ruby.paths.home, c);
+          };
+          return await runImport(
+            rest,
+            io,
+            importDeps(ruby, { getConfig: () => config, setConfig: save, getPersona: () => config.persona, setPersona: (persona) => save({ ...config, persona }) }),
+          );
         } finally {
           ruby.close();
         }

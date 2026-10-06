@@ -260,13 +260,22 @@ export class SkillStore {
 
   // ---- agent writes ----
 
-  create(name: string, description: string, body: string, provenance: Provenance = 'agent'): { status: 'created' } {
+  /**
+   * `frontmatter`: extra single-line keys kept verbatim in SKILL.md (the importer keeps `metadata`
+   * and `requires` this way). `name` and `description` cannot be set through it.
+   */
+  create(name: string, description: string, body: string, provenance: Provenance = 'agent', frontmatter: Record<string, string> = {}): { status: 'created' } {
     this.checkName(name);
     checkFields(description, body);
     if (existsSync(this.dir(name))) bad(`A skill named "${name}" already exists. Use skill_update to change it.`);
+    const extra: Entry[] = [];
+    for (const [key, value] of Object.entries(frontmatter)) {
+      if (key === 'name' || key === 'description' || !/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(key) || /[\r\n]/.test(value)) bad(`Invalid frontmatter key "${key}".`);
+      extra.push({ key, raw: [`${key}: ${value}`], value });
+    }
     this.ensureDir(this.root);
     this.ensureDir(this.dir(name));
-    const content = serializeSkillFile(name, description, body, []);
+    const content = serializeSkillFile(name, description, body, extra);
     writeAtomic(this.skillPath(name), content);
     const t = this.iso();
     this.writeMeta(name, {
