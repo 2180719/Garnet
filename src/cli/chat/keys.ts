@@ -54,6 +54,8 @@ function plain(ch: string, meta = false): Key {
 function fromCodepoint(code: number, mods: Pick<Key, 'ctrl' | 'meta' | 'shift'>): Key {
   const fn = KITTY_FUNCTIONAL[code];
   if (fn) return key(fn, mods);
+  // Garbage (or a sequence we do not know) must never throw out of the input handler.
+  if (!Number.isInteger(code) || code < 0x20 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) || (code >= 0xe000 && code <= 0xf8ff)) return key('unknown');
   const ch = String.fromCodePoint(code);
   if (!mods.ctrl && !mods.meta) return key('text', {}, mods.shift ? ch.toUpperCase() : ch);
   return key(ch.toLowerCase(), mods);

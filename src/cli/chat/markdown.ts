@@ -4,7 +4,7 @@
 // It renders as text arrives: complete lines are final, the partial last
 // line is shown provisionally.
 
-import { displayWidth, padEnd, wrapText } from './text.ts';
+import { displayWidth, padEnd, sanitize, wrapText } from './text.ts';
 import type { Theme } from './theme.ts';
 
 /** Inline markdown → styled text. Code spans are protected from other rules. */
@@ -55,7 +55,8 @@ export class MarkdownStream {
   }
 
   push(text: string): string[] {
-    this.partial += text.replace(/\r\n?/g, '\n');
+    // Model text is untrusted: control characters are shown, never sent to the terminal.
+    this.partial += sanitize(text.replace(/\r\n?/g, '\n'));
     const rows: string[] = [];
     let nl: number;
     while ((nl = this.partial.indexOf('\n')) !== -1) {

@@ -211,7 +211,7 @@ export function layoutEditor(s: EditorState, width: number, prompt: string, cont
         place();
         cursorPlaced = true;
       }
-      const shown = g === '\t' ? '    ' : /^[\x00-\x1f\x7f]$/.test(g) ? '?' : g;
+      const shown = g === '\t' ? '    ' : /^[\x00-\x1f\x7f-\x9f]$/.test(g) ? '?' : g;
       const w = g === '\t' ? 4 : shown === '?' ? 1 : graphemeWidth(g);
       if (rowWidth + w > avail && rowWidth > 0) newRow();
       row += shown;

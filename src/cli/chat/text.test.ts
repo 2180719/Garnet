@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { displayWidth, formatDuration, formatTokens, graphemes, padEnd, stripAnsi, truncate, wrapText } from './text.ts';
+import { displayWidth, formatDuration, formatTokens, graphemes, padEnd, sanitize, stripAnsi, truncate, wrapText } from './text.ts';
 
 test('display width counts terminal cells, not code units', () => {
   assert.equal(displayWidth('hello'), 5);
@@ -56,4 +56,12 @@ test('formatTokens never shows unknown as zero', () => {
   assert.equal(formatDuration(450), '450ms');
   assert.equal(formatDuration(2400), '2.4s');
   assert.equal(formatDuration(125_000), '2m 5s');
+});
+
+test('sanitize shows control characters instead of letting them reach the terminal', () => {
+  assert.equal(sanitize('ok\tline\nnext'), 'ok\tline\nnext', 'tabs and newlines stay');
+  assert.equal(sanitize('a\x1b[2K\rb'), 'a␛[2K␍b');
+  assert.equal(sanitize('bell\x07 del\x7f c1\x9b'), 'bell␇ del␡ c1�');
+  assert.equal(sanitize('x\r\ny'), 'x\ny', 'CRLF is a newline');
+  assert.equal(displayWidth(sanitize('\x1b[31m')), 5, 'every shown character takes a cell');
 });

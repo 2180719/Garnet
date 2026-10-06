@@ -45,6 +45,23 @@ export function stripAnsi(text: string): string {
   return text.replace(ANSI, '');
 }
 
+/**
+ * Makes untrusted text (model output, tool results, approval summaries) safe
+ * to print: control characters other than newline and tab are shown as their
+ * Unicode control pictures (ESC as `␛`, CR as `␍`) instead of reaching the
+ * terminal, where they could erase or rewrite what the owner sees (for
+ * example the command in an approval prompt) or set the clipboard. C1
+ * controls become `�`. Apply it to the data before adding Ruby's own styles.
+ */
+export function sanitize(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]/g, (c) => {
+    const code = c.charCodeAt(0);
+    if (code < 0x20) return String.fromCharCode(0x2400 + code);
+    return code === 0x7f ? '␡' : '�';
+  });
+}
+
 /** Display width in terminal columns, ignoring ANSI escape sequences. */
 export function displayWidth(text: string): number {
   let width = 0;

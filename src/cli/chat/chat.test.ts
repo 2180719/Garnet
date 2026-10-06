@@ -261,6 +261,39 @@ test('a narrower terminal is redrawn cleanly at the new width', async () => {
   assert.equal(await c.done, 0);
 });
 
+test('escape sequences in model text, tool calls and approvals are shown, never sent to the terminal', async () => {
+  const evil = 'x\x1b[2K\rHIDDEN\x1b]52;c;cHduZWQ=\x07';
+  const model = new FakeModel([
+    { text: `Look: ${evil}`, toolCalls: [{ name: 'write_file', input: { path: `a${evil}.md`, content: 'x' } }] },
+    { text: 'ok' },
+  ]);
+  const c = start(model, { columns: 120 });
+  await c.type('go\r');
+  await c.until((t) => t.includes('Allow? y allow once'), 'the approval prompt');
+  await c.type('n');
+  await c.until((t) => t.includes('✓ done') || t.includes('■'), 'the end of the turn');
+  assert.ok(!c.stdout.raw.includes('\x1b[2K'), 'no line erase from content');
+  assert.ok(!c.stdout.raw.includes('\x1b]52'), 'no clipboard write from content');
+  assert.match(c.text(), /◆ Look: x␛\[2K\n  HIDDEN␛\]52;c;cHduZWQ=␇/, 'a lone CR in model text is a line break; ESC and BEL are shown');
+  assert.match(c.text(), /│ .*ax␛\[2K␍HIDDEN␛\]52;c;cHduZWQ=␇\.md/, 'the approval summary shows the control characters');
+  await c.type('\x04');
+  assert.equal(await c.done, 0);
+});
+
+test('/help redrawn at a narrower width keeps its layout', async () => {
+  const c = start(new FakeModel(), { columns: 100 });
+  await c.type('/help\r');
+  await c.until((t) => t.includes('Keys'), 'help');
+  c.stdout.setSize(60, 30);
+  await new Promise((r) => setTimeout(r, 120));
+  const rows = c.stdout.vt.text().split('\n');
+  const i = rows.findIndex((r) => r.includes('Up / Down'));
+  assert.ok(i >= 0, rows.join('\n'));
+  assert.match(rows[i + 1]!, /^ {26}\S/, `continuation rows keep the hanging indent:\n${rows.join('\n')}`);
+  await c.type('\x04');
+  assert.equal(await c.done, 0);
+});
+
 test('without a terminal, chat is plain: replies on stdout, everything else on stderr', async () => {
   const home = tempDir();
   const stdin = new PassThrough();
