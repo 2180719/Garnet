@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
-import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
+import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, unknownGarnetEnv, type GarnetConfig } from '../config/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
@@ -74,6 +74,8 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
 
   // Deprecated names: RUBY_* variables and a ~/.ruby home from before the rename
   for (const v of deprecatedEnvVars(d.env)) add('env', 'warn', `${v.old} is deprecated, rename to ${v.name}`, `Set ${v.name} instead (a line in ${join(d.home, 'env')}, your shell profile or the service environment).`);
+  // Settings live in config.json: a GARNET_* variable nothing reads is ignored, so say so rather than let it look effective.
+  for (const name of unknownGarnetEnv(d.env)) add('env', 'warn', `${name} is set but Garnet does not read it (settings live in config.json, not the environment)`, `Remove it, and use \`garnet config set <path> <value>\` for the setting (\`garnet config explain\` lists them).`);
   if (d.home === join(d.userHome, '.ruby') && !envVar(d.env, 'GARNET_HOME')) add('home', 'warn', `${d.home} is a legacy data directory from before the rename`, `Stop Garnet, then run: mv ${d.home} ${join(d.userHome, '.garnet')}`);
 
   for (const s of legacyServices({ platform: d.platform, userHome: d.userHome })) add('service', 'warn', `A legacy service from before the rename is still installed (${s.path})`, `Run \`garnet service install\` to replace it, or remove ${s.path} by hand.`);

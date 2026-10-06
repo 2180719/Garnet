@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Configuration
+- `garnet config get <path>`, `set <path> <value>` and `unset <path>`: change any setting from the command line, validated by the schema, written atomically, with the change printed. Credential-shaped values are refused (and never echoed), and `*Env` fields accept only variable names.
+- New `docs/CONFIGURATION.md` classifies every environment variable Garnet reads (secret, bootstrap, system) and states precedence. No setting is environment-only; `garnet doctor` warns about `GARNET_*` variables that nothing reads.
+- `garnet config explain` now covers permissions, route matches, job budgets and notify targets.
+
 ### Review fixes
 - Security: results of jobs and agent-sent messages that read untrusted content now carry that state into the chat they land in; forwarded voice notes and audio files count as untrusted (only a live voice note from the paired owner in a private chat does not); links in approval text are no longer treated as the owner's; "message the owner" and relative times are resolved before approval, so the action that runs is exactly the one approved; the agent cannot pause or resume `config.json` jobs, granting a job `exec` needs exec approval, and agent messages never go to group chats.
 - `web_fetch` no longer leaks a connection when a compressed response stalls.
