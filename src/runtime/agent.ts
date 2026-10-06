@@ -23,6 +23,7 @@ import {
 import { extractSummary, frozenContext, messagesFromEvents, planCompaction, systemPrompt, type FrozenContext } from '../context/index.ts';
 import type { SessionStore } from '../store/index.ts';
 import type { ToolExecutor, ToolRegistry } from '../tools/index.ts';
+import { sessionTaint } from './taint.ts';
 
 /** Live progress for interactive surfaces. The event log remains the record. */
 export type RuntimeEvent =
@@ -31,6 +32,8 @@ export type RuntimeEvent =
   | { type: 'tool_end'; call: ToolCallBlock; result: ToolResult }
   | { type: 'retry'; attempt: number; delayMs: number; message: string }
   | { type: 'compacting' }
+  /** Untrusted content entered the context from `source`; `sources` is the session's full list. */
+  | { type: 'tainted'; source: string; sources: readonly string[] }
   | { type: 'status'; status: TaskStatus; reason: string | null };
 
 export type AgentDeps = {
@@ -69,6 +72,14 @@ export type RunOptions = {
   signal?: AbortSignal;
   onEvent?: (event: RuntimeEvent) => void;
   source?: string;
+  /**
+   * Taint carried in with this task: the sources a parent session had read
+   * (a subagent started by a tainted session) or an untrusted trigger
+   * payload. Recorded as inherited `tainted` events right after the user
+   * message, so the session is tainted before its first tool call and URLs in
+   * that message do not count as the owner's.
+   */
+  taint?: readonly string[];
 };
 
 /**
@@ -94,6 +105,11 @@ export class Agent {
         message: { role: 'user', content: [{ type: 'text', text: userText }] },
         source: options.source ?? 'cli',
       });
+      const known = sessionTaint(store.events(sessionId)).sources;
+      for (const source of new Set(options.taint ?? [])) {
+        store.append(sessionId, { type: 'tainted', source, inherited: true });
+        if (!known.includes(source)) emit({ type: 'tainted', source, sources: [...known, source] });
+      }
     }
     const task = store.createTask(sessionId, unknownUsage());
     const started = Date.now();
@@ -171,6 +187,7 @@ export class Agent {
       }
 
       let waiting: string | null = null;
+      let taint = sessionTaint(store.events(sessionId));
       for (const call of calls) {
         const operationId = `${task.id}:${call.id}`;
         let result: ToolResult;
@@ -189,11 +206,20 @@ export class Agent {
           store.append(sessionId, { type: 'tool_started', call, operationId });
           emit({ type: 'tool_start', call });
           task.toolCalls += 1;
-          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name) });
+          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name), taint });
           emit({ type: 'tool_end', call, result });
           if (result.status === 'error' && result.category === 'needs_approval') waiting = `Approval needed for ${call.name}.`;
         }
         store.append(sessionId, { type: 'tool_finished', callId: call.id, operationId, result });
+        if (result.untrusted) {
+          // Recorded after the result so the log reads in order; later calls in this turn already see it.
+          const { source } = result.untrusted;
+          if (!taint.sources.includes(source)) {
+            store.append(sessionId, { type: 'tainted', source, callId: call.id });
+            emit({ type: 'tainted', source, sources: [...taint.sources, source] });
+          }
+          taint = sessionTaint(store.events(sessionId));
+        }
       }
       store.updateTask(task);
       if (waiting) return finish('waiting_for_approval', waiting);
