@@ -110,22 +110,47 @@ test('transient provider errors are retried; fatal ones fail the task', async ()
 
 test('tool calls from a truncated response are never executed', async () => {
   const t = setup([
-    () => ({ toolCalls: [{ name: 'write_file', input: { path: 'a', content: 'partial' } }] }),
+    { toolCalls: [{ name: 'write_file', input: { path: 'a', content: 'partial' } }], stopReason: 'max_tokens' },
     { text: 'done' },
   ]);
-  // Simulate max_tokens by wrapping the model's stream.
-  const original = t.model.stream.bind(t.model);
-  let first = true;
-  t.model.stream = async function* (req) {
-    for await (const e of original(req)) {
-      if (e.type === 'done' && first) {
-        first = false;
-        yield { ...e, stopReason: 'max_tokens' as const };
-      } else yield e;
-    }
-  };
   await t.run('write');
   assert.equal(t.store.events(t.session.id).filter((e) => e.type === 'tool_started').length, 0);
+});
+
+test('a retry-after beyond the task time limit fails instead of waiting', async () => {
+  const t = setup([{ error: { category: 'provider_transient', message: 'rate limited', retryAfterMs: 3_600_000 } }, { text: 'never' }], {
+    budget: { maxWallMs: 60_000 },
+  });
+  const task = await t.run('hi');
+  assert.equal(task.status, 'failed');
+  assert.match(task.reason ?? '', /time limit/);
+  assert.equal(t.model.requests.length, 1);
+  assert.ok(!t.events.some((e) => e.type === 'retry'));
+});
+
+test('an unexpected failure marks the task failed instead of leaving it running', async () => {
+  const t = setup([{ toolCalls: [{ name: 'list_files', input: {} }] }]);
+  const append = t.store.append.bind(t.store);
+  t.store.append = ((sessionId, event) => {
+    if (event.type === 'tool_started') throw new Error('disk full');
+    return append(sessionId, event);
+  }) as typeof t.store.append;
+  await assert.rejects(t.run('go'), /disk full/);
+  const [running] = t.store.unfinishedTasks();
+  assert.equal(running, undefined);
+  const lastStatus = t.store.events(t.session.id).findLast((e) => e.type === 'task_status');
+  assert.ok(lastStatus?.type === 'task_status');
+  const task = t.store.getTask(lastStatus.taskId);
+  assert.equal(task?.status, 'failed');
+  assert.match(task?.reason ?? '', /disk full/);
+  assert.notEqual(task?.endedAt, null);
+});
+
+test('a summary cut off at the output limit is not used as a checkpoint', async () => {
+  const t = setup([{ text: 'one' }, { text: 'two' }, { text: 'three' }, { text: '<summary>Said one, tw', stopReason: 'max_tokens' }]);
+  for (const m of ['a', 'b', 'c']) await t.run(m);
+  assert.equal((await t.agent.compact(t.session.id)).status, 'failed');
+  assert.ok(!t.store.events(t.session.id).some((e) => e.type === 'checkpoint'));
 });
 
 test('lanes serialize per key and run different keys concurrently', async () => {
@@ -135,6 +160,25 @@ test('lanes serialize per key and run different keys concurrently', async () => 
   await Promise.all([lanes.run('a', job('a1', 20)), lanes.run('a', job('a2', 1)), lanes.run('b', job('b1', 1))]);
   assert.ok(log.indexOf('end a1') < log.indexOf('start a2'), 'same key is serialized');
   assert.ok(log.indexOf('start b1') < log.indexOf('end a1'), 'different keys overlap');
+});
+
+test('lanes never exceed the global concurrency cap', async () => {
+  const lanes = new LaneQueue(2);
+  let active = 0;
+  let peak = 0;
+  const job = (ticks: number) => async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    for (let i = 0; i < ticks; i++) await null;
+    active -= 1;
+  };
+  const all: Promise<void>[] = [];
+  for (let i = 0; i < 200; i++) {
+    all.push(lanes.run(`k${i % 7}`, job(i % 5)));
+    if (i % 3 === 0) await null; // interleave new work with jobs finishing
+  }
+  await Promise.all(all);
+  assert.equal(peak, 2);
 });
 
 test('the system prompt is frozen per session and refreshed only by compaction', async () => {

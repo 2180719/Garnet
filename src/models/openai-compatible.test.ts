@@ -227,6 +227,36 @@ test('mid-stream error lines map to fatal or transient', async () => {
   assert.equal(transient.category, 'provider_transient');
 });
 
+test('the response body is released when the stream stops early', async () => {
+  // A body that never closes on its own, like a server still holding the connection.
+  const openBody = (first: string, onCancel: () => void) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(first));
+        },
+        cancel: onCancel,
+      }),
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+  let cancelled = 0;
+  const errored = last(await collect(model(() => openBody(chunk({ error: { message: 'boom' } }), () => void cancelled++))));
+  assert.equal(errored.category, 'provider_fatal');
+  assert.equal(cancelled, 1, 'a mid-stream error cancels the body');
+
+  for await (const e of model(() => openBody(delta({ content: 'hi' }), () => void cancelled++)).stream({ system: 's', messages: [user('x')], tools: [], maxOutputTokens: 10 })) {
+    if (e.type === 'text_delta') break; // the consumer stops listening
+  }
+  assert.equal(cancelled, 2, 'a consumer that stops early cancels the body');
+});
+
+test('cache writes reported by the provider are split out of input tokens', async () => {
+  const full = delta({ content: 'x' }, 'stop') + chunk({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 10, cache_write_tokens: 50 } } }) + 'data: [DONE]\n\n';
+  const done = (await collect(model(() => sseResponse([full])))).at(-1);
+  assert.ok(done?.type === 'done');
+  assert.deepEqual(done.usage, { inputTokens: 40, outputTokens: 1, cacheReadTokens: 10, cacheWriteTokens: 50 });
+});
+
 test('network failure is transient; truncated stream is transient', async () => {
   const net = new OpenAICompatibleModel({ baseUrl: 'http://x/v1', model: 'm', fetch: (async () => { throw new TypeError('fetch failed'); }) as typeof fetch });
   assert.equal(last(await collect(net)).category, 'provider_transient');

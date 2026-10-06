@@ -4,9 +4,11 @@ import {
   type ErrorCategory,
   type ToolCallBlock,
   type ToolContext,
+  type ToolOutput,
   type ToolResult,
 } from '../contracts/index.ts';
-import type { Approver, Policy } from '../policy/index.ts';
+import { z, type ZodType } from 'zod';
+import type { ApprovalDecision, Approver, Policy } from '../policy/index.ts';
 import type { ToolRegistry } from './registry.ts';
 import type { ArtifactStore } from './artifacts.ts';
 import { repairCall } from './repair.ts';
@@ -61,9 +63,9 @@ export class ToolExecutor {
       return fail('invalid_input', `Tool "${tool.name}" is not available in this session. Available tools: ${ctx.allowedTools.join(', ')}.`);
     }
 
-    const parsed = tool.input.safeParse(call.input);
+    const parsed = strict(tool.input).safeParse(call.input);
     if (!parsed.success) {
-      const issues = parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ');
+      const issues = parsed.error.issues.map((i) => describeIssue(i, tool.input)).join('; ');
       return fail('invalid_input', `Invalid arguments for ${tool.name}: ${issues}. Fix the arguments and call again.`);
     }
     const input = parsed.data;
@@ -81,16 +83,21 @@ export class ToolExecutor {
       return fail('denied', `Not permitted: ${decision.reason}. Do not retry; tell the owner if this is needed.`);
     }
     if (decision.verdict === 'ask') {
-      const answer = await this.deps.approver({
-        sessionId: ctx.sessionId,
-        callId: call.id,
-        tool: tool.name,
-        capability: tool.capability,
-        targets,
-        input,
-        // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
-        summary: describe(tool.name, input, targets, ctx.workspace, tool.capability === 'exec' ? 10_000 : 120),
-      });
+      let answer: ApprovalDecision;
+      try {
+        answer = await this.deps.approver({
+          sessionId: ctx.sessionId,
+          callId: call.id,
+          tool: tool.name,
+          capability: tool.capability,
+          targets,
+          input,
+          // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
+          summary: describe(tool.name, input, targets, ctx.workspace, tool.capability === 'exec' ? 10_000 : 120),
+        });
+      } catch (e) {
+        return fail('internal', `Could not ask the owner for approval: ${errorMessage(e)}. The operation did not run.`);
+      }
       if (answer === 'denied') return fail('denied', 'The owner declined this operation. Do not retry it.');
       if (answer === 'deferred') return fail('needs_approval', 'Waiting for the owner to approve this operation.');
     }
@@ -98,24 +105,54 @@ export class ToolExecutor {
     if (ctx.signal.aborted) return fail('cancelled', 'Cancelled before the tool started.');
     const timeout = AbortSignal.timeout(tool.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const signal = AbortSignal.any([ctx.signal, timeout]);
+    let output: ToolOutput;
     try {
-      const output = await raceAbort(tool.run(input, { ...fullCtx, signal }), signal);
-      const max = tool.maxOutputChars ?? DEFAULT_MAX_OUTPUT;
-      if (output.content.length <= max) return { status: 'ok', content: output.content, truncated: false, durationMs: Date.now() - started };
-      const head = output.content.slice(0, max);
-      if (this.deps.artifacts) {
-        const artifactId = this.deps.artifacts.save(ctx.sessionId, output.content);
-        const content = `${head}\n[output truncated: showing ${max} of ${output.content.length} characters. Full output saved as ${artifactId}; use read_artifact to see the rest.]`;
-        return { status: 'ok', content, truncated: true, artifactId, durationMs: Date.now() - started };
-      }
-      const content = `${head}\n[output truncated: showing ${max} of ${output.content.length} characters]`;
-      return { status: 'ok', content, truncated: true, durationMs: Date.now() - started };
+      output = await raceAbort(tool.run(input, { ...fullCtx, signal }), signal);
     } catch (e) {
       if (timeout.aborted && !ctx.signal.aborted) return fail('timeout', `${tool.name} timed out.`);
       if (ctx.signal.aborted) return fail('cancelled', `${tool.name} was cancelled.`);
       return fail(isRubyError(e) ? e.category : 'tool_failed', errorMessage(e));
     }
+    const { content, truncated, artifactId } = this.limit(output.content, tool.maxOutputChars ?? DEFAULT_MAX_OUTPUT, ctx.sessionId);
+    const meta = artifactId ? { artifactId } : {};
+    // A tool that ran but reports a failed operation is an error result, never a success.
+    if (output.error) return { ...fail(output.error, content), ...meta };
+    return { status: 'ok', content, truncated, durationMs: Date.now() - started, ...meta };
   }
+
+  /** Applies the output cap, saving the full text as an artifact when a store is configured. */
+  private limit(full: string, max: number, sessionId: string): { content: string; truncated: boolean; artifactId?: string } {
+    if (full.length <= max) return { content: full, truncated: false };
+    const head = full.slice(0, max);
+    const note = `[output truncated: showing ${max} of ${full.length} characters`;
+    let artifactId: string | undefined;
+    try {
+      artifactId = this.deps.artifacts?.save(sessionId, full);
+    } catch {
+      // The tool already ran: report its (truncated) output rather than a failure.
+    }
+    if (!artifactId) return { content: `${head}\n${note}]`, truncated: true };
+    return { content: `${head}\n${note}. Full output saved as ${artifactId}; use read_artifact to see the rest.]`, truncated: true, artifactId };
+  }
+}
+
+/**
+ * Validates object inputs strictly: an unknown argument is an error the model
+ * can correct, never silently dropped (dropping `append: true` would turn an
+ * append into an overwrite). Schemas that set their own catchall keep it.
+ */
+function strict(schema: ZodType): ZodType {
+  return schema instanceof z.ZodObject && schema.def.catchall === undefined ? schema.strict() : schema;
+}
+
+function describeIssue(issue: z.core.$ZodIssue, schema: ZodType): string {
+  if (issue.code === 'unrecognized_keys') {
+    const where = issue.path.length ? ` in ${issue.path.join('.')}` : '';
+    const names = issue.keys.map((k) => `"${k}"`).join(', ');
+    const allowed = issue.path.length === 0 && schema instanceof z.ZodObject ? ` Allowed: ${Object.keys(schema.shape).join(', ')}.` : '';
+    return `unknown argument${issue.keys.length > 1 ? 's' : ''} ${names}${where}.${allowed}`;
+  }
+  return `${issue.path.join('.') || 'input'}: ${issue.message}`;
 }
 
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

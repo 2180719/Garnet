@@ -9,7 +9,7 @@ import type {
   ToolCallBlock,
   Usage,
 } from '../contracts/index.ts';
-import { unknownUsage } from '../contracts/index.ts';
+import { newId, unknownUsage } from '../contracts/index.ts';
 
 const PROVIDER = 'openai-compatible';
 
@@ -145,8 +145,9 @@ export class OpenAICompatibleModel implements ModelAdapter {
         return events;
       };
 
+      const reader = response.body.getReader();
+      let drained = false;
       try {
-        const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
         const lines = (final: boolean): string[] => {
@@ -162,7 +163,10 @@ export class OpenAICompatibleModel implements ModelAdapter {
         };
         for (;;) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            drained = true;
+            break;
+          }
           buf += decoder.decode(value, { stream: true });
           yield* process(lines(false));
           if (streamError) break;
@@ -174,6 +178,10 @@ export class OpenAICompatibleModel implements ModelAdapter {
       } catch (e) {
         if (isAbort(e, request.signal)) return yield fail('cancelled', 'Request aborted.');
         return yield fail('provider_transient', `Stream interrupted: ${msg(e)}`);
+      } finally {
+        // Stopped early (a mid-stream error, or the consumer stopped listening):
+        // release the connection instead of leaving the body unread.
+        if (!drained) void reader.cancel().catch(() => {});
       }
 
       if (request.signal?.aborted) return yield fail('cancelled', 'Request aborted.');
@@ -185,8 +193,8 @@ export class OpenAICompatibleModel implements ModelAdapter {
       const content: ContentBlock[] = [];
       if (text) content.push({ type: 'text', text });
       const toolCalls: ToolCallBlock[] = [];
-      for (const [index, c] of [...calls.entries()].sort((a, b) => a[0] - b[0])) {
-        toolCalls.push({ type: 'tool_call', id: c.id || `call_${index}`, name: c.name, input: parseArgs(c.args) });
+      for (const [, c] of [...calls.entries()].sort((a, b) => a[0] - b[0])) {
+        toolCalls.push({ type: 'tool_call', id: c.id || newId('call'), name: c.name, input: parseArgs(c.args) });
       }
       content.push(...toolCalls);
       for (const call of toolCalls) yield { type: 'tool_call', call };
@@ -277,12 +285,14 @@ function mapStop(reason: string | null, hasCalls: boolean): StopReason {
 function mapUsage(u: any): Usage {
   const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const prompt = num(u.prompt_tokens);
+  // prompt_tokens includes both; OpenRouter reports cache writes for providers that bill them.
   const cached = num(u.prompt_tokens_details?.cached_tokens);
+  const written = num(u.prompt_tokens_details?.cache_write_tokens);
   return {
-    inputTokens: prompt === null ? null : Math.max(0, prompt - (cached ?? 0)),
+    inputTokens: prompt === null ? null : Math.max(0, prompt - (cached ?? 0) - (written ?? 0)),
     outputTokens: num(u.completion_tokens),
     cacheReadTokens: cached,
-    cacheWriteTokens: null,
+    cacheWriteTokens: written,
   };
 }
 

@@ -81,3 +81,31 @@ test('maps HTTP errors to categories with retry-after', async () => {
   const overloaded = (await collect(model(err(529)))).at(-1);
   assert.ok(overloaded?.type === 'error' && overloaded.category === 'provider_transient');
 });
+
+test('mid-stream error events are classified by their error type', async () => {
+  const midStream = (type: string) => () =>
+    new Response(
+      sse([JSON.parse(stream.split('\n')[1]!.slice(6))]) + `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type, message: 'x' } })}\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+  for (const type of ['overloaded_error', 'api_error', 'rate_limit_error']) {
+    const e = (await collect(model(midStream(type)))).at(-1);
+    assert.ok(e?.type === 'error' && e.category === 'provider_transient', type);
+  }
+  const bad = (await collect(model(midStream('invalid_request_error')))).at(-1);
+  assert.ok(bad?.type === 'error' && bad.category === 'provider_fatal');
+});
+
+test('foreign provider blocks and empty text blocks are not sent', async () => {
+  const seen: any[] = [];
+  await collect(model(() => new Response(stream, { headers: { 'content-type': 'text/event-stream' } }), seen), [
+    { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    { role: 'assistant', content: [{ type: 'provider', provider: 'other', data: {} } as never, { type: 'text', text: '' }, { type: 'text', text: 'hello' }] },
+    { role: 'user', content: [{ type: 'text', text: 'again' }] },
+    { role: 'assistant', content: [{ type: 'provider', provider: 'other', data: {} } as never] },
+    { role: 'user', content: [{ type: 'text', text: 'and again' }] },
+  ] as never);
+  const messages = seen[0].messages;
+  assert.deepEqual(messages[1].content, [{ type: 'text', text: 'hello' }]);
+  assert.deepEqual(messages.map((m: { role: string }) => m.role), ['user', 'assistant', 'user', 'user'], 'an assistant turn with nothing to send is left out');
+});
