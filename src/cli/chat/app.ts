@@ -1,5 +1,8 @@
 // Interactive terminal chat: wires keys, the editor, the runtime and the screen.
 // Rendering decisions live in render.ts/markdown.ts; this file owns state and I/O.
+// Two surfaces: inline (screen.ts: committed rows go to the scrollback) and
+// fullscreen (fullscreen.ts: the alternate screen with a status bar and a
+// scrollable transcript, laid out by layout.ts and scrolled by viewport.ts).
 
 import type { TaskRecord, TaskStatus, ToolCallBlock, ToolResult } from '../../contracts/index.ts';
 import { errorMessage } from '../../contracts/index.ts';
@@ -13,11 +16,14 @@ import { applyKey, emptyEditor, layoutEditor, type EditorState } from './editor.
 import type { InputHistory } from './history.ts';
 import { KeyParser, type Key } from './keys.ts';
 import { MarkdownStream } from './markdown.ts';
+import { FULLSCREEN_OFF, FullScreen } from './fullscreen.ts';
+import { compose } from './layout.ts';
 import {
-  approvalChoices, approvalOutcome, approvalRows, assistantRows, banner, footer, hangingRows, sessionTotals, SPINNER,
-  suggestionRows, taintedRows, toolDoneRows, toolRunningRow, transcriptRows, turnSummary, userBlock, type SessionTotals,
+  approvalChoices, approvalOutcome, approvalRows, assistantRows, banner, footer, fullscreenFooter, hangingRows, MARK, scrollIndicator, sessionTotals,
+  SPINNER, statusBar, suggestionRows, taintedRows, toolDoneRows, toolRunningRow, transcriptRows, turnSummary, userBlock, type SessionTotals,
 } from './render.ts';
 import { Screen, type TerminalOut } from './screen.ts';
+import { appended, FOLLOW, following, rewrapped, scrollBy, scrollToTop, trimmed, view, type ScrollState } from './viewport.ts';
 import { displayWidth, formatDuration, sanitize, truncate, wrapText } from './text.ts';
 import type { Theme } from './theme.ts';
 
@@ -36,7 +42,17 @@ export type InteractiveOptions = {
   processHooks?: boolean;
   /** First-run wake-up (see `flow.ts`). */
   onboard?: OnboardFlow;
+  /** The fullscreen UI (alternate screen, status bar, scrollable transcript). Absent: the inline UI. */
+  fullscreen?: {
+    /** Start with mouse reporting on (the wheel scrolls; F2 or Alt+M toggles it). */
+    mouse: boolean;
+    /** The assistant's name for the status bar. */
+    assistantName: string;
+  };
 };
+
+/** Transcript rows kept for scrolling in fullscreen; older rows are dropped. */
+const MAX_ROWS = 20_000;
 
 type Running = {
   controller: AbortController;
@@ -57,7 +73,19 @@ const TERMINAL_MODES_OFF = '\x1b[<u\x1b[?2004l\x1b[?25h';
 
 export class InteractiveChat {
   private readonly o: InteractiveOptions;
-  private readonly screen: Screen;
+  /** The inline surface, or null in fullscreen. */
+  private readonly screen: Screen | null;
+  /** The fullscreen surface, or null inline. */
+  private readonly full: FullScreen | null;
+  /** Fullscreen: committed transcript rows at the current width, the scroll position and the last layout. */
+  private rows: string[] = [];
+  private scroll: ScrollState = FOLLOW;
+  private bodyHeight = 10;
+  private contentLength = 0;
+  private mouse = false;
+  /** Fullscreen: rows printed on the normal screen after leaving the alternate screen. */
+  private readonly epilogue: string[] = [];
+  private terminalRestored = false;
   private readonly parser = new KeyParser();
   private sessionId: string;
   private editor: EditorState;
@@ -88,7 +116,9 @@ export class InteractiveChat {
 
   constructor(options: InteractiveOptions) {
     this.o = options;
-    this.screen = new Screen(options.stdout);
+    this.full = options.fullscreen ? new FullScreen(options.stdout) : null;
+    this.screen = this.full ? null : new Screen(options.stdout);
+    this.mouse = options.fullscreen?.mouse ?? false;
     this.sessionId = options.sessionId;
     this.editor = emptyEditor(options.history.entries.length);
     this.totals = sessionTotals(options.garnet.store.events(this.sessionId), options.garnet.pricing);
@@ -98,9 +128,13 @@ export class InteractiveChat {
     return this.o.theme;
   }
 
+  private get columns(): number {
+    return (this.full ?? this.screen!).columns;
+  }
+
   /** Usable width: one column short of the terminal so rows never trigger autowrap. */
   private get width(): number {
-    return this.screen.columns - 1;
+    return this.columns - 1;
   }
 
   /** The approver handed to the runtime: asks inline and remembers "always" answers for this chat. */
@@ -113,6 +147,7 @@ export class InteractiveChat {
     }
     if (this.exiting || !this.running) return Promise.resolve('denied');
     this.finishStream();
+    this.scroll = FOLLOW; // the request must be in view
     this.commit((w) => approvalRows(req, this.theme, w));
     return new Promise((resolve) => {
       this.approval = { req, resolve };
@@ -141,7 +176,7 @@ export class InteractiveChat {
 
     const events = this.o.resumed ? garnet.store.events(this.sessionId) : [];
     const sessionId = this.sessionId;
-    this.drawnColumns = this.screen.columns;
+    this.drawnColumns = this.columns;
     this.commit((w) => [...banner(this.theme, w, garnet.model.id, sessionId, this.o.resumed), ...transcriptRows(events, this.theme, w)]);
     if (this.o.onboard) void this.kick(this.o.onboard);
     return done;
@@ -153,30 +188,48 @@ export class InteractiveChat {
     (stdin as NodeJS.ReadStream).setEncoding?.('utf8');
     stdin.resume();
     this.o.stdout.write(TERMINAL_MODES_ON);
+    this.full?.enter(this.mouse);
+    this.terminalRestored = false;
   }
 
   private leaveRawMode(): void {
+    this.full?.leave();
     this.o.stdout.write(TERMINAL_MODES_OFF);
     this.o.stdin.setRawMode?.(false);
+    this.terminalRestored = true;
   }
 
   private installProcessHooks(): void {
-    const restore = () => this.o.stdout.write(TERMINAL_MODES_OFF);
+    // Last resort when the chat cannot clean up: written once, so a second
+    // "leave the alternate screen" cannot move the cursor over a crash report.
+    const restore = () => {
+      if (this.terminalRestored) return;
+      this.terminalRestored = true;
+      this.o.stdout.write((this.full ? FULLSCREEN_OFF : '') + TERMINAL_MODES_OFF);
+      this.o.stdin.setRawMode?.(false);
+    };
     const onTerm = () => void this.exit(143);
     const onHup = () => void this.exit(129);
+    const onInt = () => void this.exit(130);
     const onCont = () => {
       this.enterRawMode();
-      this.screen.resized();
+      this.screen?.resized();
+      this.full?.invalidate();
       this.render();
     };
     process.on('exit', restore);
+    // Runs before Node prints an uncaught error, so the report lands on the normal screen with the terminal usable.
+    process.on('uncaughtExceptionMonitor', restore);
     process.on('SIGTERM', onTerm);
     process.on('SIGHUP', onHup);
+    process.on('SIGINT', onInt);
     process.on('SIGCONT', onCont);
     this.cleanups.push(() => {
       process.off('exit', restore);
+      process.off('uncaughtExceptionMonitor', restore);
       process.off('SIGTERM', onTerm);
       process.off('SIGHUP', onHup);
+      process.off('SIGINT', onInt);
       process.off('SIGCONT', onCont);
     });
   }
@@ -208,6 +261,7 @@ export class InteractiveChat {
   /** Handles one key. Public for tests. */
   onKey(k: Key): void {
     if (this.exiting) return;
+    if (this.full && this.onViewKey(k)) return this.render();
     if (this.approval) return this.onApprovalKey(k);
     const now = Date.now();
     if (k.ctrl && k.name === 'c') {
@@ -246,6 +300,7 @@ export class InteractiveChat {
       if (text.trim()) this.o.history.add(text);
       this.editor = emptyEditor(this.o.history.entries.length);
       if (text.trim()) {
+        this.scroll = FOLLOW;
         if (this.running) this.queue.push(text);
         else void this.process(text);
       }
@@ -253,11 +308,38 @@ export class InteractiveChat {
     this.render();
   }
 
+  /** Fullscreen keys that move the view or toggle the mouse. True when handled. */
+  private onViewKey(k: Key): boolean {
+    const total = this.contentLength;
+    const h = this.bodyHeight;
+    const by = (delta: number) => (this.scroll = scrollBy(this.scroll, delta, total, h));
+    const idle = !this.editor.text && !this.approval;
+    if (k.name === 'mouse') return true; // clicks and releases: nothing to do
+    if (k.name === 'wheelup' || k.name === 'wheeldown') by(k.name === 'wheelup' ? -3 : 3);
+    else if (k.name === 'pageup' || k.name === 'pagedown') by((k.name === 'pageup' ? -1 : 1) * Math.max(1, h - 2));
+    else if ((k.name === 'up' || k.name === 'down') && (k.shift || k.ctrl) && !k.meta) by((k.name === 'up' ? -1 : 1) * Math.max(1, Math.floor(h / 2)));
+    else if (k.name === 'home' && (k.ctrl || idle)) this.scroll = scrollToTop(this.scroll, total, h);
+    else if (k.name === 'end' && (k.ctrl || idle)) this.scroll = FOLLOW;
+    else if (k.name === 'escape' && !this.running && !this.approval && !following(this.scroll)) this.scroll = FOLLOW;
+    else if (k.name === 'f2' || (k.meta && !k.ctrl && k.name === 'm')) {
+      this.mouse = !this.mouse;
+      this.full!.setMouse(this.mouse);
+      this.setNotice(
+        this.mouse
+          ? this.theme.muted('Mouse reporting on: the wheel scrolls. Hold Shift (Option in iTerm2) to select text, or press F2.')
+          : this.theme.muted('Mouse reporting off: select text as usual. Scroll with PgUp/PgDn; F2 turns the wheel back on.'),
+        4000,
+      );
+    } else return false;
+    return true;
+  }
+
   private onApprovalKey(k: Key): void {
     const a = this.approval!;
     const decide = (d: 'once' | 'always' | 'denied') => {
       this.approval = null;
       this.notice = null;
+      this.scroll = FOLLOW; // answered: back to the turn it belongs to
       if (d === 'always') this.alwaysAllowed.add(alwaysKey(a.req));
       this.commit((w) => hangingRows('    ', approvalOutcome(d, this.theme).trimStart(), w));
       a.resolve(d === 'denied' ? 'denied' : 'approved');
@@ -276,7 +358,7 @@ export class InteractiveChat {
   }
 
   private suspend(): void {
-    this.screen.release();
+    this.screen?.release();
     this.leaveRawMode();
     // Stop the whole process group, as the terminal does for Ctrl+Z in cooked
     // mode, so a parent such as `npm run` stops too and the shell takes over.
@@ -346,7 +428,10 @@ export class InteractiveChat {
       return false;
     }
     this.fallbackReason = v.reason;
-    this.commit((w) => ['', ...hangingRows(`  ${this.theme.warn('!')} `, `Setup chat is stopping because ${sanitize(v.reason)}. A short form comes next; your replies stay in this session.`, w)]);
+    const stopping = (w: number) => ['', ...hangingRows(`  ${this.theme.warn('!')} `, `Setup chat is stopping because ${sanitize(v.reason)}. A short form comes next; your replies stay in this session.`, w)];
+    this.commit(stopping);
+    // The alternate screen goes away on exit: say it again where the form will be asked.
+    if (this.full) this.epilogue.push(...stopping(this.width));
     await this.exit(0);
     return true;
   }
@@ -407,6 +492,7 @@ export class InteractiveChat {
       this.commit((w) => toolDoneRows(call, result, this.theme, w));
     } else if (e.type === 'retry') {
       this.finishStream();
+      r.label = 'retrying';
       this.commit([this.theme.warn(`  ↻ retrying in ${formatDuration(e.delayMs)} (attempt ${e.attempt}): ${sanitize(e.message)}`)]);
     } else if (e.type === 'tainted') {
       this.finishStream();
@@ -463,6 +549,7 @@ export class InteractiveChat {
         width: this.width,
         toolLog: this.toolLog,
         attachments: this.attachments,
+        ...(this.full ? { fullscreen: true } : {}),
         ...(this.o.onboard ? { onboarding: true } : {}),
         switchTo: (id) => this.switchTo(id),
         ...(signal ? { signal } : {}),
@@ -506,7 +593,10 @@ export class InteractiveChat {
   private clearScreen(): void {
     this.transcript = [];
     this.pendingCommit = [];
-    this.screen.clearScreen();
+    this.rows = [];
+    this.scroll = FOLLOW;
+    this.screen?.clearScreen();
+    this.full?.invalidate();
   }
 
   /**
@@ -515,12 +605,20 @@ export class InteractiveChat {
    * screen is cleared and the whole transcript re-rendered at the new width.
    */
   private onResize(): void {
-    const cols = this.screen.columns;
+    const cols = this.columns;
+    if (this.full) {
+      // The alternate screen is redrawn whole: any new width re-wraps the transcript from its blocks.
+      const changed = cols !== this.drawnColumns;
+      this.drawnColumns = cols;
+      this.full.invalidate();
+      if (changed) return this.redrawAll();
+      return this.render();
+    }
     const narrower = cols < this.drawnColumns;
     this.drawnColumns = cols;
     if (!narrower && !this.resizeTimer) {
       this.running?.stream?.setWidth(this.width - 2);
-      this.screen.resized();
+      this.screen!.resized();
       return this.render();
     }
     if (this.resizeTimer) clearTimeout(this.resizeTimer);
@@ -537,8 +635,15 @@ export class InteractiveChat {
       r.stream = new MarkdownStream({ width: w - 2, theme: this.theme });
       r.stream.push(r.block.text);
     }
-    this.screen.clearScreen();
-    this.pendingCommit = this.transcript.flatMap((b) => b.render(w));
+    const rows = this.transcript.flatMap((b) => b.render(w));
+    if (this.full) {
+      this.scroll = rewrapped(this.scroll, this.rows.length, rows.length);
+      this.rows = rows;
+      this.pendingCommit = [];
+    } else {
+      this.screen!.clearScreen();
+      this.pendingCommit = rows;
+    }
     this.render();
   }
 
@@ -562,6 +667,7 @@ export class InteractiveChat {
       this.renderTimer = null;
     }
     if ((this.exiting && !this.pendingCommit.length) || this.resizeTimer) return;
+    if (this.full) return this.renderFull();
     const t = this.theme;
     const w = this.width;
     const rows: string[] = [];
@@ -593,7 +699,92 @@ export class InteractiveChat {
     rows.push(footer({ model: this.o.garnet.model.id, sessionId: this.sessionId, totals: this.totals, contextWindow: this.o.garnet.model.capabilities.contextWindow, notice }, t, w));
     const committed = this.pendingCommit;
     this.pendingCommit = [];
-    this.screen.setLive(rows, cursor, committed);
+    this.screen!.setLive(rows, cursor, committed);
+  }
+
+  /** What a turn is doing, in words, for the status bar. */
+  private stateWords(): string {
+    if (this.approval) return 'waiting for your approval';
+    const r = this.running;
+    if (!r) return 'ready';
+    const elapsed = formatDuration(Date.now() - r.startedAt);
+    if (r.cancelling) return `interrupting ${elapsed}`;
+    if (r.tool) return `running ${sanitize(r.tool.call.name)} ${elapsed}`;
+    return `${r.label} ${elapsed}`;
+  }
+
+  /**
+   * Fullscreen frame: the status bar, the transcript (committed rows, then the
+   * live tail: streaming text, spinner, queued messages) through the viewport,
+   * and the dock (input or approval choices, footer).
+   */
+  private renderFull(): void {
+    if (this.exiting) return;
+    const t = this.theme;
+    const w = this.width;
+    if (this.pendingCommit.length) {
+      this.rows.push(...this.pendingCommit);
+      this.scroll = appended(this.scroll, this.pendingCommit.length);
+      this.pendingCommit = [];
+      if (this.rows.length > MAX_ROWS) {
+        const removed = this.rows.length - MAX_ROWS;
+        this.rows.splice(0, removed);
+        this.scroll = trimmed(this.scroll, removed);
+      }
+    }
+    const tail: string[] = [];
+    const r = this.running;
+    if (r) {
+      const pending = r.stream?.pending() ?? [];
+      if (pending.length) tail.push(...(r.firstRow ? [''] : []), ...assistantRows(pending, t, r.firstRow));
+      const spin = SPINNER[this.frame]!;
+      if (r.tool) {
+        tail.push(toolRunningRow(r.tool.call, spin, Date.now() - r.tool.startedAt, t, w));
+      } else if (!this.approval) {
+        const elapsed = formatDuration(Date.now() - r.startedAt);
+        tail.push('', truncate(`  ${t.accent(spin)} ${t.muted(`${r.label}… ${elapsed}`)}${t.muted(r.cancelling ? '' : ' · esc to interrupt')}`, w));
+      }
+      for (const q of this.queue) tail.push(truncate(t.muted(`  ↳ queued: ${sanitize(q.replace(/\s+/g, ' '))}`), w));
+    }
+    const content = tail.length ? [...this.rows, ...tail] : this.rows;
+    this.contentLength = content.length;
+
+    const dock: string[] = [t.rule('─'.repeat(w))];
+    let cursor: { row: number; col: number } | null = null;
+    if (this.approval) {
+      dock.push(...approvalChoices(this.approval.req, t, w));
+    } else {
+      const layout = layoutEditor(this.editor, w, `${r ? t.muted('›') : t.accent('›')} `, '  ', 2);
+      cursor = { row: dock.length + layout.cursorRow, col: layout.cursorCol };
+      dock.push(...layout.rows);
+      const matches = matchingCommands(this.editor.text);
+      if (matches.length) dock.push(...suggestionRows(matches.slice(0, 10), t, w));
+    }
+    const notice = this.notice && this.notice.until > Date.now() ? this.notice.text : undefined;
+    dock.push(fullscreenFooter({ notice, mouse: this.mouse }, t, w));
+
+    const header = statusBar({
+      name: this.o.fullscreen!.assistantName,
+      model: this.o.garnet.model.id,
+      sessionId: this.sessionId,
+      totals: this.totals,
+      contextWindow: this.o.garnet.model.capabilities.contextWindow,
+      state: this.stateWords(),
+      busy: Boolean(r),
+      approval: Boolean(this.approval),
+    }, t, w);
+    const frame = compose({
+      height: this.full!.rows,
+      header,
+      dock,
+      cursor,
+      body: (h) => {
+        this.bodyHeight = h;
+        const v = view(content, this.scroll, h);
+        return v.indicator ? [...v.rows, scrollIndicator(v.below, this.scroll.unseen, t, w)] : v.rows;
+      },
+    });
+    this.full!.draw(frame.rows, frame.cursor);
   }
 
   // ── exit ─────────────────────────────────────────────────────────────
@@ -613,9 +804,18 @@ export class InteractiveChat {
       await Promise.race([r.done, new Promise((res) => setTimeout(res, 3000).unref())]);
     }
     for (const timer of [this.renderTimer, this.spinnerTimer, this.escapeTimer, this.resizeTimer]) if (timer) clearTimeout(timer);
-    if (this.pendingCommit.length) this.screen.setLive([], null, this.pendingCommit);
-    this.screen.release();
+    if (this.screen) {
+      if (this.pendingCommit.length) this.screen.setLive([], null, this.pendingCommit);
+      this.screen.release();
+    }
     this.leaveRawMode();
+    if (this.full) {
+      // The transcript went with the alternate screen: leave a pointer back to it on the normal screen.
+      if (!this.o.onboard) {
+        this.epilogue.push(`  ${this.theme.accent(MARK)} ${this.theme.muted(`Continue this chat: garnet chat --session ${this.sessionId}`)}`);
+      }
+      if (this.epilogue.length) this.o.stdout.write(`${this.epilogue.map((row) => `${row}\x1b[0m`).join('\n')}\n`);
+    }
     for (const c of this.cleanups) c();
     this.o.stdin.pause();
     this.finished?.(code);

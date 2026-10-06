@@ -1,4 +1,5 @@
-// `garnet chat`: the interactive terminal UI on a TTY, a plain line chat otherwise.
+// `garnet chat`: the interactive terminal UI on a TTY (fullscreen by default,
+// inline with --inline or chat.fullscreen = false), a plain line chat otherwise.
 
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -33,19 +34,29 @@ export type ChatOverrides = {
   formPrompter?: Prompter;
 };
 
-export const CHAT_USAGE = 'Usage: garnet chat [--fake] [--session <id>] [--plain] [--onboard]\n';
+export const CHAT_USAGE = 'Usage: garnet chat [--fake] [--session <id>] [--inline | --fullscreen] [--plain] [--onboard]\n';
 
 export async function chat(args: string[], io: ChatIo, overrides: ChatOverrides = {}): Promise<number> {
-  let values: { fake?: boolean; session?: string; plain?: boolean; onboard?: boolean; help?: boolean };
+  let values: { fake?: boolean; session?: string; plain?: boolean; inline?: boolean; fullscreen?: boolean; onboard?: boolean; help?: boolean };
   try {
-    ({ values } = parseArgs({ args, options: { fake: { type: 'boolean' }, session: { type: 'string' }, plain: { type: 'boolean' }, onboard: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } } }));
+    ({ values } = parseArgs({
+      args,
+      options: {
+        fake: { type: 'boolean' }, session: { type: 'string' }, plain: { type: 'boolean' }, inline: { type: 'boolean' }, fullscreen: { type: 'boolean' },
+        onboard: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      },
+    }));
   } catch (e) {
     io.err(`${e instanceof Error ? e.message : String(e)}\n${CHAT_USAGE}`);
     return 2;
   }
   if (values.help) {
-    io.out(`${CHAT_USAGE}\n  --fake           use the offline fake model\n  --session <id>   continue an earlier session (see \`garnet sessions\`)\n  --plain          line-based output even on a terminal\n  --onboard        wake-up chat: the agent introduces itself and asks to set up its name and your preferences\n                   (also \`garnet wake\`; falls back to a short form if tools fail)\n`);
+    io.out(`${CHAT_USAGE}\n  --fake           use the offline fake model\n  --session <id>   continue an earlier session (see \`garnet sessions\`)\n  --inline         keep the conversation in the terminal's scrollback instead of a full screen (or set chat.fullscreen to false)\n  --fullscreen     the full-screen view with a status bar and a scrollable transcript (the default on a terminal)\n  --plain          line-based output even on a terminal\n  --onboard        wake-up chat: the agent introduces itself and asks to set up its name and your preferences\n                   (also \`garnet wake\`; falls back to a short form if tools fail)\n`);
     return 0;
+  }
+  if (values.inline && values.fullscreen) {
+    io.err(`--inline and --fullscreen cannot be combined.\n${CHAT_USAGE}`);
+    return 2;
   }
   if (values.onboard && values.session) {
     io.err('--onboard starts a new session; it cannot be combined with --session.\n');
@@ -101,6 +112,8 @@ export async function chat(args: string[], io: ChatIo, overrides: ChatOverrides 
     };
     const flow: OnboardFlow | undefined = values.onboard ? { kickoff: KICKOFF_MESSAGE, check: (status) => watch.afterTurn(status), form: saveForm } : undefined;
     if (interactive && stdout) {
+      // The flags win over config; config decides otherwise (fullscreen by default).
+      const fullscreen = values.fullscreen || (!values.inline && garnet.config.chat.fullscreen);
       const app = new InteractiveChat({
         garnet,
         sessionId: session.id,
@@ -111,11 +124,12 @@ export async function chat(args: string[], io: ChatIo, overrides: ChatOverrides 
         history: new InputHistory(join(garnet.paths.home, 'chat_history.jsonl')),
         processHooks: overrides.processHooks ?? true,
         ...(flow ? { onboard: flow } : {}),
+        ...(fullscreen ? { fullscreen: { mouse: garnet.config.chat.mouse, assistantName: readPersona(garnet.config.persona).name } } : {}),
       });
       approve = app.approve;
       const code = await app.run();
       if (app.fallbackReason !== null) {
-        // The terminal is restored; ask the same questions as the setup form.
+        // The terminal is restored (and back on the normal screen); ask the same questions as the setup form.
         const p = overrides.formPrompter ?? new TerminalPrompter({ input: stdin as NodeJS.ReadStream, output: stdout as unknown as NodeJS.WriteStream, style: makeStyle(wantsColor(stdout, env)) });
         try {
           await saveForm(p, (t) => io.err(t));

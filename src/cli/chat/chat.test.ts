@@ -65,15 +65,18 @@ type Started = {
   type: (keys: string) => Promise<void>;
 };
 
-function start(model: ModelAdapter, options: { home?: string; args?: string[]; env?: NodeJS.ProcessEnv; columns?: number; formPrompter?: Prompter } = {}): Started {
+type StartOptions = { home?: string; args?: string[]; env?: NodeJS.ProcessEnv; columns?: number; rows?: number; formPrompter?: Prompter; fullscreen?: boolean; processHooks?: boolean };
+
+/** Starts the chat on a fake terminal: inline (`--inline`) unless `fullscreen` is set, then with the default mode. */
+function start(model: ModelAdapter, options: StartOptions = {}): Started {
   const home = options.home ?? tempDir();
   const stdin = new FakeStdin();
-  const stdout = new FakeStdout(options.columns ?? 80);
+  const stdout = new FakeStdout(options.columns ?? 80, options.rows ?? 30);
   const err: string[] = [];
   const done = chat(
-    options.args ?? [],
+    [...(options.fullscreen ? [] : ['--inline']), ...(options.args ?? [])],
     { out: () => {}, err: (t) => err.push(t), stdin, stdout, env: { TERM: 'xterm-256color', COLORTERM: 'truecolor', ...options.env } },
-    { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }), processHooks: false, ...(options.formPrompter ? { formPrompter: options.formPrompter } : {}) },
+    { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }), processHooks: options.processHooks ?? false, ...(options.formPrompter ? { formPrompter: options.formPrompter } : {}) },
   );
   const text = () => stdout.vt.text();
   const until = async (check: (t: string) => boolean, what: string) => {
@@ -436,4 +439,209 @@ test('garnet chat --onboard --fake runs the offline scripted wake-up with no oth
   assert.equal(await done, 0);
   assert.match(err.join(''), /Tool check passed/);
   assert.deepEqual(readPersona(loadConfig(home).config.persona), { name: 'Ruby', owner: 'Sam', notes: 'Brief' });
+});
+
+// ── fullscreen (the default on a terminal) ─────────────────────────────
+
+const PAGE_UP = '\x1b[5~';
+const PAGE_DOWN = '\x1b[6~';
+const CTRL_END = '\x1b[1;5F';
+const HOME = '\x1b[H';
+const WHEEL_UP = '\x1b[<64;10;10M';
+const WHEEL_DOWN = '\x1b[<65;10;10M';
+const longReply = (n: number) => Array.from({ length: n }, (_, i) => `- item ${i + 1}`).join('\n');
+
+test('fullscreen: the status bar is there from the start, the transcript scrolls, follows, and says when there is more below', async () => {
+  const c = start(new SlowModel([{ text: longReply(40) }, { text: 'Second reply.' }], 300), { fullscreen: true, rows: 20 });
+  const screen = () => c.stdout.vt.screen();
+  await c.until(() => /◆ Garnet · fake:scripted · ses_\w+ +○ ready/.test(screen()[0] ?? ''), 'the status bar on the first row before anything is typed');
+  assert.ok(c.stdout.vt.alternate, 'the alternate screen is used');
+  assert.ok(c.stdout.vt.modes.has(1000) && c.stdout.vt.modes.has(1006), 'SGR mouse reporting is on');
+  assert.ok(c.stdout.vt.modes.has(2004), 'bracketed paste is on');
+  assert.equal(screen().length, 20);
+  assert.match(screen()[1]!, /\/help for commands/);
+  assert.match(screen().at(-1)!, /PgUp\/PgDn scroll · F2 mouse on/);
+  assert.match(screen().join('\n'), /◆ GARNET \/ terminal chat/, 'the banner opens the transcript');
+
+  await c.type('hi\r');
+  await c.until((t) => t.includes('✓ done'), 'the first turn');
+  assert.match(screen()[0]!, /○ ready/);
+  assert.match(screen()[1]!, /tokens/, 'usage appears in the status bar after a turn');
+  assert.match(screen().join('\n'), /• item 40/);
+  assert.doesNotMatch(screen().join('\n'), /• item 20\n/, 'older rows are above the view');
+
+  await c.type(PAGE_UP);
+  await c.until((t) => /↓ \d+ lines below · PgDn or Ctrl\+End to follow/.test(t), 'the indicator after PgUp');
+  assert.doesNotMatch(c.text(), /✓ done/, 'the bottom is out of view');
+  await c.type(PAGE_DOWN + PAGE_DOWN);
+  await c.until((t) => t.includes('✓ done') && !t.includes('lines below'), 'following again after PgDn');
+
+  await c.type(HOME);
+  await c.until((t) => t.includes('◆ GARNET / terminal chat') && t.includes('lines below'), 'the top after Home on an empty input');
+  await c.type(CTRL_END);
+  await c.until((t) => t.includes('✓ done') && !t.includes('below'), 'the bottom after Ctrl+End');
+
+  await c.type(WHEEL_UP);
+  await c.until((t) => t.includes('lines below'), 'scrolled by the wheel');
+  for (let i = 0; i < 5; i++) await c.type(WHEEL_DOWN);
+  await c.until((t) => !t.includes('below'), 'back at the bottom by the wheel');
+
+  // Output that arrives while scrolled up does not move the view; the indicator says it is there.
+  await c.type('second\r');
+  await c.until((t) => t.includes('Second reply.'), 'the second reply streaming');
+  await c.type('\x1b[1;2A'); // Shift+Up: half a page
+  await c.until((t) => t.includes('new messages below'), 'the new-messages indicator');
+  await c.type(CTRL_END);
+  await c.until((t) => t.includes('✓ done') && t.includes('Second reply.') && !t.includes('below'), 'following after Ctrl+End');
+
+  await c.type('\x1bOQ'); // F2
+  await c.until((t) => t.includes('Mouse reporting off'), 'the mouse notice');
+  assert.ok(!c.stdout.vt.modes.has(1000), 'mouse reporting is off, so the terminal selects text');
+
+  await c.type('\x04');
+  assert.equal(await c.done, 0);
+  const vt = c.stdout.vt;
+  assert.ok(!vt.alternate, 'back on the normal screen');
+  for (const m of [1049, 1000, 1006, 2004]) assert.ok(!vt.modes.has(m), `mode ${m} is off`);
+  assert.ok(vt.cursorVisible, 'the cursor is shown');
+  assert.ok(!c.stdin.raw, 'raw mode is off');
+  assert.match(vt.text(), /◆ Continue this chat: garnet chat --session ses_\w+$/, 'a pointer back to the session on the normal screen');
+});
+
+test('fullscreen: a resize re-wraps the transcript and keeps the status bar, input and footer in place', async () => {
+  const c = start(new FakeModel([{ text: 'A reply long enough that it wraps differently once the terminal becomes much narrower than before.' }]), { fullscreen: true, columns: 100, rows: 24 });
+  await c.type('hi\r');
+  await c.until((t) => t.includes('✓ done'), 'the turn');
+  await c.type('draft text');
+  c.stdout.setSize(40, 16);
+  await new Promise((r) => setTimeout(r, 60));
+  const rows = c.stdout.vt.screen();
+  assert.equal(rows.length, 16);
+  assert.ok(rows.every((l) => [...l].length <= 40), `every row fits:\n${rows.join('\n')}`);
+  assert.match(rows[0]!, /◆ Garnet/);
+  assert.match(rows.join('\n'), /◆ A reply long enough that it wraps\n  differently/);
+  assert.equal(count(rows.join('\n'), '› draft text'), 1, 'the input is drawn once');
+  assert.match(rows.at(-1)!, /PgUp/);
+  c.stdout.setSize(30, 8);
+  await new Promise((r) => setTimeout(r, 30));
+  const tiny = c.stdout.vt.screen();
+  assert.equal(tiny.length, 8);
+  assert.match(tiny[0]!, /◆ Garnet.*ready/, 'a short terminal keeps a one-row status bar');
+  await c.type('\x15\x04');
+  assert.equal(await c.done, 0);
+});
+
+test('fullscreen: approvals are answered from the dock, even after scrolling; escape sequences stay visible', async () => {
+  const evil = 'x\x1b[2K\rHIDDEN\x1b]52;c;cHduZWQ=\x07';
+  const model = new FakeModel([
+    { text: `Saving. ${evil}\n\n${longReply(30)}`, toolCalls: [{ name: 'write_file', input: { path: 'a.md', content: '- milk' } }] },
+    { text: 'Saved.' },
+  ]);
+  const c = start(model, { fullscreen: true, rows: 20 });
+  await c.type('save it\r');
+  await c.until((t) => t.includes('Allow? y allow once'), 'the approval choices');
+  assert.match(c.stdout.vt.screen()[0]!, /\? waiting for your approval/, 'the status bar says what it waits for');
+  assert.match(c.text(), /\? write_file needs approval \(fs\.write\)/, 'the request is in view');
+  await c.type(PAGE_UP);
+  await c.until((t) => t.includes('lines below') && t.includes('Allow? y allow once'), 'scrolled, with the choices still shown');
+  await c.type('y');
+  await c.until((t) => t.includes('✓ done'), 'the end of the turn, in view again');
+  assert.match(c.text(), /✓ approved \(once\)/);
+  assert.ok(existsSync(join(c.home, 'workspace', 'a.md')));
+  assert.ok(!c.stdout.raw.includes('\x1b[2K'), 'no line erase from content');
+  assert.ok(!c.stdout.raw.includes('\x1b]52'), 'no clipboard write from content');
+  await c.type(HOME);
+  await c.until((t) => t.includes('HIDDEN'), 'the hostile text at the top');
+  assert.match(c.text(), /x␛\[2K/);
+  await c.type('/help\r');
+  await c.until((t) => t.includes('F2 or Alt+M'), 'the scrolling keys in /help');
+  await c.type('\x04');
+  assert.equal(await c.done, 0);
+});
+
+test('fullscreen: Esc interrupts a turn and drops the queue; Ctrl+C twice exits with the terminal restored', async () => {
+  const hanging: ModelAdapter = {
+    id: 'test:hang',
+    capabilities: { streaming: true, promptCaching: false, contextWindow: 1000 },
+    async *stream(req) {
+      yield { type: 'text_delta', text: 'Thinking about it' };
+      await new Promise((r) => req.signal?.addEventListener('abort', r));
+      yield { type: 'error', category: 'cancelled', message: 'aborted' };
+    },
+  };
+  const c = start(hanging, { fullscreen: true });
+  await c.type('long task\r');
+  await c.until((t) => t.includes('Thinking about it') && t.includes('esc to interrupt'), 'streamed text and the spinner');
+  assert.match(c.stdout.vt.screen()[0]!, /● (thinking|writing)/, 'the status bar shows the turn in words');
+  await c.type('next one\r');
+  await c.until((t) => t.includes('↳ queued: next one'), 'the queued message');
+  await c.type('\x1b');
+  await c.until((t) => t.includes('■ interrupted'), 'the interrupted status');
+  assert.doesNotMatch(c.text(), /queued/, 'the interrupt dropped the queue');
+  assert.match(c.text(), /◆ Thinking about it/);
+  await c.type('\x03');
+  await c.until((t) => t.includes('Press Ctrl+C again to exit'), 'the exit hint');
+  await c.type('\x03');
+  assert.equal(await c.done, 0);
+  assert.ok(!c.stdout.vt.alternate && !c.stdout.vt.modes.has(1000) && !c.stdin.raw);
+});
+
+test('fullscreen: SIGTERM and a crash both leave the terminal usable', async () => {
+  const c = start(new FakeModel(), { fullscreen: true, processHooks: true });
+  await c.until((t) => t.includes('○ ready'), 'the chat');
+  const monitors = process.listenerCount('uncaughtExceptionMonitor');
+  for (const l of process.listeners('uncaughtExceptionMonitor')) l(new Error('boom'), 'uncaughtException');
+  assert.ok(!c.stdout.vt.alternate, 'a crash report would land on the normal screen');
+  assert.ok(!c.stdout.vt.modes.has(1000) && c.stdout.vt.cursorVisible && !c.stdin.raw);
+  await c.type('\x04');
+  assert.equal(await c.done, 0);
+  assert.equal(process.listenerCount('uncaughtExceptionMonitor'), monitors - 1, 'the hooks are removed on exit');
+
+  const d = start(new FakeModel(), { fullscreen: true, processHooks: true });
+  await d.until((t) => t.includes('○ ready'), 'the chat');
+  process.emit('SIGTERM', 'SIGTERM');
+  assert.equal(await d.done, 143);
+  assert.ok(!d.stdout.vt.alternate && !d.stdout.vt.modes.has(1000) && !d.stdout.vt.modes.has(2004) && d.stdout.vt.cursorVisible && !d.stdin.raw);
+});
+
+test('fullscreen is the default; chat.fullscreen = false or --inline keeps the inline UI; --fullscreen overrides config', async () => {
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, chat: { fullscreen: false } }));
+  const inline = start(new FakeModel(), { home, fullscreen: true });
+  await inline.until((t) => t.includes('◆ GARNET / terminal chat'), 'the banner');
+  assert.ok(!inline.stdout.raw.includes('\x1b[?1049h'), 'config turned the alternate screen off');
+  await inline.type('\x04');
+  assert.equal(await inline.done, 0);
+
+  const forced = start(new FakeModel(), { home, fullscreen: true, args: ['--fullscreen'] });
+  await forced.until(() => forced.stdout.vt.alternate, 'the alternate screen');
+  await forced.type('\x04');
+  assert.equal(await forced.done, 0);
+
+  const flag = start(new FakeModel());
+  await flag.until((t) => t.includes('◆ GARNET / terminal chat'), 'the banner');
+  assert.ok(!flag.stdout.raw.includes('\x1b[?1049h'), '--inline (added by start) keeps the inline UI');
+  await flag.type('\x04');
+  assert.equal(await flag.done, 0);
+
+  const both = start(new FakeModel(), { fullscreen: true, args: ['--inline', '--fullscreen'] });
+  assert.equal(await both.done, 2);
+  assert.match(both.err.join(''), /cannot be combined/);
+});
+
+test('fullscreen wake-up: when tools fail, the chat leaves the alternate screen, says why, and asks the form', async () => {
+  const form = new AnswerPrompter({ name: 'Opal', owner: 'Alex', notes: 'Be brief' }, { interactive: true });
+  const c = start(new FakeModel(onboardingScript('broken-tools')), { args: ['--onboard'], formPrompter: form, fullscreen: true });
+  await c.until((t) => t.includes('I have just woken up'), 'the first message');
+  assert.match(c.stdout.vt.screen()[0]!, /◆ Garnet/);
+  for (const a of ['Ruby', 'Sam', 'Brief', 'Lisbon', 'planning', 'try again']) {
+    await c.type(`${a}\r`);
+    await c.until((t) => t.includes(`› ${a}`) || !c.stdout.vt.alternate, `the answer ${a}`);
+  }
+  assert.equal(await c.done, 0, 'the chat ended by itself');
+  assert.ok(!c.stdout.vt.alternate, 'the form is asked on the normal screen');
+  assert.match(c.text(), /Setup chat is stopping because saving kept failing/);
+  assert.deepEqual(form.asked, ['name', 'owner', 'notes', 'timezone']);
+  assert.deepEqual(readPersona(loadConfig(c.home).config.persona), { name: 'Opal', owner: 'Alex', notes: 'Be brief' });
+  assert.equal(c.stdin.raw, false);
 });

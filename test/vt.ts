@@ -1,7 +1,9 @@
 // A minimal virtual terminal for tests: enough of VT100/xterm to replay what
-// the chat UI writes (text, wide characters, CR/LF, cursor up/right, erase
-// below, clear screen) and read back the resulting screen as plain text.
-// Styles (SGR) and private modes are accepted and ignored.
+// the chat UI writes (text, wide characters, CR/LF, cursor movement and
+// absolute positioning, erase below/line, clear screen, the alternate screen
+// buffer) and read back the resulting screen as plain text. Styles (SGR) are
+// ignored; private modes (cursor, mouse reporting, bracketed paste, ...) are
+// recorded in `modes` so tests can check what is left on at exit.
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿가-힣豈-﫿＀-｠￠-￦]|\p{Emoji_Presentation}/u;
@@ -14,6 +16,10 @@ export class VirtualTerminal {
   private row = 0;
   private col = 0;
   cursorVisible = true;
+  /** Private modes currently set (`CSI ? n h`), e.g. 1049 (alternate screen), 1000/1006 (mouse), 2004 (bracketed paste). */
+  readonly modes = new Set<number>();
+  /** The normal screen (and its scrollback) while the alternate screen is shown. */
+  private saved: { lines: string[][]; row: number; col: number } | null = null;
 
   constructor(columns = 80, rows = 24) {
     this.columns = columns;
@@ -77,15 +83,38 @@ export class VirtualTerminal {
     this.col += w;
   }
 
+  /** True while the alternate screen buffer is shown. */
+  get alternate(): boolean {
+    return this.saved !== null;
+  }
+
   private lineFeed(): void {
     this.row++;
     while (this.lines.length <= this.row) this.lines.push([]);
+    // The alternate screen has no scrollback: the top line goes away.
+    if (this.saved && this.lines.length > this.rows) {
+      this.lines.shift();
+      this.row--;
+    }
   }
 
   private csi(prefix: string, params: string, final: string): void {
     const n = Number(params.split(';')[0]) || 0;
     if (prefix === '?') {
-      if (params === '25') this.cursorVisible = final === 'h';
+      for (const m of params.split(';').map(Number)) {
+        if (final === 'h') this.modes.add(m);
+        if (final === 'l') this.modes.delete(m);
+        if (m === 25) this.cursorVisible = final === 'h';
+        if (m === 1049 && final === 'h' && !this.saved) {
+          this.saved = { lines: this.lines, row: this.row, col: this.col };
+          this.lines = Array.from({ length: this.rows }, () => []);
+          this.row = 0;
+          this.col = 0;
+        } else if (m === 1049 && final === 'l' && this.saved) {
+          ({ lines: this.lines, row: this.row, col: this.col } = this.saved);
+          this.saved = null;
+        }
+      }
       return;
     }
     if (prefix) return; // kitty keyboard protocol and similar
@@ -103,10 +132,13 @@ export class VirtualTerminal {
       case 'D':
         this.col = Math.max(0, this.col - Math.max(1, n));
         break;
-      case 'H':
-        this.row = this.top;
-        this.col = 0;
+      case 'H': {
+        const [r, c] = params.split(';').map((v) => Math.max(1, Number(v) || 1));
+        this.row = this.top + Math.min(this.rows, r ?? 1) - 1;
+        this.col = Math.min(this.columns, c ?? 1) - 1;
+        while (this.lines.length <= this.row) this.lines.push([]);
         break;
+      }
       case 'J':
         if (n === 3) {
           const top = this.top;
@@ -119,9 +151,13 @@ export class VirtualTerminal {
           this.lines.length = this.row + 1;
         }
         break;
-      case 'K':
-        this.lines[this.row] = this.lines[this.row]!.slice(0, this.col);
+      case 'K': {
+        const line = this.lines[this.row]!;
+        if (n === 2) this.lines[this.row] = [];
+        else if (n === 1) for (let c = 0; c <= this.col && c < line.length; c++) line[c] = ' ';
+        else this.lines[this.row] = line.slice(0, this.col);
         break;
+      }
     }
   }
 

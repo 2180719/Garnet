@@ -36,6 +36,12 @@ test('invalid config lists every problem', () => {
   }
 });
 
+test('chat: fullscreen with mouse wheel by default; an existing config without it needs no migration', () => {
+  assert.deepEqual(defaultConfig().chat, { fullscreen: true, mouse: true });
+  assert.deepEqual(parseConfig({ version: CONFIG_VERSION, chat: { fullscreen: false } }).chat, { fullscreen: false, mouse: true });
+  assert.throws(() => parseConfig({ version: CONFIG_VERSION, chat: { fullScreen: false } }), (e) => isGarnetError(e, 'config'), 'a typo is an error');
+});
+
 test('timezone and api.corsOrigins are validated; CORS is off by default', () => {
   assert.deepEqual(defaultConfig().api.corsOrigins, []);
   assert.equal(defaultConfig().timezone, undefined);
