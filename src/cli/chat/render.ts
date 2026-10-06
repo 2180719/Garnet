@@ -2,7 +2,7 @@
 
 import { addUsage, billedTokens, costOf, eventsCost, formatUsd, type Pricing, unknownUsage, type SessionEvent, type TaskRecord, type ToolCallBlock, type ToolResult, type Usage } from '../../contracts/index.ts';
 import type { ApprovalRequest } from '../../policy/index.ts';
-import { COMMANDS, SHORTCUTS, type SlashCommand } from './commands.ts';
+import { COMMANDS, SCROLL_SHORTCUTS, SHORTCUTS, type SlashCommand } from './commands.ts';
 import { renderMarkdown } from './markdown.ts';
 import { displayWidth, formatDuration, formatTokens, padEnd, sanitize, truncate, wrapText } from './text.ts';
 import type { Theme } from './theme.ts';
@@ -177,18 +177,26 @@ export function sessionTotals(events: SessionEvent[], pricing?: Pricing): Sessio
 
 export type FooterInfo = { model: string; sessionId: string; totals: SessionTotals; contextWindow: number; notice?: string | undefined };
 
+/** Context use, tokens and cost in words. Unknown values are "?", never 0. */
+function usageStats(t: SessionTotals, contextWindow: number, unknownCost: boolean): string[] {
+  const stats: string[] = [];
+  if (t.contextTokens !== null) {
+    const pct = Math.round((t.contextTokens / contextWindow) * 100);
+    stats.push(`context ${formatTokens(t.contextTokens)}/${formatTokens(contextWindow)} (${pct}%)`);
+  }
+  if (t.turns) stats.push(`${formatTokens(billedTokens(t.usage))} tokens`);
+  if (t.turns && (t.costUsd !== null || unknownCost)) stats.push(t.costUsd === null ? 'cost ?' : formatUsd(t.costUsd));
+  return stats;
+}
+
 export function footer(info: FooterInfo, theme: Theme, width: number): string {
   if (info.notice) return truncate(`  ${info.notice}`, width);
   const t = info.totals;
   const stats: string[] = [];
   // Spelled out, not just colored: risky actions now ask first (see taintedRows).
   if (t.untrusted.length) stats.push('⚠ untrusted content read');
-  if (t.contextTokens !== null) {
-    const pct = Math.round((t.contextTokens / info.contextWindow) * 100);
-    stats.push(`context ${formatTokens(t.contextTokens)}/${formatTokens(info.contextWindow)} (${pct}%)`);
-  }
-  if (t.turns) stats.push(`${formatTokens(billedTokens(t.usage))} tokens`);
-  if (t.turns && t.costUsd !== null) stats.push(formatUsd(t.costUsd)); // the exact figure or "?" is in /usage; the footer has little room
+  // The exact cost or "?" is in /usage; the footer has little room, so an unknown cost is left out.
+  stats.push(...usageStats(t, info.contextWindow, false));
   // Most detail that fits; the least useful parts go first when narrow.
   const variants = [
     [info.model, info.sessionId, ...stats, '/help'],
@@ -199,6 +207,68 @@ export function footer(info: FooterInfo, theme: Theme, width: number): string {
   ];
   const text = variants.map((v) => `  ${v.join(' · ')}`).find((v) => displayWidth(v) <= width) ?? `  ${variants.at(-1)!.join(' · ')}`;
   return theme.muted(truncate(text, width));
+}
+
+export type StatusInfo = {
+  /** The assistant's name (persona). */
+  name: string;
+  model: string;
+  sessionId: string;
+  totals: SessionTotals;
+  contextWindow: number;
+  /** What the chat is doing, in words: "ready", "thinking", "running read_file", ... */
+  state: string;
+  /** True while a turn runs; false when idle. */
+  busy: boolean;
+  /** An approval is waiting for the owner. */
+  approval: boolean;
+};
+
+/**
+ * The fullscreen status bar. `full` is two rows and a rule: name, model,
+ * session and state; then the taint warning, context, tokens and cost.
+ * `compact` is one row for short terminals and keeps the name, the state
+ * and the taint warning. Every state is in words, not color alone.
+ */
+export function statusBar(info: StatusInfo, theme: Theme, width: number): { full: string[]; compact: string[] } {
+  const state = info.approval
+    ? theme.warn(`? ${info.state}`)
+    : info.busy ? `${theme.accent('●')} ${info.state}` : theme.muted(`○ ${info.state}`);
+  const name = theme.bold(theme.accent(`${MARK} ${sanitize(info.name)}`));
+  const taint = info.totals.untrusted.length ? theme.warn('⚠ untrusted content read') : '';
+  // The most detail that fits on the left, the state always on the right.
+  const line = (variants: string[][], right: string): string => {
+    const room = width - 2 - displayWidth(right);
+    const joined = variants.map((parts) => parts.join(theme.muted(' · ')));
+    const head = joined.find((v) => displayWidth(v) <= room - 2) ?? truncate(joined.at(-1)!, Math.max(0, room - 2));
+    return truncate(`  ${padEnd(head, room)}${right}`, width);
+  };
+  const model = theme.muted(info.model);
+  const row0 = line([[name, model, theme.muted(info.sessionId)], [name, model], [name]], state);
+  const stats = usageStats(info.totals, info.contextWindow, true);
+  const row1 = truncate(`  ${[taint, ...stats.map((s) => theme.muted(s))].filter(Boolean).join(theme.muted(' · ')) || theme.muted('/help for commands')}`, width);
+  const compact = line(taint ? [[name, taint, model], [name, taint], [taint]] : [[name, model], [name]], state);
+  return { full: [row0, row1, theme.rule('─'.repeat(width))], compact: [compact] };
+}
+
+/** The last transcript row while scrolled up: says there is more below and how to get back. */
+export function scrollIndicator(below: number, unseen: number, theme: Theme, width: number): string {
+  const lines = `${below} line${below === 1 ? '' : 's'}`;
+  const text = unseen > 0 ? `↓ new messages below (${lines}) · PgDn or Ctrl+End to follow` : `↓ ${lines} below · PgDn or Ctrl+End to follow`;
+  return truncate(`  ${unseen > 0 ? theme.accent(text) : theme.muted(text)}`, width);
+}
+
+/** The fullscreen footer: a notice, or the keys that matter there. */
+export function fullscreenFooter(info: { notice?: string | undefined; mouse: boolean }, theme: Theme, width: number): string {
+  if (info.notice) return truncate(`  ${info.notice}`, width);
+  const mouse = `F2 mouse ${info.mouse ? 'on' : 'off'}`;
+  const variants = [
+    ['PgUp/PgDn scroll', mouse, '/help', 'Ctrl+D exits'],
+    ['PgUp/PgDn scroll', mouse, '/help'],
+    ['PgUp/PgDn', mouse],
+    ['/help'],
+  ].map((v) => `  ${v.join(' · ')}`);
+  return theme.muted(truncate(variants.find((v) => displayWidth(v) <= width) ?? variants.at(-1)!, width));
 }
 
 /** Committed when untrusted content first enters the conversation from a source. */
@@ -223,7 +293,7 @@ export function suggestionRows(commands: readonly SlashCommand[], theme: Theme, 
   );
 }
 
-export function helpRows(theme: Theme, width: number): string[] {
+export function helpRows(theme: Theme, width: number, fullscreen = false): string[] {
   const usage = (c: SlashCommand) => `/${c.name}${c.args ? ` ${c.args}` : ''}`;
   const col = Math.max(...COMMANDS.map((c) => usage(c).length)) + 2;
   const rows = ['', theme.bold('  Commands')];
@@ -231,12 +301,16 @@ export function helpRows(theme: Theme, width: number): string[] {
     const aliases = c.aliases?.length ? theme.muted(` (also ${c.aliases.map((a) => `/${a}`).join(', ')})`) : '';
     rows.push(...hangingRows(`  ${theme.accent(padEnd(usage(c), col))}`, `${c.description}${aliases}`, width));
   }
-  rows.push('', theme.bold('  Keys'));
-  const kcol = Math.min(24, Math.max(...SHORTCUTS.map(([k]) => k.length)) + 2);
-  for (const [k, d] of SHORTCUTS) {
-    if (k.length + 2 > kcol) rows.push(...wrapText(`  ${theme.muted(k)}`, width), ...hangingRows(' '.repeat(kcol + 2), d, width));
-    else rows.push(...hangingRows(`  ${theme.muted(padEnd(k, kcol))}`, d, width));
-  }
+  const section = (title: string, keys: readonly (readonly [string, string])[]) => {
+    rows.push('', theme.bold(`  ${title}`));
+    const kcol = Math.min(24, Math.max(...keys.map(([k]) => k.length)) + 2);
+    for (const [k, d] of keys) {
+      if (k.length + 2 > kcol) rows.push(...wrapText(`  ${theme.muted(k)}`, width), ...hangingRows(' '.repeat(kcol + 2), d, width));
+      else rows.push(...hangingRows(`  ${theme.muted(padEnd(k, kcol))}`, d, width));
+    }
+  };
+  section('Keys', SHORTCUTS);
+  if (fullscreen) section('Scrolling', SCROLL_SHORTCUTS);
   return [...rows, ''];
 }
 
