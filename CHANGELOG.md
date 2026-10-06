@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Review fixes
+- Security: results of jobs and agent-sent messages that read untrusted content now carry that state into the chat they land in; forwarded voice notes and audio files count as untrusted (only a live voice note from the paired owner in a private chat does not); links in approval text are no longer treated as the owner's; "message the owner" and relative times are resolved before approval, so the action that runs is exactly the one approved; the agent cannot pause or resume `config.json` jobs, granting a job `exec` needs exec approval, and agent messages never go to group chats.
+- `web_fetch` no longer leaks a connection when a compressed response stalls.
+- The daily spending cap is checked before every model call and counts compaction; missing cache prices are derived from the input price; with a cap set, tasks whose cost can't be priced are refused; "today" follows the owner's time zone.
+- Installer: updates installs made under the old command name, leaves a link at the old install path for an old service, honours `RUBY_NODE`; an old service is removed after `~/.ruby` is moved to `~/.garnet`; an empty `GARNET_*` falls back to `RUBY_*`.
+- `doctor` checks media commands given as full paths correctly.
+
 ### Renamed: Ruby is now Garnet
 - The project, command (`garnet`), package (`garnet-agent`), default assistant name, repository (`2180719/Garnet`), service (`garnet.service` / `dev.garnet.agent`), API key prefix (`garnet_`), header (`X-Garnet-Conversation`) and data directory (`~/.garnet`) all changed, because `ruby` clashes with the Ruby language interpreter. Environment variables are now `GARNET_*` (`GARNET_HOME`, `GARNET_SECRETS_KEY_FILE`, ...); `npm run ruby` is now `npm run garnet`.
 - Existing installs keep working: `RUBY_*` variables are read when the `GARNET_*` one is unset (`doctor` warns); `~/.ruby` is used when `~/.garnet` does not exist (`doctor` suggests `mv ~/.ruby ~/.garnet`); `ruby_` API keys and `X-Ruby-Conversation` are still accepted; `ruby.db`, `ruby-secrets` stores and `.ruby.json` skill sidecars are still read.
