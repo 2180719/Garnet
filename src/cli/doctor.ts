@@ -6,7 +6,8 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
-import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
+import { CONFIG_VERSION, enabledAnywhere, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type ConnectorName, type GarnetConfig } from '../config/index.ts';
+import { CONNECTOR_INFO } from '../connectors/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
@@ -185,6 +186,48 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     else add('web', 'ok', `web_search · ${web.backend}${web.backend === 'searxng' ? ` at ${web.searxngUrl}` : ' (keyless, unofficial; may be rate limited)'}`);
     if (config.permissions['net.fetch'] !== 'deny' && !config.containment.enabled) {
       add('web', 'warn', 'Untrusted-content containment is off: a web page could steer Garnet into actions you set to allow', 'Set containment.enabled = true in config.json.');
+    }
+
+    // Optional built-ins: skills and connectors (all off by default)
+    const onIn = (kind: 'skills' | 'connectors', name: string): string => {
+      const t = config[kind];
+      const scopes = Object.entries(t.channels).filter(([, o]) => o.enable.includes(name)).map(([s]) => s);
+      return [...(t.enabled.includes(name) ? ['global'] : []), ...scopes].join(', ');
+    };
+    const skillsOn = enabledAnywhere(config.skills);
+    const connectorsOn = enabledAnywhere(config.connectors) as ConnectorName[];
+    if (!skillsOn.length && !connectorsOn.length) add('builtins', 'info', 'No built-in skills or connectors enabled (all optional)', 'See `garnet skills builtin` and `garnet connectors list`.');
+    for (const name of skillsOn) {
+      const local = existsSync(join(d.home, 'skills', name, 'SKILL.md'));
+      if (local) add('skills', 'warn', `built-in skill ${name} is on (${onIn('skills', name)}) but a skill of the same name in ${join(d.home, 'skills')} takes precedence`, `Rename your own skill folder ${join(d.home, 'skills', name)} to use the built-in, or disable the built-in (\`garnet skills disable ${name}\`).`);
+      else add('skills', 'ok', `built-in skill ${name} · on (${onIn('skills', name)})`);
+    }
+    for (const name of connectorsOn) {
+      const info = CONNECTOR_INFO[name];
+      const label = `${name} · on (${onIn('connectors', name)})`;
+      if (config.permissions['net.fetch'] === 'deny') {
+        add('connector', 'warn', `${label}, but permissions.net.fetch is deny, so it is not offered`, 'Set permissions.net.fetch to ask (or allow) in config.json, or disable the connector.');
+        continue;
+      }
+      const secrets = info.secrets(config.connectors).map((s) => ({ ...s, loc: where(s.name) }));
+      const missing = secrets.filter((s) => !s.loc);
+      const required = missing.find((s) => s.required);
+      if (required) add('connector', 'fail', `${label}, but ${required.name} (${required.why}) is not set`, missingFix(required.name));
+      else if (missing.length) add('connector', 'info', `${label} · ${missing.map((s) => `${s.name} not set (${s.why})`).join('; ')}`, missingFix(missing[0]!.name));
+      else add('connector', 'ok', `${label}${secrets.length ? ` · ${secrets.map((s) => `${s.name} (${s.loc})`).join(', ')}` : ''}`);
+      if (info.needs(config.connectors).includes('message.send') && config.permissions['message.send'] === 'deny') {
+        add('connector', 'warn', `connectors.${name}.write is on but permissions.message.send is deny, so posting is always refused`, 'Set permissions.message.send to ask, or turn write off.');
+      }
+    }
+    const channelOn = (scope: string): boolean => {
+      const head = scope.split(':')[0]!;
+      if (head === 'telegram' || head === 'discord' || head === 'signal') return config.channels[head].enabled;
+      if (head === 'api') return config.api.enabled;
+      if (head === 'route') return config.routes.some((r) => `route:${r.conversation}` === scope);
+      return true;
+    };
+    for (const scope of [...new Set([...Object.keys(config.skills.channels), ...Object.keys(config.connectors.channels)])].sort()) {
+      if (!channelOn(scope)) add('builtins', 'info', `The override for ${scope} has no effect: ${scope.startsWith('route:') ? 'no route uses that conversation' : `${scope.split(':')[0]} is not enabled`}`);
     }
 
     // Sandbox

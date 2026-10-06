@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isMemoryFile, type MemoryFile } from '../memory/index.ts';
 import { createGarnet } from '../main.ts';
+import { BUILTIN_SKILL_SUBCOMMANDS, builtinSkillsReport, extensionsCommand } from './extensions.ts';
 import type { Io } from './main.ts';
 
 const MEMORY_USAGE = 'Usage: garnet memory show [memory|user] | edit <memory|user> | history <memory|user> | rollback <memory|user> <id>  [--ns <namespace>]\n';
@@ -64,8 +65,10 @@ export function memory(args: string[], io: Io): number {
   }
 }
 
-export function skills(args: string[], io: Io): number {
+export async function skills(args: string[], io: Io): Promise<number> {
   const [sub = 'list', name] = args;
+  // Built-in optional skills (enable/disable per channel) live in extensions.ts.
+  if (BUILTIN_SKILL_SUBCOMMANDS.has(sub) || args.includes('--channel') || args.some((a) => a.startsWith('--channel='))) return extensionsCommand('skills', args, io);
   const garnet = createGarnet({ noModel: true });
   try {
     const store = garnet.skills;
@@ -78,12 +81,15 @@ export function skills(args: string[], io: Io): number {
           io.out(`${s.name.padEnd(28)} ${String(s.uses).padStart(4)} uses  (${flags})  ${s.description}\n`);
         }
         for (const p of store.problems()) io.out(`! ${p.name}: ${p.problem}\n`);
+        io.out(`\n${builtinSkillsReport(garnet.config, undefined, (n) => store.has(n))}`);
         return 0;
       }
-      case 'show':
+      case 'show': {
         if (!name) break;
-        io.out(`${store.read(name).body}\n`);
+        const shipped = store.has(name) ? undefined : garnet.builtinSkills.get(name);
+        io.out(`${shipped ? `(built-in skill)\n${shipped.body}` : store.read(name).body}\n`);
         return 0;
+      }
       case 'proposal':
         if (!name) break;
         io.out(`${store.proposal(name) ?? 'No proposal for this skill.'}\n`);
@@ -113,7 +119,7 @@ export function skills(args: string[], io: Io): number {
         return 0;
       }
     }
-    io.err('Usage: garnet skills list | show <name> | proposal <name> | accept <name> | reject <name> | archive <name> | unarchive <name> | stale [days]\n');
+    io.err('Usage: garnet skills list | show <name> | proposal <name> | accept <name> | reject <name> | archive <name> | unarchive <name> | stale [days]\n       garnet skills builtin | enable <name> | disable <name> | reset <name> | effective  [--channel <scope>]\n');
     return 2;
   } finally {
     garnet.close();

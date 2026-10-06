@@ -6,6 +6,7 @@ import { sparkle } from './sparkle.ts';
 import { Achievements } from '../achievements/index.ts';
 import { api, dashboard, jobs, pair, service, start } from './admin.ts';
 import { memory, skills } from './knowledge.ts';
+import { extensionsCommand } from './extensions.ts';
 import { backup, restore } from './backup.ts';
 import { runImport } from '../migrate/index.ts';
 import { importDeps } from './import.ts';
@@ -45,6 +46,10 @@ Usage:
                             Inspect and correct what Garnet remembers
   garnet skills list|show|proposal|accept|reject|archive|stale
                             Review skills Garnet has learned
+  garnet skills builtin|enable|disable|reset|effective <name> [--channel <scope>]
+  garnet connectors list|enable|disable|reset|effective <name> [--channel <scope>]
+                            Optional built-in skills and connectors (all off by
+                            default), globally or per channel, chat or route
   garnet import <openclaw|hermes> [--from <dir>] [--apply] [--raise-caps] [--pairings]
               [--persona keep|merge|replace] [--no-jobs]
                             Bring memory, persona, skills, jobs (disabled) and
@@ -140,7 +145,9 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
       case 'restore':
         return restore(rest, io);
       case 'skills':
-        return skills(rest, io);
+        return await skills(rest, io);
+      case 'connectors':
+        return await extensionsCommand('connectors', rest, io);
       case '--sparkle': {
         io.out(sparkle());
         const garnet = createGarnet({ noModel: true });
@@ -187,18 +194,21 @@ function configCommand(args: string[], io: Io): number {
   return 2;
 }
 
-type JsonSchema = { description?: string; properties?: Record<string, JsonSchema>; default?: unknown; enum?: unknown[] };
+type JsonSchema = { description?: string; properties?: Record<string, JsonSchema>; additionalProperties?: JsonSchema | boolean; default?: unknown; enum?: unknown[]; items?: JsonSchema };
 
 function explain(schema: JsonSchema, prefix: string): string[] {
   const lines: string[] = [];
   for (const [key, child] of Object.entries(schema.properties ?? {})) {
     const path = prefix ? `${prefix}.${key}` : key;
+    const options = child.enum ?? child.items?.enum;
     const extra = [
-      child.enum ? `one of ${child.enum.join('|')}` : '',
+      options ? `${child.items?.enum ? 'each ' : ''}one of ${options.join('|')}` : '',
       child.default !== undefined && typeof child.default !== 'object' ? `default ${JSON.stringify(child.default)}` : '',
     ].filter(Boolean).join(', ');
     lines.push(`${path}${extra ? ` (${extra})` : ''}${child.description ? ` — ${child.description}` : ''}`);
     if (child.properties) lines.push(...explain(child, path));
+    // A map keyed by name (e.g. skills.channels.<scope>): describe its entries once.
+    if (typeof child.additionalProperties === 'object' && child.additionalProperties.properties) lines.push(...explain(child.additionalProperties, `${path}.<key>`));
   }
   return lines;
 }
