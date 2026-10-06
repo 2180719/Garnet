@@ -125,7 +125,7 @@ main() {
 
 setup_colors() {
   if [ -t 1 ] && [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != dumb ]; then
-    accent=$(printf '\033[1;38;2;255;102;128m'); muted=$(printf '\033[38;2;163;166;173m')
+    accent=$(printf '\033[1;38;2;232;89;107m'); muted=$(printf '\033[38;2;180;168;172m')
     green=$(printf '\033[32m'); yellow=$(printf '\033[33m'); red=$(printf '\033[31m'); reset=$(printf '\033[0m')
   else
     accent=''; muted=''; green=''; yellow=''; red=''; reset=''
