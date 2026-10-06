@@ -662,7 +662,7 @@ function keyState(deps: SetupDeps, st: State, name: string): string {
   return f.found ? `${name} (${f.where})` : `${name} (not set yet)`;
 }
 
-function summary(st: State, deps: SetupDeps): string {
+function summary(st: State, deps: SetupDeps, service?: ServiceOutcome): string {
   const c = st.config;
   const s = deps.style;
   const provider = providerOf(c.model);
@@ -681,7 +681,7 @@ function summary(st: State, deps: SetupDeps): string {
           .join('; ')
       : 'none',
   ]);
-  if (deps.service) rows.push(['Service', deps.service.installed() ? `${deps.service.label} installed` : 'not installed']);
+  if (deps.service) rows.push(['Service', deps.service.installed() ? `${deps.service.label} installed${service === 'failed' ? ', but not running' : ''}` : 'not installed']);
   return rows.map(([k, v]) => `  ${s.muted(k.padEnd(9))} ${v}\n`).join('');
 }
 
@@ -689,7 +689,7 @@ function nextSteps(st: State, deps: SetupDeps, service: ServiceOutcome): string 
   const s = deps.style;
   const c = st.config;
   const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => c.channels[n].enabled);
-  const lines: string[] = [`\n${s.accent('◆')} ${s.bold('Garnet is ready.')}\n`, summary(st, deps)];
+  const lines: string[] = [`\n${s.accent('◆')} ${s.bold('Garnet is ready.')}\n`, summary(st, deps, service)];
   if (st.todo.length) {
     lines.push(`\n${s.bold('Still to do')}\n`);
     for (const t of st.todo) lines.push(`  ${s.warn('!')} ${t}\n`);

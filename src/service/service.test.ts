@@ -165,6 +165,18 @@ test('install does not overwrite an existing env file', async () => {
   }
 });
 
+test('a missing systemd user bus gets an explanatory note', async () => {
+  const { root, p } = tempPlan();
+  try {
+    const noBus: CommandResult = { code: 1, stdout: '', stderr: 'Failed to connect to bus: No medium found' };
+    const r = await installService(p, { run: fakeRun([], { 'systemctl --user daemon-reload': noBus }) });
+    assert.equal(r.ok, false);
+    assert.ok(r.notes.some((n) => /no user session/.test(n) && /garnet start/.test(n)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a failing command is reported, not thrown', async () => {
   const { root, p } = tempPlan();
   try {
