@@ -184,3 +184,8 @@ details p { color: var(--mute); margin: 0 0 1.1rem; }
 .term.gap { margin-top: 1.5rem; }
 .after { margin-top: 1.25rem; }
 #install-code { background: none; padding: 0; font-size: inherit; }
+
+/* Narrow screens: wrap the terminal specimen instead of hiding its right edge behind a scroll. */
+@media (max-width: 560px) {
+  .term pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
+}
