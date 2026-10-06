@@ -1,6 +1,7 @@
 import {
   addUsage,
   billedTokens,
+  type ActiveExtras,
   errorMessage,
   nowIso,
   textOf,
@@ -50,9 +51,24 @@ export type AgentDeps = {
   /**
    * Extra stable system-prompt sections for a memory namespace (memory
    * snapshot, skills index). Read when a session's prompt is frozen: at its
-   * first task and after each compaction.
+   * first task and after each compaction. `extras` is the session's set of
+   * optional built-ins (see `selectExtras`).
    */
-  promptSections?: (memoryNamespace: string) => string[];
+  promptSections?: (memoryNamespace: string, extras: ActiveExtras) => string[];
+  /**
+   * Chooses the optional built-in skills and connectors for a session (from
+   * config: global plus the session's channel or conversation scope). Called
+   * once, when the session's context is first frozen; the answer is recorded
+   * in `context_frozen` and reused at every later freeze (compaction), so the
+   * set never changes during a session. `/new` starts a session that asks again.
+   */
+  selectExtras?: (sessionId: string) => ActiveExtras;
+  /**
+   * The connector a registered tool belongs to, if any. Such a tool is frozen
+   * into a session (and so callable) only when its connector is in the
+   * session's extras; tools without a connector are always included.
+   */
+  connectorOfTool?: (toolName: string) => string | undefined;
   /** Compact before a task when the previous request used at least this many input tokens. */
   compactAtTokens?: number;
   /** User turns kept verbatim after compaction. */
@@ -257,18 +273,34 @@ export class Agent {
   private frozenFor(sessionId: string): { system: string; tools: ToolSchema[] } {
     const frozen: FrozenContext | undefined = frozenContext(this.deps.store.events(sessionId));
     if (frozen?.tools) return { system: frozen.system, tools: frozen.tools };
-    return this.freeze(sessionId, frozen?.system ?? this.freshSystem());
+    const extras = frozen?.extras ?? this.selectExtras(sessionId);
+    return this.freeze(sessionId, extras, frozen?.system ?? this.freshSystem(extras));
   }
 
-  private freeze(sessionId: string, system: string): { system: string; tools: ToolSchema[] } {
-    const tools = this.deps.registry.schemas();
-    this.deps.store.append(sessionId, { type: 'context_frozen', system, tools });
+  /** The session's optional built-ins: as recorded when it was first frozen, else chosen now. */
+  private extrasOf(sessionId: string): ActiveExtras {
+    return frozenContext(this.deps.store.events(sessionId))?.extras ?? this.selectExtras(sessionId);
+  }
+
+  private selectExtras(sessionId: string): ActiveExtras {
+    const chosen = this.deps.selectExtras?.(sessionId);
+    return { skills: [...(chosen?.skills ?? [])].sort(), connectors: [...(chosen?.connectors ?? [])].sort() };
+  }
+
+  private freeze(sessionId: string, extras: ActiveExtras, system: string): { system: string; tools: ToolSchema[] } {
+    const connectorOf = this.deps.connectorOfTool;
+    const tools = this.deps.registry.schemas().filter((t) => {
+      const connector = connectorOf?.(t.name);
+      return connector === undefined || extras.connectors.includes(connector);
+    });
+    // Recorded whenever a selector exists (even when empty), so the choice stays fixed for the session.
+    this.deps.store.append(sessionId, { type: 'context_frozen', system, tools, ...(this.deps.selectExtras ? { extras } : {}) });
     return { system, tools };
   }
 
-  private freshSystem(): string {
+  private freshSystem(extras: ActiveExtras): string {
     const ns = this.deps.memoryNamespace ?? 'default';
-    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [], timestamps: this.deps.timeZone !== undefined });
+    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns, extras) ?? [], timestamps: this.deps.timeZone !== undefined });
   }
 
   /**
@@ -329,7 +361,9 @@ export class Agent {
       return { status: 'failed', usage: turn.usage, modelCalls: 1 };
     }
     this.deps.store.append(sessionId, { type: 'checkpoint', summary, throughSeq: plan.throughSeq, usage: turn.usage });
-    this.freeze(sessionId, this.freshSystem());
+    // The prompt (memory, skills index) and tools are rebuilt, but the session keeps its optional built-ins.
+    const extras = this.extrasOf(sessionId);
+    this.freeze(sessionId, extras, this.freshSystem(extras));
     return { status: 'compacted', usage: turn.usage, modelCalls: 1 };
   }
 

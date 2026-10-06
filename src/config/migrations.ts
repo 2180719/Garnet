@@ -10,6 +10,8 @@ type Migration = (raw: Record<string, unknown>) => Record<string, unknown>;
  */
 const migrations: Record<number, Migration> = {
   0: (raw) => ({ ...raw, version: 1 }),
+  // 2 added optional built-in skills and connectors (`skills`, `connectors`), both off by default.
+  1: (raw) => ({ ...raw, version: 2 }),
 };
 
 export function migrate(raw: unknown): unknown {

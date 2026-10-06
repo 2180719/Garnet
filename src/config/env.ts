@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { GarnetConfig } from './schema.ts';
+import { enabledAnywhere } from './extensions.ts';
 
 /** Environment variables Garnet reads. Before the rename each had a `RUBY_` twin, which is still read when the `GARNET_` one is unset. */
 const LEGACY_ENV_SUFFIXES = ['HOME', 'SECRETS_KEY_FILE', 'SECRETS_PASSPHRASE', 'LIVE_TESTS', 'NODE', 'COMMAND_NAME'] as const;
@@ -126,5 +127,8 @@ function quoteEnv(value: string): string {
 /** Names of the environment variables (or stored secrets) the config refers to. Names only, never values. */
 export function secretNames(config: GarnetConfig): string[] {
   const transcription = config.media.transcription.backend === 'openai-compatible' ? config.media.transcription.apiKeyEnv : undefined;
-  return [...new Set([config.model.apiKeyEnv, config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : [])])];
+  // Connectors that are on anywhere (globally or in a scope) need their credentials.
+  const on = new Set(enabledAnywhere(config.connectors));
+  const connectors = [...(on.has('github') ? [config.connectors.github.tokenEnv] : []), ...(on.has('calendar') ? [config.connectors.calendar.urlEnv] : [])];
+  return [...new Set([config.model.apiKeyEnv, config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : []), ...connectors])];
 }

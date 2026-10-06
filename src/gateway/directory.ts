@@ -36,6 +36,34 @@ export function conversationKeyFor(routes: Route[], chat: { channel: string; acc
   return route ? `route:${route.conversation}` : `${chat.channel}:${chat.account}:${chat.chatId}`;
 }
 
+/**
+ * The config scopes a conversation belongs to, broadest first, for optional
+ * built-ins (`skills.channels`, `connectors.channels`):
+ * - a chat `telegram:<account>:<chatId>` → `telegram`, `telegram:<chatId>`;
+ * - a shared conversation `route:<name>` → its channel (when every route to it
+ *   is on one channel), then `route:<name>`;
+ * - an API conversation `api:<keyId>:<name>` → `api`, `api:<keyId>`;
+ * - a scheduled job `job:<id>` → `job`, `job:<id>`;
+ * - no conversation (the terminal chat) → `cli`.
+ */
+export function scopesForConversation(key: string | null, routes: Route[]): string[] {
+  if (!key) return ['cli'];
+  if (key.startsWith('route:')) {
+    const name = key.slice('route:'.length);
+    const channels = [...new Set(routes.filter((r) => r.conversation === name).map((r) => r.match.channel))];
+    return [...(channels.length === 1 ? [channels[0]!] : []), key];
+  }
+  if (key.startsWith('job:')) return ['job', key];
+  if (key.startsWith('api:')) {
+    const keyId = key.split(':')[1];
+    return keyId ? ['api', `api:${keyId}`] : ['api'];
+  }
+  const chat = chatOfKey(key);
+  if (chat) return [chat.channel, `${chat.channel}:${chat.chatId}`];
+  // Other surfaces (dashboard, demo, a bare `cli` key) are their own scope.
+  return [key.split(':')[0]!];
+}
+
 export class ChatDirectory {
   private readonly deps: DirectoryDeps;
 

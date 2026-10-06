@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { parseCron, validTimeZone } from './cron.ts';
+import { BUILTIN_SKILLS, CONNECTORS, SCOPE_HELP, SCOPE_RE } from './extensions.ts';
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 
 const permission = z.enum(['allow', 'ask', 'deny']);
 
@@ -81,6 +82,33 @@ export const jobSchema = z
   });
 
 export type JobConfig = z.infer<typeof jobSchema>;
+
+/** `skills` and `connectors` share this shape: a global list plus per-scope overrides. */
+function toggles(names: readonly [string, ...string[]], what: string) {
+  const name = z.enum(names);
+  const override = z
+    .object({
+      enable: z.array(name).default([]).describe(`${what} turned on in this scope, even when off globally.`),
+      disable: z.array(name).default([]).describe(`${what} turned off in this scope, even when on globally.`),
+    })
+    .strict()
+    .superRefine((o, ctx) => {
+      for (const n of o.enable) if (o.disable.includes(n)) ctx.addIssue({ code: 'custom', path: ['enable'], message: `"${n}" is both enabled and disabled in this scope` });
+    });
+  return {
+    enabled: z
+      .array(name)
+      .default([])
+      .refine((l) => new Set(l).size === l.length, 'list each name once')
+      .describe(`${what} on everywhere. Empty by default: everything is off until you enable it.`),
+    channels: z
+      .record(z.string().regex(SCOPE_RE, `a scope is ${SCOPE_HELP}`), override)
+      .default({})
+      .describe(
+        `Per-scope overrides, keyed by scope: ${SCOPE_HELP}. Each has "enable" and "disable" lists. A session uses the global list, then its channel's override, then its chat's (or route's, API key's, job's): the narrowest wins. The set is chosen when a conversation starts and stays fixed for it; /new picks up changes.`,
+      ),
+  };
+}
 
 export const configSchema = z
   .object({
@@ -426,6 +454,47 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Opt-in web dashboard.'),
+    skills: z
+      .object(toggles(BUILTIN_SKILLS, 'Built-in skills'))
+      .prefault({})
+      .describe('Optional built-in skills (instructions shipped with Garnet; see `garnet skills list`). Off by default. Skills you or Garnet create in <home>/skills are always available and are not listed here.'),
+    connectors: z
+      .object({
+        ...toggles(CONNECTORS, 'Connectors'),
+        github: z
+          .object({
+            tokenEnv: z.string().default('GITHUB_TOKEN').describe('Environment variable (or encrypted secret) holding a GitHub token (a fine-grained token with read access to issues and pull requests; add write access for comments). Optional for public repositories, needed for notifications and comments.'),
+            apiUrl: z.string().url().default('https://api.github.com').describe('GitHub REST API base. For GitHub Enterprise Server use https://<host>/api/v3. The token is only ever sent here.'),
+            repos: z
+              .array(
+                z
+                  .string()
+                  .regex(/^[A-Za-z0-9_.-]+\/(?:[A-Za-z0-9_.-]+|\*)$/, 'owner/name, or owner/* for every repository of an owner')
+                  .refine((r) => !r.split('/').some((p) => p === '.' || p === '..'), 'owner/name, or owner/* for every repository of an owner'),
+              )
+              .default([])
+              .describe('Repositories the connector may read or comment on (owner/name, or owner/*). Empty: any repository the token can reach. Search results and notifications from other repositories are hidden.'),
+            write: z.boolean().default(false).describe('Offer the comment action (post a comment on an issue or pull request). A comment needs message.send as well as net.fetch, so it asks by default and shows the full text.'),
+          })
+          .prefault({})
+          .describe('GitHub connector: search, list and read issues and pull requests, read notifications, optionally comment.'),
+        calendar: z
+          .object({
+            urlEnv: z.string().default('GARNET_CALENDAR_URL').describe('Environment variable (or encrypted secret) holding your calendar\'s ICS feed address (Google "Secret address in iCal format", iCloud public calendar link, Fastmail or Outlook published calendar; webcal:// works). Private feed addresses carry a password, so the address is a secret, never config.'),
+            maxDays: z.number().int().min(1).max(366).default(31).describe('Longest range one lookup may cover, in days.'),
+          })
+          .prefault({})
+          .describe('Calendar connector: read-only events from an ICS feed, shown in your time zone.'),
+        weather: z
+          .object({
+            units: z.enum(['metric', 'imperial']).default('metric').describe('metric: °C, km/h, mm. imperial: °F, mph, inch.'),
+            location: z.string().min(1).max(100).optional().describe('Default place for forecasts when none is asked for, e.g. "Lisbon". It is sent to Open-Meteo\'s geocoding API.'),
+          })
+          .prefault({})
+          .describe('Weather connector: forecasts from Open-Meteo (keyless; free for non-commercial use).'),
+      })
+      .prefault({})
+      .describe('Optional built-in connectors to outside services. Off by default. Each one is a tool that needs net.fetch (host scopes in web.allowHosts apply, and untrusted-content containment escalates it), and its output is treated as untrusted. Credentials are secret names, never values.'),
   })
   .strict()
   .superRefine((c, ctx) => {

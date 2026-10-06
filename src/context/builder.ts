@@ -1,4 +1,4 @@
-import type { ChatMessage, ContentBlock, SessionEvent, ToolCallBlock, ToolSchema } from '../contracts/index.ts';
+import type { ActiveExtras, ChatMessage, ContentBlock, SessionEvent, ToolCallBlock, ToolSchema } from '../contracts/index.ts';
 
 export type SystemPromptInput = {
   persona?: string | undefined;
@@ -46,12 +46,12 @@ export function systemPrompt(input: SystemPromptInput): string {
   return parts.join('\n');
 }
 
-export type FrozenContext = { system: string; tools: ToolSchema[] | undefined };
+export type FrozenContext = { system: string; tools: ToolSchema[] | undefined; extras: ActiveExtras | undefined };
 
-/** The system prompt and tool schemas most recently frozen for this session, if any. */
+/** The system prompt, tool schemas and optional built-ins most recently frozen for this session, if any. */
 export function frozenContext(events: SessionEvent[]): FrozenContext | undefined {
   const e = events.findLast((e) => e.type === 'context_frozen');
-  return e?.type === 'context_frozen' ? { system: e.system, tools: e.tools } : undefined;
+  return e?.type === 'context_frozen' ? { system: e.system, tools: e.tools, extras: e.extras } : undefined;
 }
 
 /**

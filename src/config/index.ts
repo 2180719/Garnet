@@ -4,3 +4,18 @@ export { loadConfig, writeConfig, parseConfig, defaultConfig, garnetHome, pathsF
 export { redact } from './redact.ts';
 export { envVar, deprecatedEnvVars, loadEnvFile, parseEnv, removeFromEnvFile, setInEnvFile, secretNames } from './env.ts';
 export { PROTECTED_CONFIG_PATHS, isProtectedConfigPath, changedProtectedPaths } from './protected.ts';
+export {
+  BUILTIN_SKILLS,
+  CONNECTORS,
+  SCOPE_RE,
+  SCOPE_HELP,
+  resolveToggles,
+  activeNames,
+  enabledAnywhere,
+  setToggle,
+  type BuiltinSkillName,
+  type ConnectorName,
+  type Effective,
+  type Override,
+  type Toggles,
+} from './extensions.ts';
