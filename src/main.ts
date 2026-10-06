@@ -13,7 +13,7 @@ import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, 
 import { Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
-import { ArtifactStore, ToolExecutor, ToolRegistry, execTool, fileTools, readArtifactTool } from './tools/index.ts';
+import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
@@ -82,6 +82,8 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     sandbox = createSandbox(sb.backend, { workspace: paths.workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit, ...(sb.user ? { user: sb.user } : {}) });
     registry.register(execTool(sandbox));
   }
+  // web_fetch and web_search exist only when net.fetch is not denied. They run in-process (the sandbox has no network).
+  const trustedEndpoints = registerWebTools(registry, config, secret);
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
   const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, secret));
@@ -100,7 +102,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
       keepTurns: config.context.keepTurns,
       maxOutputTokens: config.model.maxOutputTokens,
     });
-  const ownerPolicy = new Policy(config.permissions);
+  const ownerPolicy = new Policy(config.permissions, { containment: config.containment, allowHosts: config.web.allowHosts, trustedEndpoints });
   const agent = makeAgent(ownerPolicy, config.budgets);
   return {
     config,
@@ -125,6 +127,19 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     model,
     close: () => db.close(),
   };
+}
+
+/** Registers web_fetch and web_search per config; returns the search endpoint(s) the owner chose (see `PolicyOptions.trustedEndpoints`). */
+function registerWebTools(registry: ToolRegistry, config: RubyConfig, secret: SecretLookup): string[] {
+  if (config.permissions['net.fetch'] === 'deny') return [];
+  const w = config.web;
+  const timeoutMs = w.fetch.timeoutSeconds * 1000;
+  const fetcher = new WebFetcher({ maxBytes: w.fetch.maxBytes, timeoutMs, maxRedirects: w.fetch.maxRedirects });
+  registry.register(webFetchTool(fetcher, { timeoutMs }));
+  if (w.search.backend === 'none') return [];
+  const backend = searchBackend({ backend: w.search.backend, searxngUrl: w.search.searxngUrl, apiKeyEnv: w.search.apiKeyEnv }, secret);
+  registry.register(webSearchTool(backend, fetcher, { maxResults: w.search.maxResults, timeoutMs }));
+  return [backend.endpoint];
 }
 
 /** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */

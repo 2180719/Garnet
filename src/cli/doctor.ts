@@ -151,6 +151,20 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     }
     if (ch.signal.enabled) add('channels', 'ok', `signal · ${ch.signal.account} via ${ch.signal.baseUrl} (keep signal-cli daemon running)`);
 
+    // Web
+    const web = config.web.search;
+    if (config.permissions['net.fetch'] === 'deny') add('web', 'info', 'Web access is off (permissions.net.fetch = deny): no web_fetch or web_search');
+    else if (web.backend === 'brave' || web.backend === 'tavily') {
+      const keyName = web.apiKeyEnv ?? (web.backend === 'brave' ? 'BRAVE_API_KEY' : 'TAVILY_API_KEY');
+      const loc = where(keyName);
+      if (loc) add('web', 'ok', `web_search · ${web.backend} · key ${keyName} (${loc})`);
+      else add('web', 'fail', `web.search.backend is ${web.backend} but ${keyName} is not set`, missingFix(keyName));
+    } else if (web.backend === 'none') add('web', 'info', 'web_fetch only (web.search.backend = none)');
+    else add('web', 'ok', `web_search · ${web.backend}${web.backend === 'searxng' ? ` at ${web.searxngUrl}` : ' (keyless, unofficial; may be rate limited)'}`);
+    if (config.permissions['net.fetch'] !== 'deny' && !config.containment.enabled) {
+      add('web', 'warn', 'Untrusted-content containment is off: a web page could steer Ruby into actions you set to allow', 'Set containment.enabled = true in config.json.');
+    }
+
     // Sandbox
     if (config.permissions.exec === 'deny') add('sandbox', 'info', 'Shell commands are off (permissions.exec = deny), so no sandbox is needed');
     else if (config.sandbox.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker.');
