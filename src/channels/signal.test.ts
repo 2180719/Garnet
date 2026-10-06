@@ -392,3 +392,24 @@ test('health reports lastSuccessAt and reflects a down stream', async () => {
   assert.ok(channel.health().lastSuccessAt);
   await channel.stop();
 });
+
+test('attachments and stickers are passed on as unsupported content, with any caption as text', async () => {
+  const { d, channel, got } = await started();
+  const f = d.feeds[0]!;
+  f.push(notification({ sourceNumber: '+15559998888', timestamp: 11, dataMessage: { message: null, attachments: [{ contentType: 'audio/aac' }] } }));
+  f.push(notification({ sourceNumber: '+15559998888', timestamp: 12, dataMessage: { message: 'my desk', attachments: [{ contentType: 'image/jpeg' }] } }));
+  f.push(notification({ sourceNumber: '+15559998888', timestamp: 13, dataMessage: { attachments: [{ contentType: 'application/pdf' }] } }));
+  f.push(notification({ sourceNumber: '+15559998888', timestamp: 14, dataMessage: { sticker: { packId: 'x', stickerId: 1 } } }));
+  f.push(notification({ sourceNumber: '+15559998888', timestamp: 15, dataMessage: { reaction: { emoji: 'x' } } }));
+  f.push(direct('done', 16));
+  await until(() => got.length === 5, 'five messages');
+  assert.deepEqual(got.map((m) => [m.unsupported ?? null, m.text]), [['voice', ''], ['photo', 'my desk'], ['file', ''], ['sticker', ''], [null, 'done']]);
+  await channel.stop();
+});
+
+test('send strips markdown, since Signal shows the markers literally', async () => {
+  const d = fakeDaemon();
+  const { channel } = setup(d);
+  await channel.send({ deliveryId: 'x', channel: 'signal', account: ACCOUNT, chatId: '+15559998888', text: '**Saved** `notes.txt`:\n- one' });
+  assert.equal((d.rpcs.at(-1)!.params as { message: string }).message, 'Saved notes.txt:\n• one');
+});

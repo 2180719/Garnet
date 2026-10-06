@@ -70,6 +70,11 @@ export const configSchema = z
       .string()
       .optional()
       .describe('Directory tools may work in. Defaults to <home>/workspace.'),
+    timezone: z
+      .string()
+      .refine(validTimeZone, "Unknown time zone (use an IANA name like Europe/London)")
+      .optional()
+      .describe("Your IANA time zone, e.g. Europe/London. Ruby shows each message's send time in it, and jobs without their own timezone use it. Defaults to the host zone."),
     model: z
       .object({
         provider: z
@@ -161,6 +166,15 @@ export const configSchema = z
         host: z.string().default('127.0.0.1').describe('Bind address. Non-loopback requires at least one API key.'),
         port: z.number().int().min(1).max(65535).default(7311).describe('HTTP port.'),
         rateLimitPerMinute: z.number().int().positive().default(120).describe('Requests per minute allowed for each API key (the dashboard polls, so keep this comfortably above 60).'),
+        corsOrigins: z
+          .array(
+            z
+              .string()
+              .url()
+              .refine((o) => { try { return new URL(o).origin === o.replace(/\/+$/, ''); } catch { return false; } }, 'must be an origin like https://chat.example.com (scheme, host and optional port; no path)'),
+          )
+          .default([])
+          .describe('Browser apps allowed to call /v1/chat/completions and /v1/models directly (CORS), e.g. https://chat.example.com. Empty (the default) sends no CORS headers. List exact origins; there is no wildcard.'),
         trustProxy: z.boolean().default(false).describe('Behind your own reverse proxy: take the client IP from X-Forwarded-For. The rightmost entry (the one your proxy appends) is used, so the proxy must append the client address to X-Forwarded-For.'),
         demo: z
           .object({

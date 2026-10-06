@@ -3,6 +3,8 @@ import type { ChatMessage, ContentBlock, SessionEvent, ToolCallBlock, ToolSchema
 export type SystemPromptInput = {
   persona?: string | undefined;
   workspace: string;
+  /** True when user messages carry their send time (see `MessageOptions.timeZone`). */
+  timestamps?: boolean;
   /** Extra stable sections (memory snapshot, skills index), in order. */
   sections?: string[];
 };
@@ -21,6 +23,9 @@ export function systemPrompt(input: SystemPromptInput): string {
     'When you finish, say plainly what you did, what you verified, and anything left undone. Never describe partial work as complete.',
     `Your workspace root is ${input.workspace}; file paths are relative to it.`,
   ];
+  if (input.timestamps) {
+    parts.push("Each user message starts with the time it was sent in your owner's time zone, like [Tue 2026-10-06 14:03 Europe/London, UTC+01:00]. Use it for today's date and the current time. Your owner did not type it.");
+  }
   if (input.persona) parts.push('', "# Owner's standing instructions", input.persona);
   for (const section of input.sections ?? []) if (section.trim()) parts.push('', section.trim());
   return parts.join('\n');
@@ -42,7 +47,17 @@ export function frozenContext(events: SessionEvent[]): FrozenContext | undefined
  * blocks are dropped from the retained turns recorded before it (turns after
  * the checkpoint keep them).
  */
-export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
+export type MessageOptions = {
+  /**
+   * IANA time zone. When set, each user message is prefixed with the time it
+   * was recorded (from the event's own timestamp, so the derived history is
+   * stable and prompt caching keeps working). The system prompt stays free of
+   * per-turn data.
+   */
+  timeZone?: string | undefined;
+};
+
+export function messagesFromEvents(events: SessionEvent[], options: MessageOptions = {}): ChatMessage[] {
   let checkpoint: Extract<SessionEvent, { type: 'checkpoint' }> | undefined;
   for (const e of events) if (e.type === 'checkpoint') checkpoint = e;
 
@@ -68,7 +83,7 @@ export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
   for (const e of events) {
     if (checkpoint && e.seq <= checkpoint.throughSeq) continue;
     if (e.type === 'user_message') {
-      appendUser(messages, e.message.content);
+      appendUser(messages, options.timeZone ? [{ type: 'text', text: turnTime(e.at, options.timeZone) }, ...e.message.content] : e.message.content);
     } else if (e.type === 'assistant_message') {
       // Only turns recorded before the checkpoint lost their prefix; turns
       // produced after it were generated against the summary and must replay
@@ -106,7 +121,7 @@ export type CompactionPlan = {
  * Plans keep-tail compaction: summarize everything before the last
  * `keepTurns` user messages. Returns null when there is too little to fold.
  */
-export function planCompaction(events: SessionEvent[], keepTurns = 2): CompactionPlan | null {
+export function planCompaction(events: SessionEvent[], keepTurns = 2, options: MessageOptions = {}): CompactionPlan | null {
   const userSeqs = events.filter((e) => e.type === 'user_message').map((e) => e.seq);
   if (userSeqs.length <= keepTurns) return null;
   const cutBefore = userSeqs[userSeqs.length - keepTurns]!;
@@ -116,7 +131,7 @@ export function planCompaction(events: SessionEvent[], keepTurns = 2): Compactio
   // once the task's user message is stored), but it still covers the turns
   // before its throughSeq; without it they would be replayed in full.
   const head = events.filter((e) => e.seq < cutBefore || e === previous);
-  const messages = messagesFromEvents(head);
+  const messages = messagesFromEvents(head, options);
   appendUser(messages, [{ type: 'text', text: SUMMARY_PROMPT }]);
   return { throughSeq: cutBefore - 1, messages };
 }
@@ -125,6 +140,39 @@ export function planCompaction(events: SessionEvent[], keepTurns = 2): Compactio
 export function extractSummary(text: string): string {
   const m = /<summary>([\s\S]*?)(?:<\/summary>|$)/.exec(text);
   return (m ? m[1]! : text).trim();
+}
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/**
+ * `[Tue 2026-10-06 14:03 Europe/London, UTC+01:00]`. Built from numeric parts
+ * (not a locale format) so it does not change between Node versions.
+ */
+export function turnTime(iso: string, timeZone: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '[time unknown]';
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+      timeZoneName: 'longOffset',
+    }).formatToParts(date);
+  } catch {
+    return turnTime(iso, 'UTC'); // an unknown zone: say UTC rather than guess
+  }
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  const y = Number(get('year'));
+  const m = Number(get('month'));
+  const d = Number(get('day'));
+  const weekday = WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  const offset = get('timeZoneName').replace(/^GMT/, 'UTC') || 'UTC';
+  return `[${weekday} ${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} ${timeZone}, ${offset === 'UTC' ? 'UTC+00:00' : offset}]`;
 }
 
 /** Providers require alternating roles; merge consecutive user content into one message. */

@@ -99,6 +99,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       maxOutputTokens: config.model.maxOutputTokens,
+      timeZone: ownerTimeZone(config),
     });
   const ownerPolicy = new Policy(config.permissions);
   const agent = makeAgent(ownerPolicy, config.budgets);
@@ -125,6 +126,11 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     model,
     close: () => db.close(),
   };
+}
+
+/** The owner's time zone: `timezone` in config, else the host's. */
+export function ownerTimeZone(config: RubyConfig): string {
+  return config.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
 /** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */
@@ -207,6 +213,7 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
     routes: config.routes,
     pairingTtlMinutes: config.gateway.pairingTtlMinutes,
     deliveryEnabled: deliver,
+    model: { id: ruby.model.id, contextWindow: ruby.model.capabilities.contextWindow },
     log,
   });
   const scheduler = new Scheduler({
@@ -215,12 +222,14 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
     workspace: ruby.paths.workspace,
     enabled: config.scheduler.enabled,
     tickSeconds: config.scheduler.tickSeconds,
+    timeZone: ownerTimeZone(config),
     log,
     run: (job, text, signal) => gateway.chat(`job:${job.id}`, text, { signal, source: 'scheduler' }),
     notify: (job, text) => {
       if (!job.notify) return;
       const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
-      gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text);
+      // Recorded in the chat's conversation so a reply to it has context.
+      gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text, { from: `scheduled job "${job.id}"` });
     },
   });
   return { gateway, scheduler, channels };
@@ -251,6 +260,7 @@ export async function startService(ruby: Ruby, rawLog: LogFn, overrides: { chann
         log,
         admin: createBackend(ruby, gateway, scheduler, VERSION),
         trustProxy: config.api.trustProxy,
+        corsOrigins: config.api.corsOrigins,
         ...(config.api.demo.enabled ? { demo: createDemo(ruby) } : {}),
         ...(config.dashboard.enabled ? { fallback: staticFiles(join(import.meta.dirname, '..', 'dashboard')) } : {}),
       });

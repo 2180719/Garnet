@@ -76,7 +76,9 @@ ruby api enable
 ruby api key create --name laptop --scopes chat
 ```
 
-Point any OpenAI-compatible client at `http://127.0.0.1:7311/v1` with that key. Ruby keeps the conversation on the server: it only reads your newest message.
+Point any OpenAI-compatible client at `http://127.0.0.1:7311/v1` with that key. Ruby keeps the conversation on the server and only reads your newest message. Each chat in Open WebUI, LibreChat and similar apps gets its own conversation (named by the chat's first message, or by `X-OpenWebUI-Chat-Id` when Open WebUI forwards it). A client that sends only its newest message should name the conversation with an `X-Ruby-Conversation: <name>` header. `/approve CODE` and `/deny CODE` work in API chats, Open WebUI's title and tag requests are answered without running the agent, and browser apps can call the API directly once their origin is listed in `api.corsOrigins`.
+
+In any chat, `/help` lists the commands: `/new`, `/stop`, `/retry`, `/usage`, `/status`, `/approve` and `/deny`.
 
 `ruby dashboard` turns on the web dashboard and prints a login link. The link works once and only for 15 minutes: the dashboard swaps it for a session key that stays in that browser tab.
 

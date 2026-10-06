@@ -9,8 +9,10 @@ import {
   type InboundSink,
   type OutboundMessage,
   type SendResult,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
 import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
+import { markdownToPlain } from './markdown.ts';
 
 export type SignalOptions = {
   /** signal-cli daemon base URL. Plain http is only allowed for loopback hosts. */
@@ -40,8 +42,24 @@ type Envelope = {
   sourceUuid?: string | null;
   sourceName?: string | null;
   timestamp?: number;
-  dataMessage?: { message?: string | null; groupInfo?: { groupId?: string } | null } | null;
+  dataMessage?: {
+    message?: string | null;
+    groupInfo?: { groupId?: string } | null;
+    attachments?: { contentType?: string | null }[] | null;
+    sticker?: unknown;
+  } | null;
 };
+
+/** What a message without readable text carries, or undefined when it carries nothing to answer (receipts, reactions). */
+function unsupportedKind(data: NonNullable<Envelope['dataMessage']>): UnsupportedContent | undefined {
+  if (data.sticker) return 'sticker';
+  const type = data.attachments?.[0]?.contentType ?? (data.attachments?.length ? '' : undefined);
+  if (type === undefined) return undefined;
+  if (type.startsWith('audio/')) return 'voice'; // Signal records voice notes as audio attachments
+  if (type.startsWith('image/')) return 'photo';
+  if (type.startsWith('video/')) return 'video';
+  return 'file';
+}
 
 function isLoopbackHost(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
@@ -158,7 +176,7 @@ export class SignalChannel implements ChannelAdapter {
 
   async send(message: OutboundMessage): Promise<SendResult> {
     return sendChunks(
-      splitText(message.text, MAX_CHARS),
+      splitText(markdownToPlain(message.text), MAX_CHARS), // Signal shows markdown markers literally
       async (text) => {
         const result = (await this.#rpc('send', { ...this.#target(message.chatId), message: text }, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as
           | { timestamp?: number; results?: { type?: string }[] }
@@ -308,8 +326,11 @@ export class SignalChannel implements ChannelAdapter {
     if (note?.account !== undefined && note.account !== this.account) return null;
     const env = note?.envelope;
     if (!env) return null;
-    const text = env.dataMessage?.message;
-    if (typeof text !== 'string' || text === '') return null;
+    const data = env.dataMessage;
+    if (!data) return null;
+    const message = typeof data.message === 'string' ? data.message : '';
+    const unsupported = unsupportedKind(data);
+    if (message === '' && !unsupported) return null;
     const number = env.sourceNumber ?? (env.source && env.source.startsWith('+') ? env.source : undefined) ?? undefined;
     if (number === this.account || env.source === this.account) return null; // never process our own messages
     const senderId = env.sourceUuid ?? number ?? env.source;
@@ -322,9 +343,10 @@ export class SignalChannel implements ChannelAdapter {
       chatId: groupId ? `group:${groupId}` : direct,
       externalId: `${senderId}:${env.timestamp}`,
       sender: { id: senderId, ...(env.sourceName ? { displayName: env.sourceName } : {}) },
-      text,
+      text: message,
       isPrivate: !groupId,
       receivedAt: new Date(env.timestamp).toISOString(),
+      ...(unsupported ? { unsupported } : {}),
     };
   }
 

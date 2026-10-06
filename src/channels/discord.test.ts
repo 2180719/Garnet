@@ -372,3 +372,19 @@ test('stop is prompt and idempotent, even before READY', async () => {
   await t.channel.stop();
   assert.equal(t.ws().closedWith, 1000);
 });
+
+test('attachments, voice messages and stickers are passed on as unsupported content', async () => {
+  const t = setup();
+  const got: InboundMessage[] = [];
+  await connect(t, async (m) => {
+    got.push(m);
+  });
+  const ws = t.ws();
+  ws.push({ op: 0, s: 2, t: 'MESSAGE_CREATE', d: msg({ id: '601', content: '', attachments: [{ content_type: 'audio/ogg', flags: 8192 }] }) });
+  ws.push({ op: 0, s: 3, t: 'MESSAGE_CREATE', d: msg({ id: '602', content: 'look', attachments: [{ content_type: 'image/png' }] }) });
+  ws.push({ op: 0, s: 4, t: 'MESSAGE_CREATE', d: msg({ id: '603', content: '', sticker_items: [{ id: '1' }] }) });
+  ws.push({ op: 0, s: 5, t: 'MESSAGE_CREATE', d: msg({ id: '604', content: '', attachments: [{ content_type: 'audio/mpeg' }] }) });
+  await until(() => got.length === 4, 'four messages');
+  assert.deepEqual(got.map((m) => [m.unsupported, m.text]), [['voice', ''], ['photo', 'look'], ['sticker', ''], ['audio', '']]);
+  await t.channel.stop();
+});

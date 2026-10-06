@@ -12,7 +12,15 @@ export type InboundMessage = {
   /** True for one-to-one chats. Group chats never get private memory or pairing. */
   isPrivate: boolean;
   receivedAt: string; // ISO timestamp
+  /**
+   * Set when the message carried content Ruby cannot read yet (voice note,
+   * photo, file, sticker...). `text` then holds the caption, if any. The
+   * gateway answers honestly instead of dropping the message.
+   */
+  unsupported?: UnsupportedContent;
 };
+
+export type UnsupportedContent = 'voice' | 'audio' | 'photo' | 'video' | 'file' | 'sticker' | 'other';
 
 export type OutboundMessage = {
   deliveryId: string;

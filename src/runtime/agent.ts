@@ -56,6 +56,11 @@ export type AgentDeps = {
   /** Transient provider failures retried per model call. */
   maxRetries?: number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /**
+   * The owner's IANA time zone. When set, each user message is shown to the
+   * model with its send time (derived from the event log, not the system prompt).
+   */
+  timeZone?: string;
 };
 
 export type CompactionOutcome = {
@@ -144,7 +149,7 @@ export class Agent {
       const exhausted = this.budgetProblem(task, started);
       if (exhausted) return finish('budget_exhausted', exhausted);
 
-      const messages = messagesFromEvents(store.events(sessionId));
+      const messages = messagesFromEvents(store.events(sessionId), { timeZone: this.deps.timeZone });
       const turn = await this.callModel({ system, messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, emit, deadline);
       task.modelCalls += 1;
       if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
@@ -219,7 +224,7 @@ export class Agent {
 
   private freshSystem(): string {
     const ns = this.deps.memoryNamespace ?? 'default';
-    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [] });
+    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [], timestamps: this.deps.timeZone !== undefined });
   }
 
   /**
@@ -262,7 +267,7 @@ export class Agent {
    * re-freezes the system prompt and tool set so memory and tool changes take effect.
    */
   private async compactNow(sessionId: string, signal: AbortSignal, emit: (e: RuntimeEvent) => void, deadline = Infinity): Promise<CompactionOutcome> {
-    const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2);
+    const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2, { timeZone: this.deps.timeZone });
     if (!plan) return { status: 'nothing_to_compact', usage: null, modelCalls: 0 };
     emit({ type: 'compacting' });
     // Summarize with the current frozen prefix so the request can hit the cache.

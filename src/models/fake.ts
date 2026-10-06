@@ -73,6 +73,7 @@ export class FakeModel implements ModelAdapter {
 
 function echo(request: ModelRequest): string {
   const last = [...request.messages].reverse().find((m) => m.role === 'user');
-  const text = last?.content.find((b) => b.type === 'text');
+  // The last text block: user turns may start with a time stamp block (see context/messagesFromEvents).
+  const text = last?.content.findLast((b) => b.type === 'text');
   return text && text.type === 'text' ? `You said: ${text.text}` : 'Done.';
 }

@@ -4,7 +4,7 @@ import { tempDir } from '../../test/helpers.ts';
 import { parseConfig, type JobConfig } from '../config/index.ts';
 import type { TaskRecord } from '../contracts/index.ts';
 import { JobStore, openDb } from '../store/index.ts';
-import { NOTHING, Scheduler } from './index.ts';
+import { NOTHING, Scheduler, quietReply } from './index.ts';
 
 const jobsFrom = (jobs: object[]): JobConfig[] => parseConfig({ version: 1, jobs }).jobs;
 
@@ -12,7 +12,7 @@ function task(status: TaskRecord['status'] = 'completed', tokens = 1000): TaskRe
   return { id: 't', sessionId: 's', status, usage: { inputTokens: tokens, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null }, modelCalls: 1, toolCalls: 0, startedAt: '', endedAt: '', reason: status === 'failed' ? 'boom' : null };
 }
 
-function setup(jobs: object[], opts: { reply?: string; status?: TaskRecord['status']; check?: () => string; db?: ReturnType<typeof openDb> } = {}) {
+function setup(jobs: object[], opts: { reply?: string; status?: TaskRecord['status']; check?: () => string; db?: ReturnType<typeof openDb>; timeZone?: string } = {}) {
   let now = new Date('2026-10-05T10:00:10Z');
   const db = opts.db ?? openDb(':memory:');
   const store = new JobStore(db);
@@ -25,6 +25,7 @@ function setup(jobs: object[], opts: { reply?: string; status?: TaskRecord['stat
       return { task: task(opts.status), text: opts.reply ?? NOTHING };
     },
     notify: (_job, text) => notes.push(text),
+    ...(opts.timeZone ? { timeZone: opts.timeZone } : {}),
     ...(opts.check ? { check: async () => opts.check!() } : {}),
   });
   const tick = async () => {
@@ -164,4 +165,36 @@ test('running a job that is already running is a conflict, not an internal error
   await assert.rejects(t.scheduler.runNow('hb'), (e) => isRubyError(e, 'conflict'));
   await assert.rejects(t.scheduler.runNow('nope'), (e) => isRubyError(e, 'invalid_input'));
   await first;
+});
+
+test('HEARTBEAT_OK counts as nothing to report, like NOTHING_TO_REPORT', async () => {
+  for (const reply of ['HEARTBEAT_OK', '**HEARTBEAT_OK**', 'All quiet. HEARTBEAT_OK', 'HEARTBEAT_OK.']) {
+    const t = setup([heartbeat()], { reply });
+    await t.tick();
+    t.advance(30 * 60_000);
+    await t.tick();
+    assert.equal(t.runs.length, 1);
+    assert.deepEqual(t.notes, [], reply);
+  }
+  const long = `HEARTBEAT_OK\n${'Your server disk is 95% full. '.repeat(15)}`;
+  const t = setup([heartbeat()], { reply: long });
+  await t.tick();
+  t.advance(30 * 60_000);
+  await t.tick();
+  assert.equal(t.notes.length, 1, 'a real report next to the token is still sent');
+  assert.doesNotMatch(t.notes[0]!, /HEARTBEAT_OK/);
+  assert.deepEqual(quietReply('Done: HEARTBEAT_OK is the token you asked about, and here is more.'), {
+    nothing: false,
+    text: 'Done: HEARTBEAT_OK is the token you asked about, and here is more.',
+  });
+});
+
+test('jobs without their own timezone use the owner time zone', async () => {
+  // Start 10:00:10Z = 12:00:10 in Berlin (CEST), just past noon there; a day later exactly one run is due.
+  const t = setup([{ id: 'noon', kind: 'cron', cron: '0 12 * * *', instructions: 'Lunch.' }], { timeZone: 'Europe/Berlin', reply: 'Eat.' });
+  await t.tick();
+  t.advance(86_400_000);
+  await t.tick();
+  assert.equal(t.runs.length, 1);
+  assert.match(t.runs[0]!, /2026-10-06 12:00 Europe\/Berlin/);
 });

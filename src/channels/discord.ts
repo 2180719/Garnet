@@ -14,8 +14,10 @@ import {
   type InboundSink,
   type OutboundMessage,
   type SendResult,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, type ChunkFailure } from './delivery.ts';
+import { splitMarkdown } from './markdown.ts';
 
 export type DiscordOptions = {
   token: string;
@@ -64,7 +66,21 @@ type DiscordMessage = {
   timestamp?: string;
   webhook_id?: string;
   author?: { id?: string; username?: string; global_name?: string | null; bot?: boolean };
+  attachments?: { content_type?: string | null; flags?: number }[];
+  sticker_items?: unknown[];
 };
+
+/** What a message carries besides text, or undefined when there is nothing Ruby cannot read. */
+function unsupportedKind(m: DiscordMessage): UnsupportedContent | undefined {
+  if (m.sticker_items?.length) return 'sticker';
+  const first = m.attachments?.[0];
+  if (!first) return undefined;
+  const type = first.content_type ?? '';
+  if (type.startsWith('audio/')) return (first.flags ?? 0) & 8192 ? 'voice' : 'audio'; // IS_VOICE_MESSAGE
+  if (type.startsWith('image/')) return 'photo';
+  if (type.startsWith('video/')) return 'video';
+  return 'file';
+}
 
 /** A REST call that failed. `status` is 0 for network failures. */
 class DiscordApiError extends Error {
@@ -179,7 +195,7 @@ export class DiscordChannel implements ChannelAdapter {
     if (!/^\d+$/.test(message.chatId)) return { status: 'failed', retryable: false, error: 'Invalid Discord channel id' };
     const replyTo = message.replyToExternalId !== undefined && /^\d+$/.test(message.replyToExternalId) ? message.replyToExternalId : undefined;
     return sendChunks(
-      splitText(message.text, MAX_CHARS),
+      splitMarkdown(message.text, MAX_CHARS), // Discord renders markdown itself; keep code blocks whole per chunk
       async (content, i) => {
         const body: Record<string, unknown> = {
           content,
@@ -408,7 +424,9 @@ export class DiscordChannel implements ChannelAdapter {
     const author = m?.author;
     if (!author || typeof author.id !== 'string' || typeof m.id !== 'string' || typeof m.channel_id !== 'string') return null;
     if (author.bot || m.webhook_id || author.id === this.#botId) return null;
-    if (typeof m.content !== 'string' || m.content === '') return null;
+    const content = typeof m.content === 'string' ? m.content : '';
+    const unsupported = unsupportedKind(m);
+    if (content === '' && !unsupported) return null;
     const name = author.global_name ?? author.username;
     const ts = m.timestamp ? Date.parse(m.timestamp) : NaN;
     return {
@@ -417,9 +435,10 @@ export class DiscordChannel implements ChannelAdapter {
       chatId: m.channel_id,
       externalId: m.id,
       sender: { id: author.id, ...(name ? { displayName: name } : {}) },
-      text: m.content,
+      text: content,
       isPrivate: m.guild_id === undefined || m.guild_id === null,
       receivedAt: new Date(Number.isNaN(ts) ? Date.now() : ts).toISOString(),
+      ...(unsupported ? { unsupported } : {}),
     };
   }
 
