@@ -57,3 +57,17 @@ test('bracketed paste is one key, even across reads, with newlines normalized', 
 test('malformed or out-of-range key codes become unknown keys instead of throwing', () => {
   assert.deepEqual(names(parse('\x1b[1114112u\x1b[u\x1b[27;5;99999999~x')), ['unknown', 'unknown', 'unknown', 'text:x']);
 });
+
+test('mouse reports: the wheel is a key, other mouse events are ignorable, nothing leaks into text', () => {
+  assert.deepEqual(names(parse('\x1b[<64;10;5M\x1b[<65;10;5M')), ['wheelup', 'wheeldown'], 'SGR wheel');
+  assert.deepEqual(names(parse('\x1b[<0;3;4M\x1b[<0;3;4m\x1b[<68;1;1M')), ['mouse', 'mouse', 'S-wheelup'], 'SGR click, release, Shift+wheel');
+  assert.deepEqual(names(parse('\x1b[M`!!\x1b[Ma!!x')), ['wheelup', 'wheeldown', 'text:x'], 'legacy X10 reports');
+  assert.deepEqual(names(parse('\x1b[<6', '5;2;2M', 'y')), ['wheeldown', 'text:y'], 'split across reads');
+  const p = new KeyParser();
+  assert.deepEqual(p.feed('\x1b[M'), [], 'an X10 report split across reads waits for its bytes');
+  assert.deepEqual(names(p.feed('`!!')), ['wheelup']);
+});
+
+test('function keys F1-F4', () => {
+  assert.deepEqual(names(parse('\x1bOP\x1bOQ\x1b[12~\x1b[1;2Q')), ['f1', 'f2', 'f2', 'S-f2']);
+});
