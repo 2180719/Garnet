@@ -337,3 +337,25 @@ test('plain chat: /attach sends a file with the next message; unreadable files g
   assert.match(o, /\[Document attached: \\"my notes.md\\", text\/markdown, 19 B; id med_[a-f0-9]+\]\\n# Notes\\n- buy milk/);
   assert.match(o, /"listen","\[Audio attached: \\"voice.ogg\\", audio\/ogg, 47 B; id med_[a-f0-9]+\]\\n\(No transcription backend is configured/, 'with text, the model runs and is told why it cannot hear the audio');
 });
+
+test('plain chat: an "always" answer does not cover a call made after the session read untrusted content', async () => {
+  const home = tempDir();
+  const stdin = new PassThrough();
+  const err: string[] = [];
+  const call = { toolCalls: [{ name: 'write_file', input: { path: 'p.md', content: 'x' } }] };
+  let ruby: ReturnType<typeof createRuby> | undefined;
+  const model = new FakeModel([
+    call,
+    { text: 'one' },
+    () => {
+      const id = ruby!.store.listSessions()[0]!.id;
+      ruby!.store.append(id, { type: 'tainted', source: 'web_fetch https://evil.example/', callId: 'c1' });
+      return call;
+    },
+    { text: 'two' },
+  ]);
+  const done = chat([], { out: () => {}, err: (t) => err.push(t), stdin, stdout: null, env: {} }, { createRuby: (o) => (ruby = createRuby({ ...o, home, env: {}, model })) });
+  stdin.end('first\na\nsecond\nn\n');
+  assert.equal(await done, 0);
+  assert.equal((err.join('').match(/\? write_file wants fs\.write/g) ?? []).length, 2, 'the second call prompts again');
+});
