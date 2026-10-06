@@ -206,3 +206,94 @@ test('after a restart the inbox backlog runs before messages that arrive during 
   await second.gateway.stop(0);
   second.db.close();
 });
+
+test('voice notes, photos and files get an honest reply instead of silence, and never reach the model', async () => {
+  const t = setup();
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  const voice = msg('', { unsupported: 'voice' });
+  await t.channel.sink!(voice);
+  await t.channel.sink!({ ...voice }); // redelivery is still deduplicated
+  await t.channel.sink!(msg('what is this?', { unsupported: 'photo' }));
+  await t.channel.sink!(msg('', { unsupported: 'file', isPrivate: false }));
+  await settle(t);
+  assert.equal(t.model.requests.length, 0);
+  assert.equal(t.channel.sent.length, 2);
+  assert.match(t.channel.sent[0]!.text, /can't listen to voice notes yet/);
+  assert.equal(t.channel.sent[0]!.replyToExternalId, voice.externalId);
+  assert.match(t.channel.sent[1]!.text, /can't see photos yet.*caption/);
+  assert.deepEqual(t.store.inboxByStatus('done').map((r) => r.text).sort(), ['[voice]', 'what is this?']);
+  await t.gateway.stop(0);
+});
+
+test('an unpaired sender of a photo gets the pairing prompt, not the media reply', async () => {
+  const t = setup();
+  await t.gateway.start();
+  await t.channel.sink!(msg('', { unsupported: 'photo' }));
+  await settle(t);
+  assert.equal(t.channel.sent.length, 1);
+  assert.match(t.channel.sent[0]!.text, /ruby pair approve/);
+  await t.gateway.stop(0);
+});
+
+test('/help, /usage and /status answer without calling the model', async () => {
+  const t = setup([{ text: 'Hello.', usage: { inputTokens: 1200, outputTokens: 30 } }], { gateway: { model: { id: 'fake:scripted', contextWindow: 200_000 } } });
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('/usage'));
+  await settle(t);
+  assert.match(t.channel.sent.at(-1)!.text, /No usage yet/);
+  await t.channel.sink!(msg('hi'));
+  await settle(t);
+  await t.channel.sink!(msg('/usage'));
+  await t.channel.sink!(msg('/cost'));
+  await t.channel.sink!(msg('/status'));
+  await t.channel.sink!(msg('/help'));
+  await settle(t);
+  assert.equal(t.model.requests.length, 1);
+  const [usage, cost, status, help] = t.channel.sent.slice(-4).map((m) => m.text);
+  assert.match(usage!, /input 1,200 · cache read \? · cache write \? · output 30 tokens/);
+  assert.match(usage!, /context at the last request: 1,230 of 200,000 tokens/);
+  assert.match(usage!, /last task: 1,230 tokens, 1 model call\(s\), 0 tool call\(s\), completed/);
+  assert.equal(cost, usage);
+  assert.match(status!, /model: fake:scripted/);
+  assert.match(status!, /this conversation: idle, session ses_/);
+  assert.match(status!, /fake: ok/);
+  assert.match(help!, /\/retry/);
+  await t.gateway.stop(0);
+});
+
+test('/retry runs the last owner message again; nothing to retry is said plainly', async () => {
+  const t = setup([{ text: 'First try.' }, { text: 'Second try.' }]);
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('/retry'));
+  await settle(t);
+  assert.match(t.channel.sent.at(-1)!.text, /no earlier message/);
+  await t.channel.sink!(msg('write a haiku'));
+  await settle(t);
+  await t.channel.sink!(msg('/retry'));
+  await settle(t);
+  assert.equal(t.channel.sent.at(-1)!.text, 'Second try.');
+  const textOfLast = () => t.model.requests.at(-1)!.messages.at(-1)!.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
+  assert.match(textOfLast(), /used \/retry[\s\S]*write a haiku$/);
+  // Retrying a retry repeats the original message, not the wrapper.
+  await t.channel.sink!(msg('/retry'));
+  await settle(t);
+  assert.equal(textOfLast().match(/used \/retry/g)?.length, 1);
+  await t.gateway.stop(0);
+});
+
+test('a notification with a record lands in the chat conversation, so a reply has context', async () => {
+  const t = setup([{ text: 'It was about the weather.' }]);
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  t.gateway.notify({ channel: 'fake', account: 'default', chatId: 'chat1' }, '[morning] Rain at 3pm.', { from: 'scheduled job "morning"' });
+  await settle(t);
+  assert.equal(t.channel.sent.at(-1)!.text, '[morning] Rain at 3pm.');
+  await t.channel.sink!(msg('tell me more'));
+  await settle(t);
+  const turn = t.model.requests[0]!.messages.at(-1)!.content.map((b) => (b.type === 'text' ? b.text : '')).join('\n');
+  assert.match(turn, /not written by your owner: you sent them this message from scheduled job "morning"[\s\S]*Rain at 3pm[\s\S]*tell me more/);
+  await t.gateway.stop(0);
+});
