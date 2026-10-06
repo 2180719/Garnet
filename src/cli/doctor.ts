@@ -179,6 +179,51 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       // The sandbox's own detail already says how to fix it.
       add('sandbox', r.ok ? 'ok' : 'fail', `Docker sandbox: ${r.detail}`);
     }
+
+    // Media
+    const med = config.media;
+    if (!med.enabled) {
+      add('media', 'info', 'Media (photos, files, voice notes) is off (media.enabled = false)');
+    } else {
+      // Transcription checks
+      if (med.transcription.backend === 'command' && med.transcription.command && med.transcription.command.length > 0) {
+        const program = med.transcription.command[0]!;
+        const dirs = (d.env.PATH ?? '').split(delimiter).filter(Boolean);
+        const found = dirs.some((dir) => {
+          try {
+            accessSync(join(dir, program), constants.X_OK);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        if (found) add('media', 'ok', `Transcription: local command ${program}`);
+        else add('media', 'fail', `Transcription command ${program} is not on PATH`, `Install ${program} or add its directory to PATH.`);
+      } else if (med.transcription.backend === 'openai-compatible') {
+        const keyName = med.transcription.apiKeyEnv ?? 'OPENAI_API_KEY';
+        const loc = where(keyName);
+        if (med.transcription.baseUrl) {
+          if (loc) add('media', 'ok', `Transcription: openai-compatible at ${med.transcription.baseUrl} with key ${keyName} (${loc})`);
+          else add('media', 'warn', `Transcription: openai-compatible at ${med.transcription.baseUrl} but ${keyName} is not set`, missingFix(keyName));
+        }
+      }
+
+      // PDF text extraction check
+      if (med.pdfText.command && med.pdfText.command.length > 0) {
+        const program = med.pdfText.command[0]!;
+        const dirs = (d.env.PATH ?? '').split(delimiter).filter(Boolean);
+        const found = dirs.some((dir) => {
+          try {
+            accessSync(join(dir, program), constants.X_OK);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        if (found) add('media', 'ok', `PDF text extraction: ${program}`);
+        else add('media', 'fail', `PDF text extraction command ${program} is not on PATH`, `Install ${program} or add its directory to PATH.`);
+      }
+    }
   }
 
   // Service

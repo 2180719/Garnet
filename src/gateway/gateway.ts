@@ -49,6 +49,8 @@ export type GatewayDeps = {
   media?: MediaIngest;
   /** Shown by /status and /usage. */
   model?: { id: string; contextWindow: number };
+  /** The configured assistant name. Defaults to "Garnet". */
+  assistantName?: string | undefined;
 };
 
 export type ChatResult = { task: TaskRecord; text: string; sessionId: string };
@@ -356,7 +358,8 @@ export class Gateway {
     }
     if (command === '/start') {
       store.setInbox(row.id, 'done');
-      this.reply(row, "Hi! I'm Garnet. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task; /help lists every command.");
+      const name = this.deps.assistantName || 'Garnet';
+      this.reply(row, `Hi! I'm ${name}. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task; /help lists every command.`);
       return;
     }
     if (command === '/help') {
