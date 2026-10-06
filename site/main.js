@@ -29,6 +29,18 @@
     syncToggle();
   }
 
+  // Local interface specimens; these do not connect to a running agent.
+  var previews = document.querySelectorAll('[data-preview]');
+  previews.forEach(function (button) {
+    button.addEventListener('click', function () {
+      previews.forEach(function (item) {
+        var selected = item === button;
+        item.setAttribute('aria-pressed', String(selected));
+        document.getElementById('preview-' + item.getAttribute('data-preview')).hidden = !selected;
+      });
+    });
+  });
+
   // Copy install snippet
   var copyBtn = document.getElementById('copy-btn');
   var code = document.getElementById('install-code');

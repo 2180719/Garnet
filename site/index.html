@@ -6,8 +6,8 @@
 <title>Ruby, a personal agent you can read</title>
 <meta name="description" content="Ruby is a self-hosted personal AI agent. It answers on Telegram, Signal and Discord, keeps its memory in two capped Markdown files and asks before it writes. Open source, pre-release.">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f8f5f0" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#141112" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f5f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101113" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
 <script>try{var t=localStorage.getItem('ruby-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
@@ -34,29 +34,63 @@
 
 <main id="main">
 <section class="hero wrap" aria-labelledby="h-top">
-  <div class="hero-text">
-    <h1 id="h-top">A personal agent you can actually read.</h1>
-    <p class="lede">Ruby runs on your own server or laptop and answers you on Telegram, Signal or Discord. Its memory is two Markdown files with a hard size limit, and it asks before it writes a file.</p>
-    <p>The whole thing is about 9,400 lines of TypeScript with two runtime dependencies. You can read all of it, and so can your coding agent. It hasn't reached 1.0 yet; <a href="#status">Status</a> says what that means in practice.</p>
-    <p class="links"><a href="https://github.com/2180719/Ruby">Source on GitHub</a><a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">Read PLAN.md</a></p>
+  <div class="hero-meta"><span>Personal intelligence. Under your control.</span><span>Open source / v0.1.0</span></div>
+  <div class="wordmark" aria-hidden="true">ruby<span class="wordmark-dot">.</span></div>
+  <div class="hero-layout">
+    <div class="hero-text">
+      <p class="eyebrow">An agent with a place to call home</p>
+      <h1 id="h-top">Your world.<br>Your agent.<br><em>Your rules.</em></h1>
+      <p class="lede">A personal agent that stays with you. Self-hosted, with memory you can read and permissions you control. Reach it from your terminal, dashboard, or favorite messenger.</p>
+      <p class="links"><a class="primary-link" href="#install">Make room for Ruby</a><a href="https://github.com/2180719/Ruby">Explore the source</a></p>
+      <p class="hero-note">Node.js + SQLite. Two runtime dependencies.<br>Pre-release. <a href="#status">See what’s ready.</a></p>
+    </div>
+    <div class="instrument" aria-label="Illustrative Ruby interface preview">
+      <div class="instrument-bar"><span><span class="mini-gem">◆</span> RUBY / WORKSPACE</span><span>INTERFACE PREVIEW</span></div>
+      <div class="preview-controls" role="group" aria-label="Preview a Ruby surface">
+        <button type="button" data-preview="terminal" aria-pressed="true">01 / Terminal</button>
+        <button type="button" data-preview="dashboard" aria-pressed="false">02 / Dashboard</button>
+        <button type="button" data-preview="memory" aria-pressed="false">03 / Memory</button>
+      </div>
+      <div class="preview-panel" id="preview-terminal">
+        <div class="console-heading"><strong>◆ ruby</strong><span>TERMINAL CHAT</span></div>
+        <p class="console-meta">A conversation that lives on your machine.</p>
+        <div class="console-message"><span>YOU</span><p>Tidy notes.md and put today's date at the top.</p></div>
+        <div class="console-message"><span class="ruby-label">RUBY</span><p>I need your approval to continue:</p></div>
+        <div class="permission"><span>PERMISSION REQUEST</span><strong>write_file <span>notes.md</span></strong><p>/approve 8RWQD <span>/deny 8RWQD</span></p></div>
+        <div class="console-prompt"><span>you ›</span><span class="cursor" aria-hidden="true"></span></div>
+      </div>
+      <div class="preview-panel dashboard-preview" id="preview-dashboard" hidden>
+        <div class="console-heading"><strong>Overview</strong><span>YOUR CONTROL ROOM</span></div>
+        <div class="preview-stats"><div><span>APPROVALS</span><strong>01</strong></div><div><span>MEMORY FILES</span><strong>02</strong></div></div>
+        <div class="permission"><span>WAITING FOR YOU</span><strong>Write to notes.md</strong><p>Review each operation before it runs.</p></div>
+        <div class="preview-menu"><span>Memory</span><span>Skills</span><span>Schedules</span><span>Usage</span></div>
+      </div>
+      <div class="preview-panel" id="preview-memory" hidden>
+        <div class="console-heading"><strong>MEMORY.md</strong><span>PLAIN TEXT / VERSIONED</span></div>
+        <p class="console-meta">Ruby's notes. Yours to inspect.</p>
+        <pre class="memory-sample"># Working notes
+
+Keep project notes in the workspace.
+Ask before editing files.
+
+# Next time
+
+Pick up where we left off.</pre>
+        <div class="memory-budget"><span>MEMORY.md</span><span>2,200 character limit</span></div>
+        <p class="console-meta">Bounded by design. Every edit has a history.</p>
+      </div>
+      <div class="instrument-foot"><span>LOCAL FIRST</span><span>REMEMBERS. ASKS. CONTINUES.</span></div>
+    </div>
   </div>
-  <figure class="term hero-term">
-    <figcaption>First run, then pairing a Telegram bot</figcaption>
-<pre class="wrapped"><code><span class="p">$</span> npm run ruby -- init
-<span class="o">Created /home/sam/.ruby/config.json and /home/sam/.ruby/workspace.
-Set ANTHROPIC_API_KEY, then run `ruby chat`.</span>
-
-<span class="p">$</span> npm run ruby -- start
-<span class="c"># message the bot from your phone; it replies with a code</span>
-
-<span class="p">$</span> npm run ruby -- pair approve K7Q2MX
-<span class="o">Paired telegram Sam (40213377). They'll get a greeting
-from the running service.</span></code></pre>
-  </figure>
 </section>
+<div class="principles wrap" aria-label="Ruby principles">
+  <div><span>01 / PERSISTENT</span><p>Tomorrow starts where<br>today left off.</p></div>
+  <div><span>02 / PERSONAL</span><p>Your machine.<br>Your memory.</p></div>
+  <div><span>03 / PERMISSIONED</span><p>It asks.<br>You decide.</p></div>
+</div>
 
 <section class="sec wrap" id="what" aria-labelledby="h-what">
-  <h2 id="h-what">What it does</h2>
+  <h2 id="h-what"><span class="section-index">01 / CAPABILITIES</span>Small agent.<br>Long memory.</h2>
   <div class="body">
     <p class="intro">One process holds everything: the chat channels, a durable inbox and outbox in SQLite, the agent loop, the scheduler and an optional HTTP API. A message is stored before Ruby acts on it, so a restart picks up where it left off and a duplicate delivery doesn't run twice.</p>
     <dl class="rows">
@@ -84,7 +118,7 @@ from the running service.</span></code></pre>
 </section>
 
 <section class="sec wrap" id="defaults" aria-labelledby="h-defaults">
-  <h2 id="h-defaults">Defaults</h2>
+  <h2 id="h-defaults"><span class="section-index">02 / CONTROL</span>Trust begins<br>with boundaries.</h2>
   <div class="body">
     <p class="intro">Ruby exists partly because of what went wrong elsewhere: agent gateways left open on the internet, heartbeats that paid a large model to report that nothing had changed, skills from public registries that turned out to be malware. So the defaults are conservative, and loosening them is a config edit you make on purpose.</p>
     <div class="pair">
@@ -120,7 +154,7 @@ from the running service.</span></code></pre>
 </section>
 
 <section class="sec wrap" id="code" aria-labelledby="h-code">
-  <h2 id="h-code">The code</h2>
+  <h2 id="h-code"><span class="section-index">03 / SOURCE</span>Read it.<br>Make it yours.</h2>
   <div class="body">
     <p class="intro">Node 22.18 runs the TypeScript directly, so there is no build step. Storage is SQLite through the built-in <code>node:sqlite</code>. The only runtime dependencies are <code>zod</code> and the Anthropic SDK, and the lint script fails if someone adds a third without a reason.</p>
     <figure class="tree">
@@ -151,17 +185,17 @@ from the running service.</span></code></pre>
 </section>
 
 <section class="sec wrap" id="status" aria-labelledby="h-status">
-  <h2 id="h-status">Status</h2>
+  <h2 id="h-status"><span class="section-index">04 / STATUS</span>Built in<br>the open.</h2>
   <div class="body">
     <div class="note">
-      <p><strong>Pre-release, version 0.1.0.</strong> Everything described above is in the repository, with tests. The tests run offline against a fake model and fake channels; Ruby has not yet been run against live Telegram, Signal or Discord servers or real provider APIs as part of testing. Expect rough edges the first time it meets a real bot.</p>
-      <p>The dashboard and the encrypted secret store are built and tested; failure-injection tests exist too. Still to come before a 1.0: a docs site and the live tests above. Secrets can stay in an env file with mode 600 or move into the store with <code>ruby secrets</code>. The <a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">plan</a> tracks each phase.</p>
+      <p><strong>Pre-release, version 0.1.0.</strong> Everything described above is in the repository, with tests. The automated suite runs offline against a fake model and fake channels. Live Anthropic chat, streaming, a file-reading tool, prompt caching, and dashboard chat have also been verified on a Linux host. Telegram, Signal and Discord still need live testing. Expect rough edges the first time it meets a real bot.</p>
+      <p>The dashboard and the encrypted secret store are built and tested; failure-injection tests exist too. Still to come before a 1.0: a docs site and the remaining live channel and sandbox tests. Secrets can stay in an env file with mode 600 or move into the store with <code>ruby secrets</code>. The <a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">plan</a> tracks each phase.</p>
     </div>
   </div>
 </section>
 
 <section class="sec wrap" id="install" aria-labelledby="h-install">
-  <h2 id="h-install">Install</h2>
+  <h2 id="h-install"><span class="section-index">05 / GET STARTED</span>A new home<br>for Ruby.</h2>
   <div class="body">
     <p class="intro">You need Node.js 22.18 or newer, and an Anthropic key or an OpenAI-compatible endpoint once you're past the fake model.</p>
     <figure class="term">

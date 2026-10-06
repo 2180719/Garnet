@@ -208,6 +208,9 @@ function sessions(io: Io): number {
 }
 
 async function chat(args: string[], io: Io): Promise<number> {
+  const color = io === stdio && process.stdout.isTTY && !('NO_COLOR' in process.env) && process.env.TERM !== 'dumb';
+  const rubyLabel = (text: string) => color ? `\x1b[1;38;2;255;102;128m${text}\x1b[0m` : text;
+  const mutedLabel = (text: string) => color ? `\x1b[38;2;163;166;173m${text}\x1b[0m` : text;
   const { values } = parseArgs({ args, options: { fake: { type: 'boolean' }, session: { type: 'string' } } });
   const rl = createInterface({ input: process.stdin, terminal: false });
   // One line iterator shared by the prompt and approvals, so input typed or
@@ -238,15 +241,16 @@ async function chat(args: string[], io: Io): Promise<number> {
       io.err(`No session "${values.session}". Run \`ruby sessions\` to list them.\n`);
       return 1;
     }
+    if (color) io.out(`${rubyLabel('◆ RUBY')} ${mutedLabel('/ TERMINAL CHAT')}\n${mutedLabel('────────────────────────────────────────')}\n`);
     io.out(`Ruby (${ruby.model.id}) · session ${session.id}\nType a message. /exit to quit, Ctrl+C to cancel a running task.\n\n`);
     for (;;) {
-      const raw = await ask('you › ');
+      const raw = await ask(mutedLabel('you › '));
       if (raw === null) break; // input closed
       const line = raw.trim();
       if (!line) continue;
       if (line === '/exit' || line === '/quit') break;
       current = new AbortController();
-      io.out('ruby › ');
+      io.out(rubyLabel('ruby › '));
       const task = await ruby.agent.run(session.id, line, { signal: current.signal, onEvent: printer(io), source: 'cli' });
       current = null;
       const u = task.usage;
