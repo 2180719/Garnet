@@ -112,8 +112,8 @@ function splitText(text: string, max: number): string[] {
 export class DiscordChannel implements ChannelAdapter {
   readonly channel = 'discord';
   readonly account: string;
-  // dedupesSends stays false: Discord's `nonce` + `enforce_nonce` is sent (best effort, a few minutes'
-  // window) but I could not verify its guarantees against the live docs, so the gateway must not rely on it.
+  // dedupesSends stays false: Discord documents `nonce` (<= 25 chars) + `enforce_nonce` as a uniqueness check
+  // over "recent minutes" only (developers/resources/message), so it is best effort, not a durable guarantee.
   readonly capabilities: ChannelCapabilities = { maxMessageChars: MAX_CHARS, dedupesSends: false, typingIndicator: true };
 
   #token: string;
