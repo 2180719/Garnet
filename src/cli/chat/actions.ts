@@ -23,6 +23,8 @@ export type CommandContext = {
   signal?: AbortSignal;
   /** Files attached with /attach, sent with the next message. Owned by the chat; this list is changed in place. */
   attachments?: PendingFile[];
+  /** The fullscreen terminal UI: /help also lists the scrolling keys. */
+  fullscreen?: boolean;
   /** The wake-up chat: one session only. `/new` and `/resume` are refused (see `garnet wake` in src/cli/AGENTS.md). */
   onboarding?: boolean;
 };
@@ -71,7 +73,7 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
   }
   switch (command.name) {
     case 'help':
-      return { rows: (w: number) => helpRows(t, w) };
+      return { rows: (w: number) => helpRows(t, w, ctx.fullscreen) };
     case 'exit':
       return { rows: none, effect: 'exit' };
     case 'clear':

@@ -24,9 +24,9 @@ Usage:
                             (re-run any time; \`garnet setup --help\` for script flags)
   garnet doctor [--json]      Check the install and setup, with fixes
   garnet init [--defaults]    Create ~/.garnet (offers \`garnet setup\` on a terminal)
-  garnet chat [--fake] [--session <id>] [--plain] [--onboard]
-                            Chat in the terminal (--fake uses an offline model;
-                            /help inside lists commands and keys)
+  garnet chat [--fake] [--session <id>] [--inline | --fullscreen] [--plain] [--onboard]
+                            Chat in the terminal, full screen by default (--inline keeps it in
+                            the scrollback; --fake uses an offline model; /help lists keys)
   garnet wake [--fake]        Wake-up chat: Garnet introduces itself and sets up its name and
                             your preferences by talking (same as chat --onboard)
   garnet config check         Validate the config file

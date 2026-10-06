@@ -532,6 +532,20 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Optional built-in connectors to outside services. Off by default. Each one is a tool that needs net.fetch (host scopes in web.allowHosts apply, and untrusted-content containment escalates it), and its output is treated as untrusted. Credentials are secret names, never values.'),
+    chat: z
+      .object({
+        fullscreen: z
+          .boolean()
+          .default(true)
+          .describe('`garnet chat` on a terminal uses the full screen: a status bar at the top, a scrollable transcript and the input at the bottom. false keeps the conversation inline in the terminal scrollback (same as `garnet chat --inline`). Pipes and --plain are line-based either way.'),
+        mouse: z
+          .boolean()
+          .default(true)
+          .describe('In the fullscreen chat, start with mouse reporting on so the wheel scrolls the transcript (F2 or Alt+M toggles it in the chat). While it is on, most terminals select text only with Shift held (Option in iTerm2); false keeps normal selection.'),
+      })
+      .strict()
+      .prefault({})
+      .describe('The terminal chat (`garnet chat`).'),
   })
   .strict()
   .superRefine((c, ctx) => {

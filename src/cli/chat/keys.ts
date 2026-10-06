@@ -3,7 +3,9 @@
 //
 // Understands legacy control bytes, CSI/SS3 cursor and editing keys with
 // xterm modifiers, xterm modifyOtherKeys (`CSI 27;m;k~`), the kitty keyboard
-// protocol (`CSI k;m u`), Alt+key as ESC-prefixed bytes, and bracketed paste.
+// protocol (`CSI k;m u`), Alt+key as ESC-prefixed bytes, bracketed paste,
+// F1-F4, and mouse reports (SGR `CSI < b;x;y M/m` and legacy X10 `CSI M bxy`):
+// the wheel becomes 'wheelup'/'wheeldown', any other mouse event 'mouse'.
 
 export type Key = {
   /** A named key ('enter', 'up', 'backspace', 'a', …) or 'text' for typed or pasted characters. */
@@ -26,14 +28,26 @@ const key = (name: string, mods: Partial<Pick<Key, 'ctrl' | 'meta' | 'shift'>> =
 const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
 
-const CSI_TILDE: Record<string, string> = { '1': 'home', '2': 'insert', '3': 'delete', '4': 'end', '5': 'pageup', '6': 'pagedown', '7': 'home', '8': 'end' };
-const CSI_LETTER: Record<string, string> = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'end', Z: 'tab' };
+const CSI_TILDE: Record<string, string> = {
+  '1': 'home', '2': 'insert', '3': 'delete', '4': 'end', '5': 'pageup', '6': 'pagedown', '7': 'home', '8': 'end',
+  '11': 'f1', '12': 'f2', '13': 'f3', '14': 'f4',
+};
+const CSI_LETTER: Record<string, string> = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'end', Z: 'tab', P: 'f1', Q: 'f2', R: 'f3', S: 'f4' };
 const KITTY_FUNCTIONAL: Record<number, string> = { 9: 'tab', 13: 'enter', 27: 'escape', 127: 'backspace', 57414: 'enter' };
 
 /** xterm modifier parameter (1 + bits: shift 1, alt 2, ctrl 4) → flags. */
 function modifiers(param: string | undefined): Pick<Key, 'ctrl' | 'meta' | 'shift'> {
   const m = Math.max(0, (Number(param) || 1) - 1);
   return { shift: Boolean(m & 1), meta: Boolean(m & 2) || Boolean(m & 8), ctrl: Boolean(m & 4) };
+}
+
+/** A mouse button code (SGR or X10, without the +32 offset) → a key. Modifier bits: shift 4, meta 8, ctrl 16; 64/65 is the wheel. */
+function mouse(code: number): Key {
+  const mods = { shift: Boolean(code & 4), meta: Boolean(code & 8), ctrl: Boolean(code & 16) };
+  const button = code & ~(4 | 8 | 16);
+  if (button === 64) return key('wheelup', mods);
+  if (button === 65) return key('wheeldown', mods);
+  return key('mouse', mods);
 }
 
 /** A single byte/character outside any escape sequence. */
@@ -139,6 +153,16 @@ export class KeyParser {
     }
     const second = b[1]!;
     if (second === '[') {
+      if (b.startsWith('\x1b[M')) {
+        // Legacy X10 mouse report: three raw bytes follow (button, column, row, each + 32).
+        if (b.length < 6) {
+          if (!force) return null;
+          this.buffer = '';
+          return key('unknown');
+        }
+        this.buffer = b.slice(6);
+        return mouse(b.charCodeAt(3) - 32);
+      }
       const m = /^\x1b\[([0-9;:?<>=]*)([ -/]*)([@-~])/.exec(b);
       if (!m) {
         if (!force && /^\x1b\[[0-9;:?<>=]*[ -/]*$/.test(b)) return null;
@@ -170,6 +194,7 @@ export class KeyParser {
 }
 
 function csi(params: string, final: string): Key {
+  if (params.startsWith('<')) return final === 'M' || final === 'm' ? mouse(Number(params.slice(1).split(';')[0])) : key('unknown');
   const parts = params.split(';');
   if (final === 'u') {
     const code = Number(parts[0]!.split(':')[0]);

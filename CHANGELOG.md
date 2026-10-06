@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fullscreen terminal chat
+- `garnet chat` on a terminal now opens full screen: a status bar from the start (assistant name, model, session, what it is doing in words, context, tokens and cost or `?`, and `⚠ untrusted content read` when it applies), a scrollable transcript, and the input at the bottom. Scroll with PgUp/PgDn, Shift+Up/Down (half a page), Ctrl+Home/Ctrl+End or the mouse wheel; scrolled up, new output stays below with a "new messages below" line. F2 turns mouse reporting off so the terminal selects text as usual. Resizing re-wraps the whole transcript.
+- `garnet chat --inline` or `chat.fullscreen = false` keeps the inline chat; `chat.mouse = false` starts with mouse reporting off. Pipes and `--plain` are unchanged. On exit (also SIGTERM, SIGHUP and crashes) the terminal is put back: normal screen, mouse reporting off, cursor shown, raw mode off.
+
 ### Configuration
 - `garnet config get <path>`, `set <path> <value>` and `unset <path>`: change any setting from the command line, validated by the schema, written atomically, with the change printed. Credential-shaped values are refused (and never echoed), and `*Env` fields accept only variable names.
 - New `docs/CONFIGURATION.md` classifies every environment variable Garnet reads (secret, bootstrap, system) and states precedence. No setting is environment-only; `garnet doctor` warns about `GARNET_*` variables that nothing reads.

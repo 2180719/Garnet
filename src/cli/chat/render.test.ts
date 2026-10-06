@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { VirtualTerminal } from '../../../test/vt.ts';
 import type { SessionEvent, TaskRecord, ToolCallBlock, ToolResult } from '../../contracts/index.ts';
 import { COMMANDS } from './commands.ts';
-import { approvalChoices, approvalRows, describeCall, footer, sessionTotals, suggestionRows, toolDoneRows, transcriptRows, turnSummary } from './render.ts';
+import { approvalChoices, approvalRows, describeCall, footer, fullscreenFooter, helpRows, scrollIndicator, sessionTotals, statusBar, suggestionRows, toolDoneRows, transcriptRows, turnSummary } from './render.ts';
 import { Screen } from './screen.ts';
 import { displayWidth, stripAnsi } from './text.ts';
 import { makeTheme } from './theme.ts';
@@ -137,4 +137,41 @@ test('command suggestions drop descriptions before names when narrow', () => {
   const narrow = suggestionRows(COMMANDS, plain, 24);
   assert.ok(narrow.every((r) => displayWidth(r) <= 24 && !r.includes('…')), narrow.join('\n'));
   assert.ok(narrow.includes('  /resume <session-id>'));
+});
+
+test('the fullscreen status bar: name, model, session and state in words; usage, cost (or ?) and the taint warning', () => {
+  const totals = { usage: usage(1000, 200), contextTokens: 1200, turns: 1, untrusted: [] as string[], costUsd: null };
+  const info = { name: 'Ruby', model: 'anthropic:claude-x', sessionId: 'ses_0123456789abcdef', totals, contextWindow: 200_000, state: 'ready', busy: false, approval: false };
+  const bar = statusBar(info, plain, 100);
+  assert.equal(bar.full.length, 3);
+  assert.match(bar.full[0]!, /^ {2}◆ Ruby · anthropic:claude-x · ses_0123456789abcdef +○ ready$/);
+  assert.equal(displayWidth(bar.full[0]!), 100, 'the state is right-aligned');
+  assert.equal(bar.full[1], '  context 1.2k/200k (1%) · 1.2k tokens · cost ?', 'an unknown cost is ?, never $0');
+  assert.match(statusBar({ ...info, totals: { ...totals, costUsd: 0.5 } }, plain, 100).full[1]!, /\$0\.50/);
+  assert.equal(statusBar({ ...info, totals: { ...totals, turns: 0, contextTokens: null } }, plain, 100).full[1], '  /help for commands');
+  const busy = statusBar({ ...info, state: 'thinking 2s', busy: true }, plain, 100).full[0]!;
+  assert.match(busy, /● thinking 2s$/);
+  assert.match(statusBar({ ...info, state: 'waiting for your approval', approval: true }, plain, 100).full[0]!, /\? waiting for your approval$/);
+  const tainted = statusBar({ ...info, totals: { ...totals, untrusted: ['web_fetch x'] } }, plain, 40);
+  assert.match(tainted.full[1]!, /^ {2}⚠ untrusted content read/, 'the warning comes first');
+  assert.match(tainted.compact[0]!, /⚠ untrusted content read/, 'and stays in the one-row form');
+  for (const w of [30, 40, 60, 100]) {
+    for (const r of [...statusBar(info, plain, w).full, ...statusBar(info, plain, w).compact]) assert.ok(displayWidth(r) <= w, `${w}: ${r}`);
+    assert.match(statusBar(info, plain, w).full[0]!, /ready/, `the state is kept at ${w}`);
+  }
+  const narrow = statusBar(info, plain, 40).full[0]!;
+  assert.match(narrow, /◆ Ruby/);
+  assert.doesNotMatch(narrow, /ses_/, 'the session goes first when narrow');
+  assert.match(statusBar({ ...info, name: 'R\x1b[2Jx' }, plain, 100).full[0]!, /◆ R␛\[2Jx/, 'the name is sanitized');
+});
+
+test('the scroll indicator says what is below and how to get back; the fullscreen footer names the keys', () => {
+  assert.equal(scrollIndicator(12, 0, plain, 80), '  ↓ 12 lines below · PgDn or Ctrl+End to follow');
+  assert.equal(scrollIndicator(1, 3, plain, 80), '  ↓ new messages below (1 line) · PgDn or Ctrl+End to follow');
+  assert.ok(displayWidth(scrollIndicator(12, 3, plain, 20)) <= 20);
+  assert.equal(fullscreenFooter({ mouse: true }, plain, 80), '  PgUp/PgDn scroll · F2 mouse on · /help · Ctrl+D exits');
+  assert.equal(fullscreenFooter({ mouse: false }, plain, 50), '  PgUp/PgDn scroll · F2 mouse off · /help');
+  assert.equal(fullscreenFooter({ mouse: false, notice: 'hi' }, plain, 40), '  hi');
+  assert.doesNotMatch(helpRows(plain, 100).join('\n'), /Scrolling/);
+  assert.match(helpRows(plain, 100, true).join('\n'), /Scrolling[\s\S]*PgUp \/ PgDn[\s\S]*F2 or Alt\+M/);
 });
