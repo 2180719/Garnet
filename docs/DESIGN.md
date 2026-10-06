@@ -65,7 +65,7 @@ Use garnet red for identity, selection, and primary action. Reserve green, amber
 
 `garnet chat` adds its garnet signature, colored speaker marks (`›` for the owner, `◆` for Garnet) and thin rules only on an interactive terminal. Respect `NO_COLOR` and `TERM=dumb`; piped output stays plain. Never decorate machine-readable output.
 
-The chat is an inline TUI, not a full-screen one: finished output goes to the terminal's own scrollback, and only the bottom rows (streaming text, spinner, input, footer) are redrawn. It uses the dark palette (accent, secondary text, rule) with green, amber and red reserved for states, and spells out every status in words or distinct symbols. Color is never the only indicator.
+By default the chat is full-screen (the terminal's alternate screen): a status bar at the top with `◆` and the assistant's name in accent, then model, session, the state in words (`○ ready`, `● thinking 3s`, `? waiting for your approval` in amber) and a second muted row with context, tokens and cost, led by an amber `⚠ untrusted content read` when it applies; a thin rule; the scrollable transcript; and the input with a muted footer of keys at the bottom. When the owner scrolls up, the last transcript row says how much is below, in accent when new messages arrived. `garnet chat --inline` (or `chat.fullscreen = false`) keeps the older inline layout, where finished output goes to the terminal's own scrollback and only the bottom rows are redrawn. Both use the dark palette (accent, secondary text, rule) with green, amber and red reserved for states, and spell out every status in words or distinct symbols. Color is never the only indicator.
 
 ## Interaction
 

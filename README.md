@@ -33,7 +33,7 @@ npm link            # optional: puts `garnet` on your PATH (otherwise use `npm r
 ```sh
 garnet setup     # model and key, persona, channels, background service, pairing
 garnet doctor    # checks the install and setup, and says how to fix what it finds
-garnet chat      # talk to Garnet in the terminal (`garnet chat --fake` needs no key)
+garnet chat      # talk to Garnet in the terminal, full screen (`--inline` keeps it in the scrollback; `--fake` needs no key)
 garnet wake      # first-run wake-up: Garnet introduces itself and sets itself up by talking (`--fake` works offline)
 ```
 
@@ -54,6 +54,10 @@ Run it again to change one part: it shows what is set and offers a menu. For scr
 ```sh
 printf '%s' "$KEY" | garnet setup -y --provider anthropic --key-stdin --name Juno --telegram --service
 ```
+
+### The terminal chat
+
+`garnet chat` fills the terminal: a status bar at the top (name, model, session, what Garnet is doing, context, tokens and cost, and a warning once the conversation has read untrusted content), the conversation in the middle, and the input at the bottom. Scroll with PgUp/PgDn, Shift+Up/Down, Ctrl+Home/Ctrl+End or the mouse wheel; while you are scrolled up, new replies wait below with a "new messages below" line. With mouse reporting on, hold Shift (Option in iTerm2) to select text, or press F2 to turn it off. `/help` lists every key. Prefer the conversation to stay in your terminal's scrollback? Use `garnet chat --inline`, or `garnet config set chat.fullscreen false` to make that the default. Pipes and `--plain` give a line-based chat.
 
 ### Telegram by hand
 
