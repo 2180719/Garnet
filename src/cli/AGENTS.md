@@ -22,7 +22,7 @@ The `ruby` command (`bin.ts` → `main.ts`). Commands: `setup`, `doctor`, `init`
 
 | File | Owns |
 | --- | --- |
-| `text.ts` | Grapheme-aware display width (CJK, emoji, ZWJ, combining marks), ANSI-aware word wrap that carries styles across rows, truncate, token/duration formatting. Pure. |
+| `text.ts` | `sanitize` for untrusted text, grapheme-aware display width (CJK, emoji, ZWJ, combining marks), ANSI-aware word wrap that carries styles across rows, truncate, token/duration formatting. Pure. |
 | `theme.ts` | The DESIGN.md palette as SGR styles. Truecolor when `COLORTERM` says so, else 256 colors; `NO_COLOR` keeps bold/dim/italic but no color. Pure. |
 | `markdown.ts` | Line-oriented streaming markdown: headings, emphasis, inline code, links, lists and task lists, quotes, rules, fenced code (framed, not wrapped as prose), pipe tables (held until complete, then aligned). `push` returns final rows; `pending` the provisional partial line. Pure. |
 | `keys.ts` | Raw input → key events: control bytes, CSI/SS3 with xterm modifiers, Alt as ESC prefix, kitty `CSI u` and xterm modifyOtherKeys (Shift+Enter), bracketed paste, sequences split across reads. Pure. |
@@ -31,7 +31,7 @@ The `ruby` command (`bin.ts` → `main.ts`). Commands: `setup`, `doctor`, `init`
 | `render.ts` | Visual blocks: banner, user message, assistant rows, tool rows (running/done/failed in words, 3-line preview), approval prompt and choices, turn summary, footer, help, resumed transcript, session totals. Pure. |
 | `screen.ts` | Terminal output with an inline live region: committed rows go to the scrollback once; the bottom rows (stream, spinner, input, footer) are redrawn in place with synchronized output. No alternate screen. |
 | `app.ts` | The interactive controller: raw mode, key routing, turns and type-ahead queue, inline approvals, interrupts, resize, suspend, exit. |
-| `actions.ts` | Executes slash commands against Ruby (shared by both modes). |
+| `actions.ts` | Executes slash commands against Ruby (shared by both modes). Results render at a given width, so they redraw cleanly after a resize. |
 | `plain.ts` | Line mode for pipes: replies on stdout, prompts/tools/status on stderr, no escape sequences. |
 | `history.ts` | Input history in `<RUBY_HOME>/chat_history.jsonl` (mode 0600, last 1000 entries; entries starting with a space are not saved). |
 
@@ -41,6 +41,7 @@ Behavior to preserve:
 - Messages typed while a turn runs are queued and sent in order; an interrupt drops the queue.
 - Approvals: `y` once, `a` always for the rest of this chat (for `exec`, only the exact same command), `n`/Esc deny. The full operation summary is printed (commands are never truncated). "Always" lives in memory for the chat process and session only; the policy in `config.json` is never changed.
 - Slash commands exist only when backed by real behavior: `/help`, `/new`, `/sessions`, `/resume <id>`, `/model` (read-only: the model is fixed per process), `/usage`, `/compact` (`Agent.compact`), `/expand [n]`, `/clear`, `/exit`.
+- Model text, tool calls and results, approval summaries and errors are untrusted: pass them through `sanitize` (`text.ts`) before styling, so escape sequences are shown (`␛`) and never reach the terminal. The approval prompt must show exactly what will run.
 - Status is always spelled out (`✓ done`, `■ interrupted`, `✗ failed (timeout)`), never shown by color alone. Unknown usage is `?`, never 0.
 - Resize: wider terminals just use the new width; narrower ones are cleared and the transcript is re-rendered from width-independent blocks, because a reflowing terminal pushes old live rows into scrollback where they cannot be erased.
 - Exit always restores the terminal (raw mode off, bracketed paste and the kitty keyboard flag popped, cursor shown), including on SIGTERM/SIGHUP.
