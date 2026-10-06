@@ -55,9 +55,13 @@ export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
   for (const e of events) if (e.type === 'checkpoint') checkpoint = e;
 
   const messages: ChatMessage[] = [];
+  // Keyed by the assistant turn as well as the call id: call ids are not
+  // guaranteed unique across turns (some servers send none, so they are generated).
   const results = new Map<string, { content: string; isError: boolean }>();
+  let turnSeq = 0;
   for (const e of events) {
-    if (e.type === 'tool_finished') results.set(e.callId, { content: e.result.content, isError: e.result.status === 'error' });
+    if (e.type === 'assistant_message') turnSeq = e.seq;
+    else if (e.type === 'tool_finished') results.set(`${turnSeq}:${e.callId}`, { content: e.result.content, isError: e.result.status === 'error' });
   }
 
   if (checkpoint) {
@@ -86,7 +90,7 @@ export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
         appendUser(
           messages,
           calls.map((c) => {
-            const r = results.get(c.id) ?? { content: 'No result: the task was interrupted before this tool finished.', isError: true };
+            const r = results.get(`${e.seq}:${c.id}`) ?? { content: 'No result: the task was interrupted before this tool finished.', isError: true };
             return { type: 'tool_result', callId: c.id, content: r.content, isError: r.isError };
           }),
         );

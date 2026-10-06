@@ -68,6 +68,21 @@ test('a second compaction starts from the previous summary, not the full history
   assert.ok(text.includes('"u2"') && text.includes('"a2"'));
 });
 
+test('tool results are matched to their own turn even when a call id repeats', () => {
+  // Some local servers send no call ids, so generated ids can repeat across turns.
+  const call = { type: 'tool_call' as const, id: 'call_0', name: 'x', input: {} };
+  const turn = (seq: number) => ev(seq, { type: 'assistant_message', message: { role: 'assistant', content: [call] }, stopReason: 'tool_use', usage, model: 'm' });
+  const done = (seq: number, content: string) =>
+    ev(seq, { type: 'tool_finished', callId: 'call_0', operationId: 'o', result: { status: 'ok', content, truncated: false, durationMs: 0 } });
+  const msgs = messagesFromEvents([
+    ev(1, { type: 'user_message', message: { role: 'user', content: [{ type: 'text', text: 'go' }] }, source: 't' }),
+    turn(2), done(3, 'first'),
+    turn(4), done(5, 'second'),
+  ]);
+  const results = msgs.flatMap((m) => m.content).flatMap((b) => (b.type === 'tool_result' ? [b.content] : []));
+  assert.deepEqual(results, ['first', 'second']);
+});
+
 test('extractSummary takes the text after an unclosed tag', () => {
   assert.equal(extractSummary('<summary>\nfacts'), 'facts');
   assert.equal(extractSummary('x <summary>a</summary> y'), 'a');
