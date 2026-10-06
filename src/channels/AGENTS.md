@@ -6,6 +6,7 @@ Messaging-platform adapters that implement `ChannelAdapter` from `contracts/chan
 - Adapters only normalize a platform: they never own identity, routing, dedupe or durable delivery (the gateway does).
 - Inbound is at-least-once: acknowledge to the platform (advance offsets) only after `await sink(message)` resolves. If the sink throws, stop the batch and retry later from the same offset.
 - `send` never throws. It returns `{ status: 'failed', retryable, retryAfterMs? }`: rate limits, 5xx and network errors that certainly happened before the request reached the server (DNS, connection refused/unreachable, connect timeout, TLS; see `delivery.ts`) are retryable; blocked bot or bad chat is not. Return `{ status: 'uncertain' }` when the request may have been delivered but the outcome is unknown: timeouts, resets and unknown fetch errors, 502/504, and a success status with an unreadable body (the gateway will not resend it).
+- Long messages: split with `splitText` and sent with `sendChunks` (`delivery.ts`). A failure before any chunk is out is returned for the gateway to retry; once a chunk is out, retryable failures of later chunks are retried in the adapter (bounded wait), then reported as a non-retryable failure naming how many chunks were delivered, because a gateway retry would resend the delivered chunks.
 - `start` fails fast with `RubyError('config')` on a bad token. After start, errors (conflicts, outages) go to `health().lastError` and are retried with backoff; they never crash the process.
 - `stop` must abort the in-flight long poll and wait for the loop to exit, so a restart does not hit a 409 conflict. It is idempotent.
 - Never log or return the bot token; redact it from every error message.
@@ -14,11 +15,11 @@ Messaging-platform adapters that implement `ChannelAdapter` from `contracts/chan
 
 ## Signal
 
-- `SignalChannel` talks to a local `signal-cli -a +NUMBER daemon --http 127.0.0.1:8080` (`GET /api/v1/check`, SSE `GET /api/v1/events`, JSON-RPC `POST /api/v1/rpc`). No dependencies. The RPC endpoint is unauthenticated, so a non-loopback `baseUrl` must be https (else `RubyError('config')`).
+- `SignalChannel` talks to a local `signal-cli -a +NUMBER daemon --http 127.0.0.1:8080` (`GET /api/v1/check`, SSE `GET /api/v1/events?account=<number>`, JSON-RPC `POST /api/v1/rpc`). Each SSE event is `event:receive` with data `{ account, envelope }` (a JSON-RPC `receive` notification is accepted too). The stream is reconnected when silent for 60 s (the daemon sends a keepalive every 15 s). No dependencies. The RPC endpoint is unauthenticated, so a non-loopback `baseUrl` must be https (else `RubyError('config')`).
 - Chat ids: `group:<groupId>` for groups, otherwise the sender's number (or uuid). `externalId` is `<sender uuid|number>:<timestamp>`. Envelopes without `dataMessage.message` (receipts, typing, sync) and messages from the bot's own number are ignored.
 - Inbound is NOT at-least-once. SSE has no durable offsets: the sink is awaited sequentially, a failing sink is retried 4 times with backoff, then the message is dropped and `lastError` is set. A crash or restart can lose messages (the daemon only replays its last ~1000 events to a `Last-Event-ID` reconnect within one daemon lifetime). The gateway must not assume Signal gives at-least-once.
 - `health().ok` is true while the event stream is connected, or if traffic was seen in the last 2 minutes.
-- Send errors: pre-connect network errors and 5xx (except 502/504, which are `uncertain`, like timeouts and resets) are retryable; JSON-RPC errors and per-recipient failures (unregistered, invalid group) are not, except NETWORK_FAILURE. `replyToExternalId` is ignored (Signal quoting needs the author).
+- Send errors: pre-connect network errors and 5xx (except 502/504, which are `uncertain`, like timeouts and resets) are retryable; JSON-RPC errors and per-recipient failures (unregistered, invalid group) are not, except NETWORK_FAILURE and RATE_LIMIT_FAILURE. A send that reached at least one recipient (e.g. some group members) counts as sent. `replyToExternalId` is ignored (Signal quoting needs the author).
 
 ## Discord
 
