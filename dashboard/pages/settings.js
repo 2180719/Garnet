@@ -57,7 +57,7 @@ export default async function mount(root) {
     if (isProtected(path)) {
       const ro = h('input', { value: cur === undefined ? '' : typeof cur === 'string' ? cur : JSON.stringify(cur), readonly: true, disabled: true });
       const n = label(path, s, ro);
-      n.append(h('span', { class: 'hint' }, 'Read-only here. Change with the CLI (ruby config).'));
+      n.append(h('span', { class: 'hint' }, 'Read-only here. Edit config.json on the host to change it.'));
       return n;
     }
     const t = typeOf(s);

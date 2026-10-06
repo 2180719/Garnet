@@ -96,7 +96,7 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
       const parsed = parseConfig(raw); // throws a config error listing every problem
       const changed = changedProtectedPaths(loadConfig(ruby.paths.home).config, parsed);
       if (changed.length > 0) {
-        throw new RubyError('denied', `These settings can only be changed with the CLI (ruby config), not over the API: ${changed.join(', ')}.`, { paths: changed });
+        throw new RubyError('denied', `These settings can only be changed by editing config.json on the host (then run "ruby config check"), not over the API: ${changed.join(', ')}.`, { paths: changed });
       }
       writeConfig(ruby.paths.home, parsed);
       return { restartRequired: true };
