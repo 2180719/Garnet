@@ -26,6 +26,11 @@ export type TextAsk = Ask & {
 export type ConfirmAsk = Ask & { default: boolean; auto?: boolean };
 export type SelectAsk<T extends string> = Ask & { choices: Choice<T>[]; default?: T; auto?: T };
 export type SecretAsk = Ask;
+/**
+ * Zero or more of `choices`. `default` is what is ticked at the start (and what Enter confirms);
+ * `auto` is what a script gets without the flag (falls back to `default`, then to none).
+ */
+export type MultiSelectAsk<T extends string> = Ask & { choices: Choice<T>[]; default?: T[]; auto?: T[] };
 
 export interface Prompter {
   /** True when a person is answering (pairing checks and retries only make sense then). */
@@ -33,6 +38,8 @@ export interface Prompter {
   text(q: TextAsk): Promise<string>;
   confirm(q: ConfirmAsk): Promise<boolean>;
   select<T extends string>(q: SelectAsk<T>): Promise<T>;
+  /** A checklist: any number of choices (none is fine), returned in the order of `choices`. */
+  multiselect<T extends string>(q: MultiSelectAsk<T>): Promise<T[]>;
   /** A hidden value (API keys, tokens). Returns '' when none was given. Never echoed. */
   secret(q: SecretAsk): Promise<string>;
 }
@@ -96,6 +103,36 @@ export class AnswerPrompter implements Prompter {
     const choice = q.choices.find((c) => c.value === value);
     if (!choice) throw new GarnetError('invalid_input', `--${q.id} must be one of ${q.choices.map((c) => c.value).join(', ')} (got "${value}").`);
     return choice.value;
+  }
+
+  /**
+   * `--<id> a,b` picks exactly those (`none` or empty picks nothing). Without it the start is `auto`, then
+   * `default`. A boolean answer named after one choice (`--telegram`, `--no-telegram`) then adds or removes
+   * just that choice, so per-item flags keep working next to the list flag.
+   */
+  async multiselect<T extends string>(q: MultiSelectAsk<T>): Promise<T[]> {
+    const given = this.take(q.id, q.message);
+    const values = new Set<string>(q.choices.map((c) => c.value));
+    let picked: Set<string>;
+    if (given !== undefined) {
+      picked = new Set();
+      for (const part of String(given).split(',')) {
+        const v = part.trim().toLowerCase();
+        if (!v || v === 'none') continue;
+        if (!values.has(v)) throw new GarnetError('invalid_input', `--${q.id} must be a comma-separated list of ${q.choices.map((c) => c.value).join(', ')} or none (got "${v}").`);
+        picked.add(v);
+      }
+    } else {
+      picked = new Set(q.auto ?? q.default ?? []);
+    }
+    for (const c of q.choices) {
+      const flag = this.answers.get(c.value)?.at(-1);
+      if (flag === undefined) continue;
+      const on = typeof flag === 'boolean' ? flag : /^(y|yes|true|1|on)$/i.test(flag);
+      if (on) picked.add(c.value);
+      else picked.delete(c.value);
+    }
+    return q.choices.filter((c) => picked.has(c.value)).map((c) => c.value);
   }
 
   async secret(q: SecretAsk): Promise<string> {
@@ -225,6 +262,95 @@ export class TerminalPrompter implements Prompter {
       if (choice) return choice.value;
       this.output.write(`  ${this.s.warn('!')} Type a number from 1 to ${q.choices.length}.\n`);
     }
+  }
+
+  /**
+   * A checklist. On a terminal: Up/Down (or k/j) move, Space toggles, 1-9 toggle that row, `a` ticks or
+   * clears all, Enter confirms. Marks are text (`[x]`), never color alone. Without a raw terminal (piped
+   * input) it is a numbered list answered with numbers on one line.
+   */
+  async multiselect<T extends string>(q: MultiSelectAsk<T>): Promise<T[]> {
+    const picked = new Set<T>(q.default ?? []);
+    const result = () => q.choices.filter((c) => picked.has(c.value)).map((c) => c.value);
+    const names = (vals: T[]) => (vals.length ? vals.map((v) => q.choices.find((c) => c.value === v)!.label).join(', ') : 'none');
+    if (q.help) this.output.write(`  ${this.s.muted(q.help)}\n`);
+    this.output.write(`${this.s.accent('?')} ${this.s.bold(q.message)}\n`);
+    const row = (c: Choice<T>, i: number, cursor: number) => {
+      const on = picked.has(c.value);
+      const mark = on ? this.s.ok('[x]') : '[ ]';
+      return `  ${i === cursor ? this.s.accent('›') : ' '} ${mark} ${i + 1}) ${c.label}${c.hint ? `  ${this.s.muted(c.hint)}` : ''}`;
+    };
+    if (!this.input.isTTY || typeof this.input.setRawMode !== 'function') {
+      q.choices.forEach((c, i) => this.output.write(`${row(c, i, -1)}\n`));
+      for (;;) {
+        const answer = (await this.line(`  ${this.s.muted('Numbers to select, like 1,3 (Enter keeps the ticked ones, 0 for none):')} `)).toLowerCase();
+        if (!answer) return result();
+        const chosen = new Set<T>();
+        let bad = false;
+        for (const part of answer.split(/[\s,]+/).filter(Boolean)) {
+          const c = /^\d+$/.test(part) ? q.choices[Number(part) - 1] : q.choices.find((x) => x.value === part);
+          if (c) chosen.add(c.value);
+          else if (part !== '0' && part !== 'none') bad = true;
+        }
+        if (bad) {
+          this.output.write(`  ${this.s.warn('!')} Use numbers from 1 to ${q.choices.length}, separated by commas, or 0 for none.\n`);
+          continue;
+        }
+        picked.clear();
+        for (const c of chosen) picked.add(c);
+        return result();
+      }
+    }
+    this.output.write(`  ${this.s.muted('Up/Down to move, Space (or the number) to tick, Enter to continue. Nothing ticked is fine.')}\n`);
+    const input = this.input;
+    const n = q.choices.length;
+    let cursor = 0;
+    const draw = (first: boolean) => {
+      if (!first) this.output.write(`\x1b[${n}A`);
+      q.choices.forEach((c, i) => this.output.write(`\r\x1b[2K${row(c, i, cursor)}\n`));
+    };
+    draw(true);
+    return new Promise((resolve, reject) => {
+      input.setRawMode(true);
+      input.resume();
+      input.setEncoding('utf8');
+      const finish = (err?: Error) => {
+        input.setRawMode(false);
+        input.pause();
+        input.off('data', onData);
+        if (err) {
+          this.output.write('\n');
+          reject(err);
+        } else {
+          this.output.write(`  ${this.s.muted(`Selected: ${names(result())}`)}\n`);
+          resolve(result());
+        }
+      };
+      const toggle = (i: number) => {
+        const v = q.choices[i]!.value;
+        if (picked.has(v)) picked.delete(v);
+        else picked.add(v);
+      };
+      const onData = (text: string) => {
+        // eslint-disable-next-line no-control-regex
+        for (const key of text.match(/\x1b\[[0-9;?]*[A-Za-z~]|\x1bO.|[\s\S]/gu) ?? []) {
+          if (key === '\r' || key === '\n') return finish();
+          if (key === '\u0003') return finish(cancelled());
+          if (key === '\x1b[A' || key === '\x1bOA' || key === 'k') cursor = (cursor + n - 1) % n;
+          else if (key === '\x1b[B' || key === '\x1bOB' || key === 'j') cursor = (cursor + 1) % n;
+          else if (key === ' ') toggle(cursor);
+          else if (/^[1-9]$/.test(key) && Number(key) <= n) {
+            cursor = Number(key) - 1;
+            toggle(cursor);
+          } else if (key === 'a') {
+            if (picked.size === n) picked.clear();
+            else for (const c of q.choices) picked.add(c.value);
+          }
+        }
+        draw(false);
+      };
+      input.on('data', onData);
+    });
   }
 
   async secret(q: SecretAsk): Promise<string> {

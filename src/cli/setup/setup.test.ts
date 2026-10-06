@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { tempDir } from '../../../test/helpers.ts';
 import { parseConfig, parseEnv, writeConfig, defaultConfig, readPersona, writePersona } from '../../config/index.ts';
@@ -8,7 +9,7 @@ import { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore } from '../../secrets/ind
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
 import { init, setup } from './command.ts';
-import { AnswerPrompter, makeStyle, stripKeySequences, type Answer } from './prompt.ts';
+import { AnswerPrompter, TerminalPrompter, makeStyle, stripKeySequences, type Answer, type MultiSelectAsk } from './prompt.ts';
 import { runSetup, type Pairing, type SetupDeps } from './wizard.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
 
@@ -528,4 +529,288 @@ test('wake-up: the persona menu on a re-run can choose it too, and that counts a
   const { done } = h.run({ section: ['persona', 'done'], onboarding: 'wake' });
   assert.equal(await done, 0);
   assert.equal(woke, 1);
+});
+
+// ---------- channel checklist ----------
+
+const DC = 'MTIzNDU2.Abcdef.NotARealDiscordToken_xyz';
+const BASE = { provider: 'fake', secrets: 'env-file', check: false, service: false } as const;
+
+/** Records the checklist the wizard shows. */
+class Recording extends AnswerPrompter {
+  lists: MultiSelectAsk<string>[] = [];
+  override async multiselect<T extends string>(q: MultiSelectAsk<T>): Promise<T[]> {
+    this.lists.push(q as unknown as MultiSelectAsk<string>);
+    return super.multiselect(q);
+  }
+}
+
+test('channels: one checklist replaces the per-channel questions; none selected is fine', async () => {
+  const h = harness();
+  const { p, done } = h.run({ ...BASE, channels: 'none' });
+  assert.equal(await done, 0);
+  const c = h.config();
+  assert.equal(c.channels.telegram.enabled || c.channels.discord.enabled || c.channels.signal.enabled, false);
+  assert.equal(p.asked.filter((id) => id === 'channels').length, 1);
+  assert.equal(p.asked.some((id) => /^(telegram|discord|signal)$/.test(id)), false);
+  // With nothing said at all, nothing is connected.
+  const quiet = harness();
+  assert.equal(await quiet.run({ provider: 'fake', service: false }, {}, false).done, 0);
+  assert.equal(quiet.config().channels.telegram.enabled, false);
+});
+
+test('channels: one selected channel is set up, the others are not asked about', async () => {
+  const h = harness();
+  const { p, done } = h.run({ ...BASE, channels: 'discord' }, { 'discord-token': DC });
+  assert.equal(await done, 0);
+  const c = h.config();
+  assert.deepEqual([c.channels.telegram.enabled, c.channels.discord.enabled, c.channels.signal.enabled], [false, true, false]);
+  assert.equal(parseEnv(readFileSync(join(h.home, 'env'), 'utf8')).get('DISCORD_BOT_TOKEN'), DC);
+  assert.equal(p.asked.includes('telegram-token'), false);
+  assert.equal(p.asked.includes('signal-number'), false);
+  assert.equal(h.out().includes(DC), false);
+  assert.doesNotMatch(h.out(), /\(1 of 1\)/);
+});
+
+test('channels: several selected are set up one at a time, in list order', async () => {
+  const h = harness();
+  const { p, done } = h.run({ ...BASE, channels: 'signal, telegram', 'signal-number': '+15551234567' }, { 'telegram-token': TG });
+  assert.equal(await done, 0);
+  const c = h.config();
+  assert.deepEqual([c.channels.telegram.enabled, c.channels.discord.enabled, c.channels.signal.enabled], [true, false, true]);
+  assert.equal(c.channels.signal.account, '+15551234567');
+  assert.ok(p.asked.indexOf('telegram-token') < p.asked.indexOf('signal-number'));
+  assert.match(h.out(), /Telegram \(1 of 2\)[\s\S]*Signal \(2 of 2\)/);
+  assert.equal(p.asked.includes('discord-token'), false);
+});
+
+test('channels: the old per-channel flags still work', async () => {
+  const h = harness();
+  assert.equal(await h.run({ ...BASE, telegram: true, discord: false, signal: false }, { 'telegram-token': TG }).done, 0);
+  assert.equal(h.config().channels.telegram.enabled, true);
+});
+
+test('channels: a re-run ticks the enabled channels, and unticking one asks before turning it off', async () => {
+  const h = harness();
+  const start = defaultConfig();
+  start.channels.telegram.enabled = true;
+  start.channels.discord.enabled = true;
+  writeConfig(h.home, start);
+  const rec = new Recording({ section: ['channels', 'done'], channels: 'discord', 'disable-telegram': false }, { interactive: true, secrets: { 'discord-token': DC } });
+  assert.equal(await runSetup(rec, h.io, h.deps), 0);
+  assert.deepEqual(rec.lists[0]!.default, ['telegram', 'discord']);
+  assert.match(rec.lists[0]!.choices.find((c) => c.value === 'signal')!.hint!, /signal-cli/);
+  assert.ok(rec.messages.some((m) => m.startsWith('Turn off Telegram?')));
+  // Declined: Telegram is still on and was not set up again.
+  assert.equal(h.config().channels.telegram.enabled, true);
+  assert.equal(rec.asked.includes('telegram-token'), false);
+
+  const off = new AnswerPrompter({ section: ['channels', 'done'], channels: 'discord', 'disable-telegram': true }, { interactive: true, secrets: { 'discord-token': DC } });
+  assert.equal(await runSetup(off, h.io, h.deps), 0);
+  assert.deepEqual([h.config().channels.telegram.enabled, h.config().channels.discord.enabled], [false, true]);
+});
+
+test('channels: a script that gives no list keeps the enabled channels; --no-<channel> turns one off without asking', async () => {
+  const h = harness();
+  const start = defaultConfig();
+  start.channels.telegram.enabled = true;
+  writeConfig(h.home, start);
+  const keep = harness({ home: h.home });
+  assert.equal(await keep.run({ provider: 'fake', service: false }, {}, false).done, 0);
+  assert.equal(keep.config().channels.telegram.enabled, true);
+  const off = harness({ home: h.home });
+  assert.equal(await off.run({ provider: 'fake', service: false, telegram: false }, {}, false).done, 0);
+  assert.equal(off.config().channels.telegram.enabled, false);
+});
+
+test('AnswerPrompter.multiselect: list flag, none, per-item flags, bad names', async () => {
+  const choices = [
+    { value: 'a', label: 'A' },
+    { value: 'b', label: 'B' },
+    { value: 'c', label: 'C' },
+  ];
+  const ask = { id: 'letters', message: 'Which?', choices };
+  assert.deepEqual(await new AnswerPrompter({ letters: 'c,a' }).multiselect(ask), ['a', 'c']);
+  assert.deepEqual(await new AnswerPrompter({ letters: 'none' }).multiselect({ ...ask, default: ['a'] }), []);
+  assert.deepEqual(await new AnswerPrompter({ letters: '' }).multiselect({ ...ask, default: ['a'] }), []);
+  assert.deepEqual(await new AnswerPrompter({}).multiselect({ ...ask, default: ['a'] }), ['a']);
+  assert.deepEqual(await new AnswerPrompter({}).multiselect({ ...ask, default: ['a'], auto: ['b'] }), ['b']);
+  assert.deepEqual(await new AnswerPrompter({}).multiselect(ask), []);
+  assert.deepEqual(await new AnswerPrompter({ b: true, a: false }).multiselect({ ...ask, default: ['a'] }), ['b']);
+  assert.deepEqual(await new AnswerPrompter({ letters: 'a', c: true }).multiselect(ask), ['a', 'c']);
+  await assert.rejects(new AnswerPrompter({ letters: 'a,z' }).multiselect(ask), /--letters must be a comma-separated list of a, b, c or none \(got "z"\)/);
+});
+
+// ---------- terminal multiselect ----------
+
+class FakeIn extends PassThrough {
+  isTTY = true;
+  raw = false;
+  setRawMode(mode: boolean): this {
+    this.raw = mode;
+    return this;
+  }
+}
+
+function terminal(color = false) {
+  const input = new FakeIn();
+  let out = '';
+  const output = { isTTY: true, write: (t: string) => ((out += t), true) };
+  const p = new TerminalPrompter({ input: input as never, output: output as never, style: makeStyle(color) });
+  const press = async (keys: string) => {
+    input.write(keys);
+    await new Promise((r) => setImmediate(r));
+  };
+  return { p, input, press, out: () => out };
+}
+
+const LIST: MultiSelectAsk<string> = {
+  id: 'channels',
+  message: 'Which channels?',
+  choices: [
+    { value: 'telegram', label: 'Telegram', hint: 'bot' },
+    { value: 'discord', label: 'Discord' },
+    { value: 'signal', label: 'Signal' },
+  ],
+};
+
+test('terminal multiselect: arrows and space toggle, Enter confirms, instructions and text marks are shown', async () => {
+  const t = terminal();
+  const result = t.p.multiselect({ ...LIST, default: ['discord'] });
+  await t.press('\x1b[B'); // down to Discord
+  await t.press(' '); // untick Discord
+  await t.press('\x1b[B'); // Signal
+  await t.press(' '); // tick Signal
+  await t.press('\x1b[A\x1b[A '); // up twice to Telegram, tick it
+  assert.equal(t.input.raw, true);
+  await t.press('\r');
+  assert.deepEqual(await result, ['telegram', 'signal']);
+  assert.equal(t.input.raw, false);
+  assert.match(t.out(), /Space \(or the number\) to tick, Enter to continue/);
+  assert.match(t.out(), /\[x\] 1\) Telegram/);
+  assert.match(t.out(), /\[ \] 2\) Discord/);
+  assert.match(t.out(), /Selected: Telegram, Signal/);
+  assert.equal(t.out().includes('\x1b[38'), false);
+  assert.equal(t.out().includes('—'), false);
+});
+
+test('terminal multiselect: numbers toggle, wrap-around, a ticks all, Enter alone keeps the defaults, none is fine', async () => {
+  const a = terminal();
+  const r1 = a.p.multiselect(LIST);
+  await a.press('13');
+  await a.press('\r');
+  assert.deepEqual(await r1, ['telegram', 'signal']);
+
+  const b = terminal();
+  const r2 = b.p.multiselect(LIST);
+  await b.press('\x1b[A '); // up from the top wraps to Signal
+  await b.press('\r');
+  assert.deepEqual(await r2, ['signal']);
+
+  const c = terminal();
+  const r3 = c.p.multiselect(LIST);
+  await c.press('a');
+  await c.press('a');
+  await c.press('9'); // out of range: ignored
+  await c.press('\r');
+  assert.deepEqual(await r3, []);
+
+  const d = terminal();
+  const r4 = d.p.multiselect({ ...LIST, default: ['signal'] });
+  await d.press('\r');
+  assert.deepEqual(await r4, ['signal']);
+  const e = terminal();
+  const r5 = e.p.multiselect(LIST);
+  await e.press('a\r');
+  assert.deepEqual(await r5, ['telegram', 'discord', 'signal']);
+});
+
+test('terminal multiselect: Ctrl+C cancels and restores the terminal; colors only when the style has them', async () => {
+  const t = terminal(true);
+  const failed = assert.rejects(t.p.multiselect(LIST), /Setup cancelled/);
+  await t.press('\u0003');
+  await failed;
+  assert.equal(t.input.raw, false);
+  assert.match(t.out(), /\x1b\[/);
+  assert.match(t.out(), /\[ \] 1\) Telegram/);
+});
+
+test('terminal multiselect: without a raw terminal it is a numbered list answered on one line', async () => {
+  const input = new PassThrough();
+  let out = '';
+  const p = new TerminalPrompter({ input: input as never, output: { write: (t: string) => ((out += t), true) } as never, style: makeStyle(false) });
+  const result = p.multiselect({ ...LIST, default: ['discord'] });
+  input.write('9\n');
+  await new Promise((r) => setTimeout(r, 20));
+  input.write('1, 3\n');
+  assert.deepEqual(await result, ['telegram', 'signal']);
+  assert.match(out, /Use numbers from 1 to 3/);
+});
+
+// ---------- sandbox step ----------
+
+function allowExec(h: { home: string }, exec: 'allow' | 'ask' | 'deny' = 'ask') {
+  const start = defaultConfig();
+  start.permissions.exec = exec;
+  writeConfig(h.home, start);
+}
+
+test('sandbox: asked when commands are allowed; a script without --sandbox keeps the current backend', async () => {
+  const h = harness();
+  allowExec(h);
+  const { p, done } = h.run({ ...BASE, channels: 'none' }, {}, false);
+  assert.equal(await done, 0);
+  assert.ok(p.asked.includes('sandbox'));
+  assert.equal(p.asked.includes('ssh-host'), false);
+  assert.equal(h.config().sandbox.backend, 'docker');
+});
+
+test('sandbox: --sandbox ssh with its flags is saved in config; the passphrase is only named', async () => {
+  const h = harness();
+  allowExec(h);
+  const answers = {
+    ...BASE,
+    channels: 'none',
+    sandbox: 'ssh',
+    'ssh-host': 'box.example.com',
+    'ssh-user': 'garnet',
+    'ssh-workdir': '/home/garnet/work',
+    'ssh-auth': 'key',
+    'ssh-key': '/home/me/.ssh/id_garnet',
+    'ssh-passphrase-env': 'GARNET_SSH_PASS',
+    'ssh-host-keys': 'accept-new',
+  };
+  assert.equal(await h.run(answers, {}, false).done, 0);
+  const sb = h.config().sandbox;
+  assert.equal(sb.backend, 'ssh');
+  assert.deepEqual(
+    [sb.ssh.host, sb.ssh.user, sb.ssh.workdir, sb.ssh.identityFile, sb.ssh.passphraseEnv, sb.ssh.hostKeyChecking, sb.ssh.agent],
+    ['box.example.com', 'garnet', '/home/garnet/work', '/home/me/.ssh/id_garnet', 'GARNET_SSH_PASS', 'accept-new', false],
+  );
+  // A script that picks ssh without a host fails before anything is written.
+  const bad = harness();
+  allowExec(bad);
+  const before = readFileSync(join(bad.home, 'config.json'), 'utf8');
+  await assert.rejects(bad.run({ ...BASE, channels: 'none', sandbox: 'ssh' }, {}, false).done, /pass --ssh-host/);
+  assert.equal(readFileSync(join(bad.home, 'config.json'), 'utf8'), before);
+});
+
+test('sandbox: not asked when commands are denied (the default); the re-run menu offers it when they are allowed', async () => {
+  const h = harness();
+  allowExec(h, 'deny');
+  const rec = new AnswerPrompter({ section: ['channels', 'done'], channels: 'none' }, { interactive: true });
+  assert.equal(await runSetup(rec, h.io, h.deps), 0);
+  assert.equal(rec.asked.includes('sandbox'), false);
+  const fresh = harness();
+  allowExec(fresh, 'allow');
+  const p = new AnswerPrompter({ section: ['sandbox', 'done'], sandbox: 'local' }, { interactive: true });
+  assert.equal(await runSetup(p, fresh.io, fresh.deps), 0);
+  assert.equal(fresh.config().sandbox.backend, 'local');
+});
+
+test('`garnet setup --help` lists the channel and sandbox flags', async () => {
+  let out = '';
+  assert.equal(await setup(['--help'], { out: (t) => (out += t), err: (t) => (out += t) }), 0);
+  for (const f of ['--channels', '--sandbox', '--ssh-host', '--ssh-user', '--ssh-workdir', '--ssh-auth', '--ssh-key', '--ssh-passphrase-env', '--ssh-host-keys']) assert.ok(out.includes(f), f);
+  assert.equal(out.includes('—'), false);
 });

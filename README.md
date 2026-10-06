@@ -31,7 +31,7 @@ npm link            # optional: puts `garnet` on your PATH (otherwise use `npm r
 ## Set up
 
 ```sh
-garnet setup     # model and key, persona, channels, background service, pairing
+garnet setup     # model and key, persona, where commands run, channels (a checklist), background service, pairing
 garnet doctor    # checks the install and setup, and says how to fix what it finds
 garnet chat      # talk to Garnet in the terminal (`garnet chat --fake` needs no key)
 garnet wake      # first-run wake-up: Garnet introduces itself and sets itself up by talking (`--fake` works offline)
@@ -52,8 +52,10 @@ Setup offers two ways to name your assistant and tell it how you like answers: a
 Run it again to change one part: it shows what is set and offers a menu. For scripts and CI, `garnet setup -y` takes every answer from flags (`garnet setup --help`), for example:
 
 ```sh
-printf '%s' "$KEY" | garnet setup -y --provider anthropic --key-stdin --name Juno --telegram --service
+printf '%s' "$KEY" | garnet setup -y --provider anthropic --key-stdin --name Juno --channels telegram --service
 ```
+
+`--channels telegram,discord` picks several (`--channels none` picks none; `--telegram` and `--no-telegram` still work). On a terminal, setup shows the channels as one checklist: arrow keys or numbers to tick, Enter to continue, then it sets up each ticked channel in turn. If commands are allowed (`permissions.exec` is `ask` or `allow`), setup also asks where they run: Docker, another machine over ssh (`--sandbox ssh --ssh-host ... --ssh-user ... --ssh-workdir ...`) or this machine.
 
 ### Telegram by hand
 
