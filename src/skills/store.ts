@@ -226,6 +226,11 @@ export class SkillStore {
 
   // ---- reads ----
 
+  /** True when <root>/<name>/SKILL.md exists (usable, archived or broken): such a skill shadows a built-in of the same name. */
+  has(name: string): boolean {
+    return NAME_RE.test(name) && existsSync(this.skillPath(name));
+  }
+
   list(): SkillInfo[] {
     return this.all()
       .filter((s) => !s.meta.archived)

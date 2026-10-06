@@ -1,12 +1,22 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '../contracts/index.ts';
 import { MAX_BODY, MAX_DESCRIPTION, MAX_SKILL_FILE, type SkillStore } from './store.ts';
+import type { BuiltinSkill } from './builtin.ts';
+
+export type SkillToolOptions = {
+  /**
+   * A built-in skill active in this session, by name (undefined when it is not
+   * shipped or not on for the session). Consulted only when <home>/skills has
+   * no skill of that name.
+   */
+  builtin?: (name: string, sessionId: string) => BuiltinSkill | undefined;
+};
 
 const name = z.string().min(1).max(64).describe('Skill name: lowercase letters, digits and hyphens.');
 const description = z.string().min(1).max(MAX_DESCRIPTION).describe('One line saying what the skill does and when to use it.');
 const body = z.string().min(1).max(MAX_BODY).describe('Markdown instructions: generic, numbered steps, no one-off details.');
 
-export function skillTools(store: SkillStore): ToolDefinition[] {
+export function skillTools(store: SkillStore, options: SkillToolOptions = {}): ToolDefinition[] {
   const view: ToolDefinition<{ name: string; file?: string | undefined }> = {
     name: 'skill_view',
     version: 1,
@@ -19,7 +29,12 @@ export function skillTools(store: SkillStore): ToolDefinition[] {
     capability: 'fs.read',
     idempotent: true,
     maxOutputChars: Math.max(MAX_BODY, MAX_SKILL_FILE) + 1000,
-    async run({ name, file }) {
+    async run({ name, file }, ctx) {
+      const shipped = store.has(name) ? undefined : options.builtin?.(name, ctx.sessionId);
+      if (shipped) {
+        if (file !== undefined) return { content: `Built-in skill "${name}" has no bundled files.`, error: 'invalid_input' };
+        return { content: `# Skill: ${shipped.name} (built in)\n${shipped.description}\n\n${shipped.body}`, data: { name: shipped.name, builtin: true } };
+      }
       if (file !== undefined) return { content: store.readFile(name, file), data: { name, file } };
       const s = store.view(name);
       const files = store.files(name);
