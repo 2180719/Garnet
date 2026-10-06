@@ -37,6 +37,14 @@ test('config without a version is migrated and backed up', () => {
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
 });
 
+test('sandbox.user is optional uid:gid and never root', () => {
+  assert.equal(defaultConfig().sandbox.user, undefined);
+  assert.equal(parseConfig({ version: CONFIG_VERSION, sandbox: { user: '1000:1000' } }).sandbox.user, '1000:1000');
+  for (const user of ['0:0', '0:1000', 'root', '1000']) {
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, sandbox: { user } }), (e) => isRubyError(e, 'config'), user);
+  }
+});
+
 test('config from a newer Ruby is rejected', () => {
   assert.throws(() => parseConfig({ version: CONFIG_VERSION + 1 }), /newer than this Ruby/);
 });

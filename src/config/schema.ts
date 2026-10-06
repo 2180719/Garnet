@@ -129,6 +129,12 @@ export const configSchema = z
         memory: z.string().regex(/^[0-9]+[bkmg]?$/i).default('512m').describe('Memory limit per command (swap disabled).'),
         cpus: z.number().positive().default(1).describe('CPU limit per command.'),
         pidsLimit: z.number().int().min(16).default(256).describe('Maximum processes per command.'),
+        user: z
+          .string()
+          .regex(/^[0-9]+:[0-9]+$/)
+          .refine((u) => Number(u.split(':')[0]) !== 0, 'the sandbox never runs as root (uid 0)')
+          .optional()
+          .describe('Container user as uid:gid (docker). Unset: your uid:gid, or the workspace owner when Ruby runs as root, else 65534:65534. Never root.'),
       })
       .prefault({})
       .describe('Where run_command executes. Only used when the exec permission is allow or ask.'),

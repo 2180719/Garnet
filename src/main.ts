@@ -68,7 +68,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   let sandbox: Sandbox | null = null;
   if (config.permissions.exec !== 'deny') {
     const sb = config.sandbox;
-    sandbox = createSandbox(sb.backend, { workspace: paths.workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit });
+    sandbox = createSandbox(sb.backend, { workspace: paths.workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit, ...(sb.user ? { user: sb.user } : {}) });
     registry.register(execTool(sandbox));
   }
   const approvals = new ApprovalStore(db);
