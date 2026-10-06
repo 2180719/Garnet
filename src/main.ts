@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { SignalChannel, TelegramChannel } from './channels/index.ts';
 import { loadConfig, redact, rubyHome, type Paths, type RubyConfig } from './config/index.ts';
 import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter } from './contracts/index.ts';
-import { ApiKeys, ApiServer, Gateway, persistentApprover, type LogFn } from './gateway/index.ts';
+import { ApiKeys, ApiServer, Gateway, persistentApprover, staticFiles, type LogFn } from './gateway/index.ts';
+import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue } from './runtime/index.ts';
@@ -12,7 +13,8 @@ import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, 
 import { Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
-import { ArtifactStore, ToolExecutor, ToolRegistry, fileTools, readArtifactTool } from './tools/index.ts';
+import { ArtifactStore, ToolExecutor, ToolRegistry, execTool, fileTools, readArtifactTool } from './tools/index.ts';
+import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
 
 export const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }).version;
 
@@ -26,6 +28,7 @@ export type Ruby = {
   keyStore: KeyStore;
   keys: ApiKeys;
   registry: ToolRegistry;
+  sandbox: Sandbox | null;
   approvals: ApprovalStore;
   jobStore: JobStore;
   ownerPolicy: Policy;
@@ -61,6 +64,13 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   const artifacts = new ArtifactStore(join(paths.home, 'artifacts'));
   const registry = new ToolRegistry();
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
+  // run_command exists only when the owner opted into exec; the tool set is fixed per session.
+  let sandbox: Sandbox | null = null;
+  if (config.permissions.exec !== 'deny') {
+    const sb = config.sandbox;
+    sandbox = createSandbox(sb.backend, { workspace: paths.workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit });
+    registry.register(execTool(sandbox));
+  }
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
   const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, env));
@@ -95,6 +105,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     keyStore,
     keys: new ApiKeys(keyStore),
     registry,
+    sandbox,
     memory,
     skills,
     agent,
@@ -189,6 +200,11 @@ export async function startService(ruby: Ruby, log: LogFn, overrides: { channels
   const { gateway, scheduler, channels } = buildService(ruby, log, overrides.channels ?? createChannels(config, ruby.env), true);
   let api: ApiServer | null = null;
   try {
+    // Fail fast rather than silently downgrade isolation; remove containers a crash may have left.
+    if (ruby.sandbox) {
+      await assertSandboxReady(ruby.sandbox, { requireIsolated: config.sandbox.backend === 'docker' });
+      await (ruby.sandbox as { cleanup?: () => Promise<unknown> }).cleanup?.();
+    }
     await gateway.start();
     scheduler.start();
     if (config.api.enabled) {
@@ -200,9 +216,12 @@ export async function startService(ruby: Ruby, log: LogFn, overrides: { channels
         rateLimitPerMinute: config.api.rateLimitPerMinute,
         version: VERSION,
         log,
+        admin: createBackend(ruby, gateway, scheduler, VERSION),
+        ...(config.dashboard.enabled ? { fallback: staticFiles(join(import.meta.dirname, '..', 'dashboard')) } : {}),
       });
       const address = await api.listen(config.api.host, config.api.port);
       log('info', `API listening on http://${address.address}:${address.port}`);
+      if (config.dashboard.enabled) log('info', `Dashboard at http://${address.address}:${address.port}/ (run \`ruby dashboard\` for a login link)`);
     }
   } catch (e) {
     await scheduler.stop();

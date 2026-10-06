@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto';
 import {
   errorMessage,
+  RubyError,
   textOf,
   type ChannelAdapter,
   type InboundMessage,
@@ -115,6 +116,23 @@ export class Gateway {
     });
   }
 
+  /**
+   * Decides an approval from a non-chat surface (dashboard, API) and resumes
+   * the task. If the conversation is a chat, the outcome is also sent there.
+   */
+  async resolveApproval(code: string, decision: 'approved' | 'denied'): Promise<{ status: string; text: string | null }> {
+    const approvals = this.deps.approvals;
+    if (!approvals) throw new RubyError('invalid_input', 'Approvals are not enabled.');
+    const decided = approvals.decide(code, decision, this.now().toISOString());
+    if (!decided) throw new RubyError('invalid_input', 'No pending approval with that code (it may have expired or been decided).');
+    const key = this.deps.store.keyForSession(decided.sessionId);
+    if (!key) return { status: decision, text: null };
+    const result = await this.chat(key, approvalText(decided.code, decided.summary, decision === 'approved'), { source: 'dashboard' });
+    const chat = chatOfKey(key);
+    if (chat && this.channels.has(channelKey(chat.channel, chat.account))) this.notify(chat, result.text);
+    return { status: result.task.status, text: result.text };
+  }
+
   /** Queues a proactive message (scheduled results, alerts) to a chat. */
   notify(target: { channel: string; account: string; chatId: string }, text: string): void {
     this.deps.store.enqueue({ ...target, text });
@@ -174,11 +192,8 @@ export class Gateway {
         this.reply(row, 'That approval already expired or was decided.');
         return;
       }
-      // Continue the task in the same conversation; an approval grants exactly that operation once.
-      const text =
-        command === '/approve'
-          ? `[Owner approved ${decided.code}: ${decided.summary}] Go ahead with exactly that operation, then continue.`
-          : `[Owner declined ${decided.code}: ${decided.summary}] Do not do that. Continue without it, or explain what you need.`;
+      // Continue the task in the conversation that asked; an approval grants exactly that operation once.
+      const text = approvalText(decided.code, decided.summary, command === '/approve');
       void this.deps.lanes.run(targetKey, () => this.process({ ...row, text }, targetKey)).catch((e) => this.log('error', `resuming ${row.id}: ${errorMessage(e)}`));
       return;
     }
@@ -350,6 +365,19 @@ export function approvePairing(store: GatewayStore, code: string, now: Date = ne
   if (!p) return null;
   store.enqueue({ channel: p.channel, account: p.account, chatId: p.chatId, text: "You're connected. I'm Ruby — how can I help?" });
   return p;
+}
+
+function approvalText(code: string, summary: string, approved: boolean): string {
+  return approved
+    ? `[Owner approved ${code}: ${summary}] Go ahead with exactly that operation, then continue.`
+    : `[Owner declined ${code}: ${summary}] Do not do that. Continue without it, or explain what you need.`;
+}
+
+/** Parses a per-chat conversation key (`channel:account:chatId`); other keys (routes, jobs, API) return null. */
+function chatOfKey(key: string): { channel: string; account: string; chatId: string } | null {
+  const [channel, account, ...rest] = key.split(':');
+  if (!channel || !account || rest.length === 0 || ['route', 'job', 'api', 'dashboard'].includes(channel)) return null;
+  return { channel, account, chatId: rest.join(':') };
 }
 
 const channelKey = (channel: string, account: string) => `${channel}:${account}`;

@@ -5,6 +5,7 @@ import { errorMessage, isRubyError, newId, RubyError, type TaskRecord } from '..
 import type { KeyStore, SessionStore } from '../store/index.ts';
 import type { Gateway } from './gateway.ts';
 import { RateLimiter, type ApiKeys, type Scope } from './keys.ts';
+import { adminRoutes, type AdminBackend, type AdminRoute } from './admin.ts';
 
 const MAX_BODY = 1_000_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -19,6 +20,8 @@ export type ApiServerDeps = {
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Optional handler for non-API paths (the dashboard). */
   fallback?: (req: IncomingMessage, res: ServerResponse) => boolean;
+  /** Dashboard/admin operations under /api/*. */
+  admin?: AdminBackend;
 };
 
 type Ctx = { req: IncomingMessage; res: ServerResponse; url: URL; keyId: string | null; scopes: string[]; ip: string | null };
@@ -51,9 +54,11 @@ export class ApiServer {
   private readonly limiter: RateLimiter;
   private readonly authFailures = new RateLimiter(20);
   private server: Server | null = null;
+  private readonly adminRoutes: AdminRoute[];
 
   constructor(deps: ApiServerDeps) {
     this.deps = deps;
+    this.adminRoutes = deps.admin ? adminRoutes(deps.admin) : [];
     this.limiter = new RateLimiter(deps.rateLimitPerMinute);
   }
 
@@ -99,7 +104,14 @@ export class ApiServer {
       this.authenticate(ctx);
       await this.route(ctx);
     } catch (e) {
-      const status = e instanceof HttpError ? e.status : isRubyError(e, 'invalid_input') ? 400 : 500;
+      const status =
+        e instanceof HttpError
+          ? e.status
+          : isRubyError(e, 'invalid_input') || isRubyError(e, 'config') || (e as { status?: number })?.status === 400
+            ? 400
+            : isRubyError(e, 'denied')
+              ? 403
+              : 500;
       if (status === 500) this.deps.log?.('error', `API ${req.method} ${url.pathname}: ${errorMessage(e)}`);
       if (!res.headersSent) {
         for (const [k, v] of Object.entries(e instanceof HttpError ? e.headers : {})) res.setHeader(k, v);
@@ -159,6 +171,14 @@ export class ApiServer {
       const id = events[1]!;
       if (!this.deps.sessions.getSession(id)) throw new HttpError(404, 'No such session.');
       return send(res, 200, { events: this.deps.sessions.events(id, Number(url.searchParams.get('after') ?? 0)) });
+    }
+    for (const route of this.adminRoutes) {
+      if (route.method !== method) continue;
+      const m = route.pattern.exec(path);
+      if (!m) continue;
+      this.require(ctx, route.scope);
+      const result = await route.handle({ params: m.slice(1).map(decodeURIComponent), query: url.searchParams, body: () => readJson(req) });
+      return send(res, 200, result ?? { ok: true });
     }
     throw new HttpError(404, 'Not found.');
   }

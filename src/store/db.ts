@@ -148,6 +148,16 @@ const MIGRATIONS: string[] = [
     last_scheduled_for TEXT
   );
   `,
+  `
+  CREATE TABLE achievements (
+    id TEXT PRIMARY KEY,
+    unlocked_at TEXT NOT NULL
+  );
+  CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;
@@ -182,4 +192,9 @@ export function transaction<T>(db: Db, fn: () => T): T {
     db.exec('ROLLBACK');
     throw e;
   }
+}
+
+/** Writes a consistent copy of the database to `target` (safe while Ruby is running). */
+export function backupDb(db: Db, target: string): void {
+  db.prepare('VACUUM INTO ?').run(target);
 }

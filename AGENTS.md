@@ -30,7 +30,11 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | `src/channels/` | Messaging adapters (Telegram, Signal via signal-cli). Normalize a platform; no routing or persistence. |
 | `src/scheduler/` | Cron jobs and heartbeats with pre-checks, budgets, catch-up and failure pausing; runs go through the gateway. |
 | `src/service/` | systemd/launchd service definitions and install. |
+| `src/sandbox/` | Command execution: Docker (isolated, no network by default) or local (not a boundary). |
+| `src/achievements/` | Local achievements and easter eggs for the dashboard. |
+| `src/backend.ts` | Composition-root implementation of the dashboard/admin API. |
 | `src/cli/` | The `ruby` command. |
+| `dashboard/` | Opt-in dashboard: static files served by the API server under a strict CSP. |
 | `src/main.ts` | Composition root: the only place modules are wired together. |
 | `site/` | Public static website (no build, no tracking). |
 | `test/` | Shared test helpers and fixtures (fake channel, wired gateway). |

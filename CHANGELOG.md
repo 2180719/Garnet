@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Phase 5–6 (in progress)
+- Admin API for the dashboard (`/api/*`, read vs admin scopes), static serving with a strict CSP, `ruby dashboard` login links (key in the URL fragment).
+- Achievements and easter eggs (Konami code, `ruby --sparkle`), stored locally.
+- `run_command` in a Docker sandbox: no network, read-only root, all capabilities dropped, resource limits, host uid, killed on timeout or cancel, never silently downgraded. Only registered when the owner allows `exec`; approval prompts show the full command.
+- `ruby backup` and `ruby restore`.
+
 ### Phase 4: scheduling, approvals, Signal, providers
 - Cron jobs and heartbeats in config: time zones and DST, occurrence IDs so a slot runs once across restarts, coalesced catch-up, no overlap, cheap pre-checks (`file_changed`, `url_changed`) that skip the model, per-run and daily token budgets, pausing after repeated failures, `NOTHING_TO_REPORT` quiet runs, `ruby jobs ...`.
 - Jobs run with their own agent: their permission grant intersected with the owner's (read-only by default).

@@ -189,3 +189,21 @@ export async function jobs(args: string[], io: Io): Promise<number> {
     ruby.close();
   }
 }
+
+export function dashboard(io: Io): number {
+  const ruby = createRuby({ noModel: true });
+  try {
+    const { config, paths, keys } = ruby;
+    if (!config.api.enabled || !config.dashboard.enabled) {
+      writeConfig(paths.home, { ...config, api: { ...config.api, enabled: true }, dashboard: { enabled: true } });
+      io.out('Enabled the API and dashboard in config.json (loopback only). Restart Ruby to apply.\n');
+    }
+    const created = keys.create(`dashboard ${new Date().toISOString().slice(0, 10)}`, ['admin'], 30);
+    const host = config.api.host === '0.0.0.0' || config.api.host === '::' ? '127.0.0.1' : config.api.host;
+    // The key travels in the URL fragment, which browsers never send to the server.
+    io.out(`\nOpen this link (valid 30 days, revoke with \`ruby api key revoke ${created.id}\`):\n\n  http://${host}:${config.api.port}/#key=${created.key}\n\n`);
+    return 0;
+  } finally {
+    ruby.close();
+  }
+}

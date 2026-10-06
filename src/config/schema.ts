@@ -121,6 +121,17 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Bounded memory, shown to Ruby at the start of each session.'),
+    sandbox: z
+      .object({
+        backend: z.enum(['docker', 'local']).default('docker').describe('docker: isolated container per command. local: runs on the host and is NOT a security boundary.'),
+        image: z.string().default('debian:stable-slim').describe('Container image with sh. Pull it yourself first: docker pull <image>.'),
+        network: z.enum(['none', 'bridge']).default('none').describe('Container network. none blocks all network access.'),
+        memory: z.string().regex(/^[0-9]+[bkmg]?$/i).default('512m').describe('Memory limit per command (swap disabled).'),
+        cpus: z.number().positive().default(1).describe('CPU limit per command.'),
+        pidsLimit: z.number().int().min(16).default(256).describe('Maximum processes per command.'),
+      })
+      .prefault({})
+      .describe('Where run_command executes. Only used when the exec permission is allow or ask.'),
     permissions: z
       .object({
         'fs.read': permission.default('allow'),
@@ -220,6 +231,9 @@ export const configSchema = z
   .superRefine((c, ctx) => {
     if (c.model.provider === 'openai-compatible' && !c.model.baseUrl) {
       ctx.addIssue({ code: 'custom', path: ['model', 'baseUrl'], message: 'openai-compatible needs model.baseUrl' });
+    }
+    if (c.dashboard.enabled && !c.api.enabled) {
+      ctx.addIssue({ code: 'custom', path: ['dashboard', 'enabled'], message: 'The dashboard is served by the API server: enable api too' });
     }
     if (c.channels.signal.enabled && !c.channels.signal.account) {
       ctx.addIssue({ code: 'custom', path: ['channels', 'signal', 'account'], message: "Signal needs the bot's number" });

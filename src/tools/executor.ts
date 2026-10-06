@@ -84,7 +84,8 @@ export class ToolExecutor {
         capability: tool.capability,
         targets,
         input,
-        summary: describe(tool.name, input, targets, ctx.workspace),
+        // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
+        summary: describe(tool.name, input, targets, ctx.workspace, tool.capability === 'exec' ? 10_000 : 120),
       });
       if (answer === 'denied') return fail('denied', 'The owner declined this operation. Do not retry it.');
       if (answer === 'deferred') return fail('needs_approval', 'Waiting for the owner to approve this operation.');
@@ -132,9 +133,9 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /** A short, human-readable description of an operation for approval prompts. */
-function describe(tool: string, input: unknown, targets: string[], workspace: string): string {
+function describe(tool: string, input: unknown, targets: string[], workspace: string, maxString: number): string {
   const where = targets.map((t) => (t.startsWith(workspace + '/') ? t.slice(workspace.length + 1) : t)).join(', ');
-  const preview = JSON.stringify(input, (_k, v) => (typeof v === 'string' && v.length > 120 ? `${v.slice(0, 120)}… (${v.length} chars)` : v));
-  const short = preview.length > 300 ? `${preview.slice(0, 300)}…` : preview;
+  const preview = JSON.stringify(input, (_k, v) => (typeof v === 'string' && v.length > maxString ? `${v.slice(0, maxString)}… (${v.length} chars)` : v));
+  const short = maxString > 120 || preview.length <= 300 ? preview : `${preview.slice(0, 300)}…`;
   return `${tool}${where ? ` on ${where}` : ''} ${short}`;
 }

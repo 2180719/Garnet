@@ -8,8 +8,10 @@ import { FakeModel } from '../models/index.ts';
 import type { Approver } from '../policy/index.ts';
 import type { RuntimeEvent } from '../runtime/index.ts';
 import { sparkle } from './sparkle.ts';
-import { api, jobs, pair, service, start } from './admin.ts';
+import { Achievements } from '../achievements/index.ts';
+import { api, dashboard, jobs, pair, service, start } from './admin.ts';
 import { memory, skills } from './knowledge.ts';
+import { backup, restore } from './backup.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
 
@@ -28,12 +30,15 @@ Usage:
   ruby api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
   ruby api key list|revoke <id>
                             Opt-in HTTP API and its keys
+  ruby dashboard            Enable the dashboard and print a login link
   ruby jobs list|history <id>|run <id>|resume <id>
                             Scheduled jobs and heartbeats (defined in config.json)
   ruby memory show|edit|history|rollback
                             Inspect and correct what Ruby remembers
   ruby skills list|show|proposal|accept|reject|archive|stale
                             Review skills Ruby has learned
+  ruby backup [dir]         Copy the database, config, memory, skills and workspace
+  ruby restore <dir>        Restore a backup (stop Ruby first)
   ruby service install|uninstall|status|show
                             Run Ruby as a background service (systemd/launchd)
   ruby help                 Show this help
@@ -81,11 +86,21 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return memory(rest, io);
       case 'jobs':
         return await jobs(rest, io);
+      case 'dashboard':
+        return dashboard(io);
+      case 'backup':
+        return backup(rest, io);
+      case 'restore':
+        return restore(rest, io);
       case 'skills':
         return skills(rest, io);
-      case '--sparkle':
+      case '--sparkle': {
         io.out(sparkle());
+        const ruby = createRuby({ noModel: true });
+        new Achievements(ruby.db).unlockEasterEgg('sparkle');
+        ruby.close();
         return 0;
+      }
       case 'help':
       case '--help':
       case '-h':

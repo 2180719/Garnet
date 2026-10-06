@@ -81,7 +81,7 @@ export function skills(args: string[], io: Io): number {
       }
       case 'show':
         if (!name) break;
-        io.out(`${store.view(name).body}\n`);
+        io.out(`${store.read(name).body}\n`);
         return 0;
       case 'proposal':
         if (!name) break;

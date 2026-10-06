@@ -232,6 +232,12 @@ export class SkillStore {
     ].join('\n');
   }
 
+  /** Owner read: returns the skill without counting a use (works for archived skills too). */
+  read(name: string): { name: string; description: string; body: string } {
+    const s = this.require(name);
+    return { name, description: s.description, body: s.body };
+  }
+
   view(name: string): { name: string; description: string; body: string } {
     const s = this.require(name);
     if (s.meta.archived) bad(`Skill "${name}" is archived.`);
