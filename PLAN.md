@@ -164,6 +164,17 @@ Static, no tracking, no cookies, no third-party requests, no frameworks; fast on
 - **Optional "talk to Ruby" demo:** a bounded Ruby instance with a cheap model, no tools, no memory, a short context, per-IP and global daily budgets, served through the same gateway with a `demo` API key profile. The site works fully without it.
 - Deploys anywhere static (Cloudflare Pages, GitHub Pages, Netlify).
 
+## Status (2026-10-06)
+
+| Phase | State |
+| --- | --- |
+| 1. Foundation | Done |
+| 2. Gateway, Telegram, API, service install | Done |
+| 3. Memory, skills, context, repair, artifacts | Done (tool schemas stay fixed per session instead of loading on demand; see Product goals) |
+| 4. Scheduler, chat approvals, Signal, OpenAI-compatible models, Docker sandbox | Done |
+| 5. Dashboard and website | Website, demo endpoint and dashboard API done; dashboard UI in progress |
+| 6. Release hardening | Discord, importer and backup/restore done. Still open: encrypted secret store (secrets live in a 0600 env file today), failure-injection tests, docs site, live tests against real providers and channels, v1.0 tag |
+
 ## Build phases
 
 Each phase ends with passing `npm test` and a short entry in `CHANGELOG.md`.
