@@ -14,3 +14,4 @@ export { KeyStore, type ApiKeyRow } from './keys.ts';
 export { ApprovalStore, type ApprovalRow, type ApprovalStatus } from './approvals.ts';
 export { JobStore, type JobRun, type JobRunStatus, type JobState, type StoredJob } from './jobs.ts';
 export { StatsStore, type SessionSummary, type FailureRow } from './stats.ts';
+export { pruneOperationalRows, mediaIdsInUse, type RetentionDays, type RetentionResult } from './retention.ts';

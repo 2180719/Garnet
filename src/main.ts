@@ -3,13 +3,13 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
 import { loadConfig, redact, garnetHome, type Paths, type GarnetConfig } from './config/index.ts';
-import { GarnetError, type Budget, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
+import { errorMessage, GarnetError, type Budget, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue } from './runtime/index.ts';
-import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
+import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, type Db } from './store/index.ts';
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
@@ -63,6 +63,8 @@ export type Garnet = {
   skills: SkillStore;
   /** Inbound file handling; null when `media.enabled` is false. */
   media: MediaIngest | null;
+  /** The attachment files under <home>/media; null when `media.enabled` is false. */
+  mediaStore: MediaStore | null;
   agent: Agent;
   model: ModelAdapter;
   close: () => void;
@@ -225,6 +227,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     memory,
     skills,
     media,
+    mediaStore,
     agent,
     model,
     close: () => db.close(),
@@ -314,6 +317,27 @@ export function createChannels(config: GarnetConfig, secret: SecretLookup): Chan
 
 export type Service = { gateway: Gateway; api: ApiServer | null; scheduler: Scheduler; stop: () => Promise<void> };
 
+export type RetentionReport = ReturnType<typeof pruneOperationalRows> & { media: number };
+
+/**
+ * Applies `config.retention`: old finished inbox, outbox, job-run, approval and
+ * sent-message rows, and media files nothing refers to. The session event log
+ * is never touched, and neither is anything still pending or referenced.
+ */
+export function runRetention(garnet: Pick<Garnet, 'config' | 'db' | 'mediaStore'>, now: number = Date.now()): RetentionReport {
+  const r = garnet.config.retention;
+  const rows = pruneOperationalRows(
+    garnet.db,
+    { inbox: r.inboxDays, outbox: r.outboxDays, sentMessages: r.sentMessagesDays, jobRuns: r.jobRunsDays, approvals: r.approvalsDays },
+    now,
+  );
+  // Rows go first, so a file only a pruned delivery referred to becomes unreferenced in the same pass.
+  const media = garnet.mediaStore && r.mediaDays > 0 ? garnet.mediaStore.prune(now - r.mediaDays * 86_400_000, mediaIdsInUse(garnet.db)) : 0;
+  return { ...rows, media };
+}
+
+const RETENTION_EVERY_MS = 86_400_000;
+
 /**
  * Each job runs as its own agent: its grant intersected with the owner's
  * permissions, and its own budget. Built on first use (jobs created from chat
@@ -395,6 +419,16 @@ export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { c
   const log = redactingLog(rawLog);
   const { gateway, scheduler, channels } = buildService(garnet, log, overrides.channels ?? createChannels(config, garnet.secret), true);
   let api: ApiServer | null = null;
+  let retentionTimer: NodeJS.Timeout | null = null;
+  const pruneNow = (): void => {
+    try {
+      const r = runRetention(garnet);
+      const total = Object.values(r).reduce((a, b) => a + b, 0);
+      if (total > 0) log('info', `Retention: removed ${r.inbox} inbox, ${r.outbox} outbox, ${r.sentMessages} sent-message, ${r.jobRuns} job-run, ${r.approvals} approval row(s) and ${r.media} media file(s).`);
+    } catch (e) {
+      log('warn', `Pruning old records failed: ${errorMessage(e)}`);
+    }
+  };
   try {
     // Fail fast rather than silently downgrade isolation; remove containers a crash may have left.
     if (garnet.sandbox) {
@@ -403,6 +437,9 @@ export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { c
     }
     await gateway.start();
     scheduler.start();
+    retentionTimer = setInterval(pruneNow, RETENTION_EVERY_MS);
+    retentionTimer.unref();
+    pruneNow();
     if (config.api.enabled) {
       api = new ApiServer({
         gateway,
@@ -425,6 +462,7 @@ export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { c
       if (config.dashboard.enabled) log('info', `Dashboard at http://${address.address}:${address.port}/ (run \`garnet dashboard\` for a login link)`);
     }
   } catch (e) {
+    if (retentionTimer) clearInterval(retentionTimer);
     await scheduler.stop();
     await gateway.stop(0);
     throw e;
@@ -440,6 +478,7 @@ export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { c
     api,
     scheduler,
     stop: async () => {
+      if (retentionTimer) clearInterval(retentionTimer);
       await scheduler.stop();
       await api?.close();
       await gateway.stop();

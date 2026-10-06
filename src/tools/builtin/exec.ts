@@ -49,6 +49,8 @@ export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
       const result = await sandbox.run({ command: input.command, cwd: input.cwd, timeoutMs: input.timeout_seconds * 1000, signal: ctx.signal });
       return {
         content: formatResult(result, input.timeout_seconds, sandbox.isolated),
+        // With network access a command can fetch web pages (curl, npm, clone), so its output is as untrusted as web_fetch.
+        ...(sandbox.networked ? { untrusted: { source: 'command with network access' } } : {}),
         // A non-zero exit is an ordinary result (its code is the first line); a timeout is not.
         ...(result.timedOut ? { error: 'timeout' as const } : result.cancelled ? { error: 'cancelled' as const } : {}),
         data: { exitCode: result.exitCode, timedOut: result.timedOut, cancelled: result.cancelled, truncated: result.truncated },

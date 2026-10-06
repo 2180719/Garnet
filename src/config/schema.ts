@@ -380,6 +380,17 @@ export const configSchema = z
       )
       .default([])
       .describe('Optional rules that link chats into shared conversations. By default every chat is its own conversation.'),
+    retention: z
+      .object({
+        inboxDays: z.number().int().min(0).max(36500).default(90).describe('Delete handled inbox messages (done or ignored) older than this many days. 0 keeps them forever. Unhandled ones are never deleted.'),
+        outboxDays: z.number().int().min(0).max(36500).default(90).describe('Delete sent and failed outbound messages older than this many days. 0 keeps them forever. Pending and uncertain ones are never deleted.'),
+        sentMessagesDays: z.number().int().min(0).max(36500).default(90).describe('Delete the log of messages Garnet sent on its own (used for rate limits) older than this many days. 0 keeps it forever.'),
+        jobRunsDays: z.number().int().min(0).max(36500).default(90).describe('Delete finished scheduled-run records older than this many days; the newest run of each job is kept. 0 keeps them forever.'),
+        approvalsDays: z.number().int().min(0).max(36500).default(90).describe('Delete approval requests that expired more than this many days ago (decided or not). 0 keeps them forever.'),
+        mediaDays: z.number().int().min(0).max(36500).default(90).describe('Delete stored files in <home>/media older than this many days that no conversation, pending message or delivery refers to. Files referenced by the conversation log are always kept. 0 keeps them forever.'),
+      })
+      .prefault({})
+      .describe('How long finished operational records are kept. Runs at service start and daily. The conversation log (sessions and events) is never pruned.'),
     scheduler: z
       .object({
         enabled: z.boolean().default(true).describe('Global switch for cron jobs and heartbeats. Off stops all new scheduled runs.'),
