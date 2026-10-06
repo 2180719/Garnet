@@ -11,6 +11,7 @@ import {
 } from '../contracts/index.ts';
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
 import type { ApprovalStore, GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
+import { ChatDirectory, chatOfKey, conversationKeyFor } from './directory.ts';
 
 export type Route = { match: { channel: string; chatId?: string | undefined }; conversation: string };
 export type LogFn = (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -55,9 +56,11 @@ export class Gateway {
   private started = false;
   private readonly log: LogFn;
   private readonly now: () => Date;
+  private readonly directory: ChatDirectory;
 
   constructor(deps: GatewayDeps) {
     this.deps = deps;
+    this.directory = new ChatDirectory({ store: deps.store, sessions: deps.sessions, routes: deps.routes ?? [] });
     for (const c of deps.channels) this.channels.set(channelKey(c.channel, c.account), c);
     this.log = deps.log ?? (() => {});
     this.now = deps.now ?? (() => new Date());
@@ -158,9 +161,13 @@ export class Gateway {
     return { status: result.task.status, text: result.text, resumed: true };
   }
 
-  /** Queues a proactive message (scheduled results, alerts) to a chat. */
-  notify(target: { channel: string; account: string; chatId: string }, text: string): void {
-    this.deps.store.enqueue({ ...target, text });
+  /**
+   * Queues a proactive message (scheduled results, alerts) to a chat. With
+   * `from` (e.g. 'scheduled job "x"'), the message is also recorded in that
+   * chat's conversation so a reply to it has context.
+   */
+  notify(target: { channel: string; account: string; chatId: string }, text: string, from?: string): void {
+    this.directory.send(target, text, from ? { from } : undefined);
     void this.deliver();
   }
 
@@ -311,11 +318,7 @@ export class Gateway {
   }
 
   private conversationKey(row: InboxRow): string {
-    const routes = this.deps.routes ?? [];
-    const route =
-      routes.find((r) => r.match.channel === row.channel && r.match.chatId === row.chatId) ??
-      routes.find((r) => r.match.channel === row.channel && r.match.chatId === undefined);
-    return route ? `route:${route.conversation}` : `${row.channel}:${row.account}:${row.chatId}`;
+    return conversationKeyFor(this.deps.routes ?? [], row);
   }
 
   private sessionFor(key: string, channel: string): string {
@@ -424,13 +427,6 @@ function approvalText(code: string, summary: string, approved: boolean): string 
   return approved
     ? `[Owner approved ${code}: ${summary}] Go ahead with exactly that operation, then continue.`
     : `[Owner declined ${code}: ${summary}] Do not do that. Continue without it, or explain what you need.`;
-}
-
-/** Parses a per-chat conversation key (`channel:account:chatId`); other keys (routes, jobs, API) return null. */
-function chatOfKey(key: string): { channel: string; account: string; chatId: string } | null {
-  const [channel, account, ...rest] = key.split(':');
-  if (!channel || !account || rest.length === 0 || ['route', 'job', 'api', 'dashboard'].includes(channel)) return null;
-  return { channel, account, chatId: rest.join(':') };
 }
 
 const channelKey = (channel: string, account: string) => `${channel}:${account}`;
