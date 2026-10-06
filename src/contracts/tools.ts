@@ -78,6 +78,14 @@ export type ToolDefinition<I = any> = {
    * list means the call only reads Ruby's own state and needs no permission.
    */
   capabilitiesFor?: (input: I) => Capability[];
+  /**
+   * Resolves what would otherwise be resolved later (a relative time, a
+   * recipient alias like "owner") into concrete values. Runs right after
+   * validation; the returned input is what is authorized, shown in the
+   * approval, hashed into the grant and run, so the executed action is exactly
+   * the approved one. Must not throw for inputs the tool can reject later.
+   */
+  bind?: (input: I, ctx: ToolContext) => I;
   /** Plain-language description of the call for approval prompts. Must show everything consequential in full. */
   summarize?: (input: I, ctx: ToolContext) => string;
   /** Paths/hosts the call touches, used for scoped policy checks. */
