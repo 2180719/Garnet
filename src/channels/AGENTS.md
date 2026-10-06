@@ -5,7 +5,7 @@ Messaging-platform adapters that implement `ChannelAdapter` from `contracts/chan
 - Public API: `TelegramChannel` (long-polling Telegram bot, no dependencies beyond global `fetch`).
 - Adapters only normalize a platform: they never own identity, routing, dedupe or durable delivery (the gateway does).
 - Inbound is at-least-once: acknowledge to the platform (advance offsets) only after `await sink(message)` resolves. If the sink throws, stop the batch and retry later from the same offset.
-- `send` never throws. It returns `{ status: 'failed', retryable, retryAfterMs? }`: rate limits and 5xx/network are retryable; blocked bot or bad chat is not.
+- `send` never throws. It returns `{ status: 'failed', retryable, retryAfterMs? }`: rate limits and 5xx/network are retryable; blocked bot or bad chat is not. Return `{ status: 'uncertain' }` when the request may have been delivered but the outcome is unknown (the gateway will not resend it).
 - `start` fails fast with `RubyError('config')` on a bad token. After start, errors (conflicts, outages) go to `health().lastError` and are retried with backoff; they never crash the process.
 - `stop` must abort the in-flight long poll and wait for the loop to exit, so a restart does not hit a 409 conflict. It is idempotent.
 - Never log or return the bot token; redact it from every error message.

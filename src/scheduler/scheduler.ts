@@ -191,7 +191,10 @@ export class Scheduler {
       finish('failed', { note: errorMessage(e) });
       const fresh = store.state(job.id);
       fresh.consecutiveFailures += 1;
-      if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) fresh.paused = true;
+      if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) {
+        fresh.paused = true;
+        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${errorMessage(e)}. Resume with: ruby jobs resume ${job.id}`);
+      }
       store.saveState(fresh);
       this.log('error', `job ${job.id}: ${errorMessage(e)}`);
     } finally {
