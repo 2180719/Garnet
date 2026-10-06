@@ -307,3 +307,17 @@ test('media disabled: no checks run', async () => {
   assert.match(media[0]!.message, /off/);
   assert.equal(media[0]!.status, 'info');
 });
+
+test('media: an absolute or relative-with-slash command is access-checked directly, not joined with PATH', async () => {
+  const d = deps();
+  const bin = tempDir();
+  const tool = join(bin, 'pdftotext');
+  writeFileSync(tool, '#!/bin/sh\n', { mode: 0o755 });
+  configure(d.home, (c) => {
+    c.media.pdfText.command = [tool, '-layout'];
+    c.media.transcription = { ...c.media.transcription, backend: 'command', command: [join(bin, 'missing')] };
+  });
+  const media = find(await diagnose(d), 'media');
+  assert.ok(media.some((f) => f.status === 'ok' && f.message.includes('PDF text extraction')), 'absolute path found with an empty PATH');
+  assert.ok(media.some((f) => f.status === 'fail' && /Transcription command .*missing is not an executable file/.test(f.message)));
+});

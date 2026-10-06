@@ -59,6 +59,8 @@ export type AgentDeps = {
   keepTurns?: number;
   /** Returns a message when new model-calling tasks must be refused (the daily spending cap); null otherwise. */
   refuse?: () => string | null;
+  /** Records model usage that belongs to no task (manual compaction), so the daily spending cap counts it. */
+  recordSpend?: (usage: Usage) => void;
   maxOutputTokens: number;
   /** Transient provider failures retried per model call. */
   maxRetries?: number;
@@ -299,7 +301,9 @@ export class Agent {
    * kept tail that a checkpoint does not already cover.
    */
   async compact(sessionId: string, options: { signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void } = {}): Promise<CompactionOutcome> {
-    return this.compactNow(sessionId, options.signal ?? new AbortController().signal, options.onEvent ?? (() => {}));
+    const outcome = await this.compactNow(sessionId, options.signal ?? new AbortController().signal, options.onEvent ?? (() => {}));
+    if (outcome.usage) this.deps.recordSpend?.(outcome.usage); // no task row carries this call
+    return outcome;
   }
 
   /**
@@ -338,7 +342,8 @@ export class Agent {
     if (task.modelCalls >= b.maxModelCalls) return `Reached the limit of ${b.maxModelCalls} model calls.`;
     if (billedTokens(task.usage) >= b.maxTokens) return `Reached the limit of ${b.maxTokens} tokens.`;
     if (Date.now() - started >= b.maxWallMs) return `Reached the time limit of ${Math.round(b.maxWallMs / 1000)}s.`;
-    return null;
+    // The daily spending cap, re-checked before every model call (the task row is saved after each one).
+    return this.deps.refuse?.() ?? null;
   }
 
   /**

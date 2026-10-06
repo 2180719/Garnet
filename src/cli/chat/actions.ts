@@ -3,7 +3,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, resolve } from 'node:path';
-import { errorMessage, formatBytes, formatUsd, type ContentBlock, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
+import { errorMessage, formatBytes, formatUsd, startOfDayIso, type ContentBlock, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
 import { detectMime } from '../../media/index.ts';
 import type { Garnet } from '../../main.ts';
 import { StatsStore } from '../../store/index.ts';
@@ -111,7 +111,7 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
     }
     case 'usage': {
       const totals = sessionTotals(garnet.store.events(ctx.sessionId), garnet.pricing);
-      const today = new StatsStore(garnet.db).knownCostSince(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`, garnet.pricing);
+      const today = new StatsStore(garnet.db).knownCostSince(startOfDayIso(garnet.timezone), garnet.pricing);
       const u = totals.usage;
       const b = garnet.config.budgets;
       const row = (k: string, v: string) => `  ${padEnd(k, 18)}${v}`;
@@ -124,7 +124,7 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
           row('cache write', `${formatTokens(u.cacheWriteTokens)} tokens`),
           row('output', `${formatTokens(u.outputTokens)} tokens`),
           row('cost', formatUsd(totals.costUsd)),
-          row('cost today (UTC)', `${formatUsd(today)}${b.dailyUsd === undefined ? '' : ` of ${formatUsd(b.dailyUsd)} cap`}`),
+          row(`cost today (${garnet.timezone})`, `${formatUsd(today)}${b.dailyUsd === undefined ? '' : ` of ${formatUsd(b.dailyUsd)} cap`}`),
           row('context (latest)', totals.contextTokens === null ? 'unknown' : `${formatTokens(totals.contextTokens)} of ${formatTokens(window)}`),
           '', t.bold('  Budget per task'),
           row('tokens', formatTokens(b.maxTokens)),

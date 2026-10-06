@@ -4,14 +4,14 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import { defaultConfig } from '../config/index.ts';
-import type { Budget } from '../contracts/index.ts';
+import type { Budget, Usage } from '../contracts/index.ts';
 import { FakeModel, type FakeScript } from '../models/index.ts';
 import { Policy, type Approver } from '../policy/index.ts';
 import { openDb, SessionStore } from '../store/index.ts';
 import { ToolExecutor, ToolRegistry, fileTools } from '../tools/index.ts';
 import { Agent, LaneQueue, type RuntimeEvent } from './index.ts';
 
-function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: Approver; sections?: () => string[]; compactAtTokens?: number; refuse?: () => string | null } = {}) {
+function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: Approver; sections?: () => string[]; compactAtTokens?: number; refuse?: () => string | null; recordSpend?: (u: Usage) => void } = {}) {
   const workspace = tempDir();
   const store = new SessionStore(openDb(':memory:'));
   const registry = new ToolRegistry();
@@ -25,6 +25,7 @@ function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: 
     ...(opts.sections ? { promptSections: opts.sections } : {}),
     ...(opts.compactAtTokens ? { compactAtTokens: opts.compactAtTokens, keepTurns: 1 } : {}),
     ...(opts.refuse ? { refuse: opts.refuse } : {}),
+    ...(opts.recordSpend ? { recordSpend: opts.recordSpend } : {}),
     sleep: async () => {},
   });
   const session = store.createSession();
@@ -283,4 +284,24 @@ test('a refusing spending cap stops the task before any model call and keeps the
   assert.equal(task.reason, 'Daily spending cap reached.');
   assert.equal(t.model.requests.length, 0);
   assert.equal(t.store.events(t.session.id).some((e) => e.type === 'user_message'), false);
+});
+
+test('the spending cap is re-checked before every model call, so a running task stops once it is reached', async () => {
+  let calls = 0;
+  const loop: FakeScript = Array.from({ length: 10 }, () => () => (calls += 1, { toolCalls: [{ name: 'list_files', input: {} }] }));
+  const t = setup(loop, { refuse: () => (calls >= 2 ? 'Daily spending cap reached.' : null) });
+  const task = await t.run('loop');
+  assert.equal(task.status, 'budget_exhausted');
+  assert.equal(task.modelCalls, 2);
+  assert.match(task.reason ?? '', /Daily spending cap/);
+});
+
+test('manual compaction reports its usage as task-less spend', async () => {
+  const spend: Usage[] = [];
+  const t = setup([{ text: 'one' }, { text: 'two' }, { text: 'three' }, { text: '<summary>notes</summary>', usage: { inputTokens: 7, outputTokens: 3 } }], { recordSpend: (u) => spend.push(u) });
+  for (const m of ['a', 'b', 'c']) await t.run(m);
+  const outcome = await t.agent.compact(t.session.id);
+  assert.equal(outcome.status, 'compacted');
+  assert.equal(spend.length, 1);
+  assert.equal(spend[0]!.inputTokens, 7);
 });

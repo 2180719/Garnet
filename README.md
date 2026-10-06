@@ -106,7 +106,7 @@ Garnet keeps its data in `~/.garnet` (override with `GARNET_HOME`). Tools can on
 
 ### Cost
 
-Garnet shows dollar cost beside token usage (terminal turn summary and `/usage`, chat `/usage`, the dashboard Usage page, `GET /api/usage`). Prices for current Anthropic models are built in (from Anthropic's pricing page); for any other model set `model.pricing` in `config.json`: USD per million tokens as `{ "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }`. Without a price, or when the provider does not report tokens, cost shows `?`, never `$0`. Set `budgets.dailyUsd` to refuse new chat turns and agent jobs once today's (UTC) known cost reaches the cap; script and reminder jobs are unaffected. It is off by default.
+Garnet shows dollar cost beside token usage (terminal turn summary and `/usage`, chat `/usage`, the dashboard Usage page, `GET /api/usage`). Prices for current Anthropic models are built in (from Anthropic's pricing page); for any other model set `model.pricing` in `config.json`: USD per million tokens as `{ "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }` (omitted cache prices are derived from `input`: 0.1x read, 1.25x write). Without a price, or when the provider does not report tokens, cost shows `?`, never `$0`. Set `budgets.dailyUsd` to refuse new chat turns and agent jobs once today's (your `timezone`) known cost reaches the cap (a running task stops before its next model call; with no price, or a task of unknown cost today, it refuses rather than count $0); script and reminder jobs are unaffected. It is off by default.
 
 ### Web access and untrusted content
 

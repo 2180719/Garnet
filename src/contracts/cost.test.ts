@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { costOf, eventsCost, formatUsd, resolvePricing, sumCost } from './cost.ts';
+import { costOf, eventsCost, formatUsd, resolvePricing, startOfDayIso, sumCost } from './cost.ts';
 import type { SessionEvent } from './session.ts';
 import type { Usage } from './usage.ts';
 
@@ -16,7 +16,8 @@ test('unknown tokens or no pricing give null, never 0', () => {
   assert.equal(costOf(u(10, null), price), null);
   assert.equal(costOf(u(10, 10, null, 0), price), null, 'unreported cache tokens with a cache price');
   assert.equal(costOf(u(10, 10), undefined), null);
-  assert.equal(costOf(u(10, 10, 5, 0), { input: 1, output: 1 }), null, 'cache tokens without a cache price');
+  assert.equal(costOf(u(1_000_000, 0, 1_000_000, 1_000_000), { input: 1, output: 1 }), 1 + 0.1 + 1.25, 'missing cache prices derive from input (0.1x read, 1.25x write)');
+  assert.equal(costOf(u(1_000_000, 0, 1_000_000, 0), { input: 1, output: 1, cacheRead: 0.5 }), 1.5, 'a given cache price is kept');
   assert.equal(costOf(u(1_000_000, 0, null, null), { input: 1, output: 1 }), 1, 'unreported cache is fine when there is no cache price');
   assert.equal(sumCost([1, null]), null);
   assert.equal(sumCost([1, 2]), 3);
@@ -43,4 +44,12 @@ test('session cost sums model calls and is unknown if any call is', () => {
   const call = (usage: Usage): SessionEvent => ({ type: 'assistant_message', message: { role: 'assistant', content: [] }, stopReason: 'end_turn', usage, model: 'm', seq: 1, at: '' }) as unknown as SessionEvent;
   assert.equal(eventsCost([call(u(1_000_000, 0)), call(u(1_000_000, 0))], price), 8);
   assert.equal(eventsCost([call(u(1_000_000, 0)), call(u(null, null))], price), null);
+});
+
+test('startOfDayIso is local midnight in the given zone', () => {
+  const now = new Date('2026-10-06T03:30:00Z');
+  assert.equal(startOfDayIso('UTC', now), '2026-10-06T00:00:00.000Z');
+  assert.equal(startOfDayIso('America/Los_Angeles', now), '2026-10-05T07:00:00.000Z', 'still Oct 5 in LA (PDT)');
+  assert.equal(startOfDayIso('Asia/Tokyo', now), '2026-10-05T15:00:00.000Z');
+  assert.equal(startOfDayIso('Not/AZone', now), '2026-10-06T00:00:00.000Z', 'unknown zone falls back to UTC');
 });

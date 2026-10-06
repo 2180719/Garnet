@@ -3,7 +3,7 @@
 import { execFile } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
 import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
@@ -13,6 +13,22 @@ import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings
 import { defaultEntry, installedServices, legacyServices, resolveService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
+
+const isPathLike = (program: string): boolean => isAbsolute(program) || program.includes('/');
+
+/** Whether `program` can be run: a path (absolute or containing '/') is checked directly, a bare name is searched for on PATH. */
+export function programRunnable(program: string, pathEnv: string | undefined): boolean {
+  const can = (file: string): boolean => {
+    try {
+      accessSync(file, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (isPathLike(program)) return can(program);
+  return (pathEnv ?? '').split(delimiter).filter(Boolean).some((dir) => can(join(dir, program)));
+}
 
 export type Status = 'ok' | 'warn' | 'fail' | 'info';
 export type Finding = { area: string; status: Status; message: string; fix?: string };
@@ -188,17 +204,9 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       // Transcription checks
       if (med.transcription.backend === 'command' && med.transcription.command && med.transcription.command.length > 0) {
         const program = med.transcription.command[0]!;
-        const dirs = (d.env.PATH ?? '').split(delimiter).filter(Boolean);
-        const found = dirs.some((dir) => {
-          try {
-            accessSync(join(dir, program), constants.X_OK);
-            return true;
-          } catch {
-            return false;
-          }
-        });
+        const found = programRunnable(program, d.env.PATH);
         if (found) add('media', 'ok', `Transcription: local command ${program}`);
-        else add('media', 'fail', `Transcription command ${program} is not on PATH`, `Install ${program} or add its directory to PATH.`);
+        else add('media', 'fail', `Transcription command ${program} is not ${isPathLike(program) ? 'an executable file' : 'on PATH'}`, `Install ${program}${isPathLike(program) ? '' : ' or add its directory to PATH'}.`);
       } else if (med.transcription.backend === 'openai-compatible') {
         const keyName = med.transcription.apiKeyEnv ?? 'OPENAI_API_KEY';
         const loc = where(keyName);
@@ -211,17 +219,9 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       // PDF text extraction check
       if (med.pdfText.command && med.pdfText.command.length > 0) {
         const program = med.pdfText.command[0]!;
-        const dirs = (d.env.PATH ?? '').split(delimiter).filter(Boolean);
-        const found = dirs.some((dir) => {
-          try {
-            accessSync(join(dir, program), constants.X_OK);
-            return true;
-          } catch {
-            return false;
-          }
-        });
+        const found = programRunnable(program, d.env.PATH);
         if (found) add('media', 'ok', `PDF text extraction: ${program}`);
-        else add('media', 'fail', `PDF text extraction command ${program} is not on PATH`, `Install ${program} or add its directory to PATH.`);
+        else add('media', 'fail', `PDF text extraction command ${program} is not ${isPathLike(program) ? 'an executable file' : 'on PATH'}`, `Install ${program}${isPathLike(program) ? '' : ' or add its directory to PATH'}.`);
       }
     }
   }

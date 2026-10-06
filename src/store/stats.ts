@@ -59,16 +59,35 @@ export class StatsStore {
     return [...byDay.values()];
   }
 
-  /** Known cost of tasks started since `sinceIso` (unknown tasks are skipped, not counted as $0). Null with no pricing or no known task. */
+  /**
+   * Cost since `sinceIso`: `known` sums the records whose cost is known (null when none is), `unknown` counts
+   * finished model-calling tasks and spend records whose cost cannot be known (never counted as $0).
+   * Running tasks are in `known` when priced but never in `unknown` (their usage is still arriving).
+   * Counts task usage plus `model_spend` (compaction outside a task). Model calls still not counted:
+   * the media describer and transcription, which report no usage to the store.
+   */
+  costSince(sinceIso: string, pricing: Pricing | undefined): { known: number | null; unknown: number } {
+    let known: number | null = null;
+    let unknown = 0;
+    const add = (usage: string, settled: boolean) => {
+      const c = pricing ? costOf(JSON.parse(usage) as Usage, pricing) : null;
+      if (c === null) {
+        if (settled) unknown += 1;
+      } else known = (known ?? 0) + c;
+    };
+    for (const r of this.db.prepare('SELECT usage, ended_at FROM tasks WHERE started_at >= ? AND model_calls > 0').all(sinceIso) as { usage: string; ended_at: string | null }[]) add(r.usage, r.ended_at !== null);
+    for (const r of this.db.prepare('SELECT usage FROM model_spend WHERE at >= ?').all(sinceIso) as { usage: string }[]) add(r.usage, true);
+    return { known, unknown };
+  }
+
+  /** Known cost since `sinceIso` (unknown records are skipped, not counted as $0). Null with no pricing or no known record. */
   knownCostSince(sinceIso: string, pricing: Pricing | undefined): number | null {
-    if (!pricing) return null;
-    const rows = this.db.prepare('SELECT usage FROM tasks WHERE started_at >= ? AND model_calls > 0').all(sinceIso) as { usage: string }[];
-    let total: number | null = null;
-    for (const r of rows) {
-      const c = costOf(JSON.parse(r.usage) as Usage, pricing);
-      if (c !== null) total = (total ?? 0) + c;
-    }
-    return total;
+    return this.costSince(sinceIso, pricing).known;
+  }
+
+  /** Records model usage that belongs to no task (manual compaction). */
+  recordSpend(usage: Usage): void {
+    this.db.prepare('INSERT INTO model_spend (at, usage) VALUES (?, ?)').run(new Date().toISOString(), JSON.stringify(usage));
   }
 
   getMeta(key: string): string | undefined {

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
 import { loadConfig, redact, garnetHome, type Paths, type GarnetConfig } from './config/index.ts';
 import { assistantName, projectInstructionsSection } from './context/index.ts';
-import { errorMessage, formatUsd, GarnetError, resolvePricing, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
+import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
@@ -187,13 +187,20 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     : null;
   const pricing = resolvePricing(config.model.provider, config.model.name, config.model.pricing);
   const stats = new StatsStore(db);
-  /** The daily spending cap (budgets.dailyUsd): refuses new model-calling tasks once today's known cost reaches it. */
+  /**
+   * The daily spending cap (budgets.dailyUsd), for the owner's calendar day: refuses new model-calling
+   * tasks, and stops a running one before its next model call, once today's known cost reaches it.
+   * Fails safe: with no price, or a finished task whose cost cannot be known, it refuses rather than count $0.
+   */
   const refuse = (): string | null => {
     const cap = config.budgets.dailyUsd;
     if (cap === undefined) return null;
-    const spent = stats.knownCostSince(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`, pricing);
-    if (spent === null || spent < cap) return null;
-    return `Daily spending cap reached: ${formatUsd(spent)} spent today (UTC) of ${formatUsd(cap)} (budgets.dailyUsd). New model tasks are refused until 00:00 UTC; the owner can raise or remove the cap in config.json.`;
+    const tz = ownerTimeZone(config);
+    if (!pricing) return `Daily spending cap is set (${formatUsd(cap)}, budgets.dailyUsd) but the model has no known price, so spending cannot be measured. Set model.pricing in config.json (or remove the cap); model tasks are refused until then.`;
+    const { known, unknown } = stats.costSince(startOfDayIso(tz), pricing);
+    if (unknown > 0) return `Daily spending cap is set (${formatUsd(cap)}, budgets.dailyUsd) but ${unknown} model call record(s) today have an unknown cost (the provider did not report all token counts, or pricing is incomplete), so spending cannot be measured. Set model.pricing in config.json (or remove the cap); new model tasks are refused until tomorrow (${tz}).`;
+    if (known === null || known < cap) return null;
+    return `Daily spending cap reached: ${formatUsd(known)} spent today (${tz}) of ${formatUsd(cap)} (budgets.dailyUsd). Model tasks are refused until midnight ${tz}; the owner can raise or remove the cap in config.json.`;
   };
   /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
   const makeAgent = (policy: Policy, budget: Budget): Agent =>
@@ -204,6 +211,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       executor: new ToolExecutor({ registry, policy, approver, artifacts }),
       budget,
       refuse,
+      recordSpend: (usage) => stats.recordSpend(usage),
       workspace: paths.workspace,
       persona: config.persona,
       promptSections: (ns) => [projectInstructionsSection(paths.workspace), memory.snapshot(ns), skills.index(), importedArchiveSection(paths.workspace)],
@@ -486,7 +494,11 @@ export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { c
   if (jobs.length) {
     log('info', `Scheduler: ${jobs.filter((j) => j.enabled).length} of ${jobs.length} job(s) enabled (${garnet.timezone})${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
   }
-  if (config.budgets.dailyUsd !== undefined && !garnet.pricing) log('warn', 'budgets.dailyUsd is set but the model has no known price (set model.pricing), so the daily cap cannot take effect.');
+  if (config.budgets.dailyUsd !== undefined && !garnet.pricing) log('warn', 'budgets.dailyUsd is set but the model has no known price (set model.pricing): model tasks are refused until it is set.');
+  if (garnet.pricing) {
+    const derived = derivedCachePrices(garnet.pricing);
+    if (derived.length) log('warn', `model.pricing has no ${derived.join(' or ')}: derived from input (cache read 0.1x, cache write 1.25x, Anthropic's standard multipliers). Set them to your provider's prices for exact costs.`);
+  }
   for (const p of garnet.jobBook.problems()) log('warn', `job ${p.id} is not scheduled: ${p.problem}`);
   if (channels.length === 0 && !api) log('warn', 'No channels or API enabled; Garnet is idle. Enable one in config.json.');
   return {
