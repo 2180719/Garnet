@@ -10,6 +10,7 @@ import {
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
+import { AMBIGUOUS_STATUSES, mayHaveReachedServer } from './delivery.ts';
 
 export type SignalOptions = {
   /** signal-cli daemon base URL. Plain http is only allowed for loopback hosts. */
@@ -80,11 +81,14 @@ function isLoopbackHost(hostname: string): boolean {
 class SignalApiError extends Error {
   readonly status: number;
   readonly rpcCode: number | undefined;
-  constructor(status: number, message: string, rpcCode?: number) {
+  /** The request may have been carried out (timeout, reset, unreadable success response). */
+  readonly maybeDelivered: boolean;
+  constructor(status: number, message: string, rpcCode?: number, maybeDelivered = false) {
     super(message);
     this.name = 'SignalApiError';
     this.status = status;
     this.rpcCode = rpcCode;
+    this.maybeDelivered = maybeDelivered;
   }
 }
 
@@ -196,8 +200,10 @@ export class SignalChannel implements ChannelAdapter {
         externalIds.push(`${this.account}:${result?.timestamp ?? this.#rpcId}`);
         this.#lastSuccessAt = Date.now();
       } catch (e) {
-        const err = e instanceof SignalApiError ? e : new SignalApiError(0, errorMessage(e));
+        const err = e instanceof SignalApiError ? e : new SignalApiError(0, errorMessage(e), undefined, true);
         const partial = externalIds.length ? ` (after sending ${externalIds.length} of ${chunks.length} chunks)` : '';
+        // Resending after an ambiguous failure could duplicate the message; the gateway leaves it for the owner.
+        if (err.maybeDelivered) return { status: 'uncertain', error: `${err.message}${partial}` };
         let retryable = err.status === 0 || err.status === 429 || err.status >= 500;
         if (err.rpcCode !== undefined) retryable = /network|timed? ?out|connection|unavailable/i.test(err.message);
         if (/unregistered|not registered|invalid (number|recipient|group)|unknown group|not a member/i.test(err.message)) retryable = false;
@@ -340,18 +346,22 @@ export class SignalChannel implements ChannelAdapter {
         signal,
       });
     } catch (e) {
-      throw new SignalApiError(0, `Signal ${method} request failed: ${errorMessage(e)}`);
+      throw new SignalApiError(0, `Signal ${method} request failed: ${errorMessage(e)}`, undefined, mayHaveReachedServer(e));
     }
     let payload: { result?: unknown; error?: { code?: number; message?: string } } = {};
+    let readable = true;
     try {
       payload = (await res.json()) as typeof payload;
     } catch {
       // Non-JSON body: fall through to the status check.
+      readable = false;
     }
     if (payload.error) {
       throw new SignalApiError(res.ok ? 200 : res.status, `Signal ${method} failed: ${payload.error.message ?? 'unknown error'}`, payload.error.code ?? -1);
     }
-    if (!res.ok) throw new SignalApiError(res.status, `Signal ${method} failed with ${res.status}`);
+    if (!res.ok) throw new SignalApiError(res.status, `Signal ${method} failed with ${res.status}`, undefined, AMBIGUOUS_STATUSES.has(res.status));
+    // A success status whose body could not be read: the daemon may have sent the message.
+    if (!readable) throw new SignalApiError(res.status, `Signal ${method} returned an unreadable response`, undefined, true);
     return payload.result;
   }
 }
