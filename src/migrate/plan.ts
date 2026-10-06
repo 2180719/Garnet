@@ -109,14 +109,17 @@ function planOpenClaw(ctx: Ctx): void {
     try {
       const ws = makeScanner(inside);
       if (!ws.isDir(ws.root)) throw new Error('not a directory');
+      // A workspace that is the whole home or filesystem would archive far more than the agent's files.
+      if (ws.root === '/' || ws.root === makeScanner(homedir()).root) throw new Error('too broad');
       if (ws.root === sc.root || ws.root.startsWith(`${sc.root}/`)) content = ws.root;
       else {
         ctx.ws = ws;
         content = ws.root;
       }
       if (content !== join(sc.root, 'workspace')) plan.warnings.push(`Using the workspace from ${configured.why}: ${content}`);
-    } catch {
-      plan.warnings.push(`The workspace set by ${configured.why} (${configured.path}) was not found; reading ${content} instead. Use --from to point at the right place.`);
+    } catch (e) {
+      const why = (e as Error).message === 'too broad' ? 'is your whole home or filesystem, which is not imported' : 'was not found';
+      plan.warnings.push(`The workspace set by ${configured.why} (${configured.path}) ${why}; reading ${content} instead. Use --from to point at the right place.`);
     }
   }
   plan.contentDir = content;

@@ -372,6 +372,10 @@ test('a custom OpenClaw workspace (agents.defaults.workspace) is read and archiv
   const root2 = tempDir();
   put(root2, 'openclaw.json', '{ agents: { defaults: { workspace: "/nonexistent/ws" } } }');
   assert.ok(planImport('openclaw', root2, noBins).warnings.some((w) => /was not found/.test(w)));
+  // nor is a workspace that is the whole home directory
+  const root3 = tempDir();
+  put(root3, 'openclaw.json', '{ agents: { defaults: { workspace: "~" } } }');
+  assert.ok(planImport('openclaw', root3, noBins).warnings.some((w) => /whole home or filesystem/.test(w)));
 });
 
 // ---- memory caps ----
