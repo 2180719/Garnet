@@ -33,13 +33,16 @@ export class LaneQueue {
   }
 
   private async withSlot<T>(job: () => Promise<T>): Promise<T> {
+    // A finishing job hands its slot straight to the next waiter (`active` is
+    // unchanged), so a newcomer cannot take it in between and exceed the cap.
     if (this.active >= this.maxConcurrent) await new Promise<void>((r) => this.waiting.push(r));
-    this.active += 1;
+    else this.active += 1;
     try {
       return await job();
     } finally {
-      this.active -= 1;
-      this.waiting.shift()?.();
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active -= 1;
     }
   }
 }

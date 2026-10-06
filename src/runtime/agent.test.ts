@@ -137,6 +137,25 @@ test('lanes serialize per key and run different keys concurrently', async () => 
   assert.ok(log.indexOf('start b1') < log.indexOf('end a1'), 'different keys overlap');
 });
 
+test('lanes never exceed the global concurrency cap', async () => {
+  const lanes = new LaneQueue(2);
+  let active = 0;
+  let peak = 0;
+  const job = (ticks: number) => async () => {
+    active += 1;
+    peak = Math.max(peak, active);
+    for (let i = 0; i < ticks; i++) await null;
+    active -= 1;
+  };
+  const all: Promise<void>[] = [];
+  for (let i = 0; i < 200; i++) {
+    all.push(lanes.run(`k${i % 7}`, job(i % 5)));
+    if (i % 3 === 0) await null; // interleave new work with jobs finishing
+  }
+  await Promise.all(all);
+  assert.equal(peak, 2);
+});
+
 test('the system prompt is frozen per session and refreshed only by compaction', async () => {
   let memory = 'likes tea';
   const t = setup(
