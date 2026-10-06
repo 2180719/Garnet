@@ -1,4 +1,4 @@
-import type { Usage } from '../contracts/index.ts';
+import { costOf, sumCost, type Pricing, type Usage } from '../contracts/index.ts';
 import type { Db } from './db.ts';
 
 /** Read-only aggregate queries for the dashboard and achievements. */
@@ -35,15 +35,20 @@ export class StatsStore {
   }
 
   /** Tokens per UTC day for the last `days` days. */
-  usageByDay(days: number): { day: string; tasks: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; unknown: number }[] {
+  usageByDay(days: number, pricing?: Pricing): DayUsage[] {
     const since = new Date(Date.now() - days * 86_400_000).toISOString();
-    const rows = this.db.prepare('SELECT started_at, usage FROM tasks WHERE started_at > ? ORDER BY started_at').all(since) as { started_at: string; usage: string }[];
-    const byDay = new Map<string, { day: string; tasks: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; unknown: number }>();
+    const rows = this.db.prepare('SELECT started_at, usage, model_calls FROM tasks WHERE started_at > ? ORDER BY started_at').all(since) as { started_at: string; usage: string; model_calls: number }[];
+    const byDay = new Map<string, DayUsage>();
     for (const r of rows) {
       const day = r.started_at.slice(0, 10);
-      const d = byDay.get(day) ?? { day, tasks: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, unknown: 0 };
+      const d = byDay.get(day) ?? { day, tasks: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, unknown: 0, costUsd: null, costUnknownTasks: 0 };
       const u = JSON.parse(r.usage) as Usage;
       d.tasks += 1;
+      if (r.model_calls > 0) {
+        const c = costOf(u, pricing);
+        if (c === null) d.costUnknownTasks += 1;
+        else d.costUsd = (d.costUsd ?? 0) + c;
+      }
       if (u.inputTokens === null && u.outputTokens === null) d.unknown += 1;
       d.inputTokens += u.inputTokens ?? 0;
       d.outputTokens += u.outputTokens ?? 0;
@@ -52,6 +57,18 @@ export class StatsStore {
       byDay.set(day, d);
     }
     return [...byDay.values()];
+  }
+
+  /** Known cost of tasks started since `sinceIso` (unknown tasks are skipped, not counted as $0). Null with no pricing or no known task. */
+  knownCostSince(sinceIso: string, pricing: Pricing | undefined): number | null {
+    if (!pricing) return null;
+    const rows = this.db.prepare('SELECT usage FROM tasks WHERE started_at >= ? AND model_calls > 0').all(sinceIso) as { usage: string }[];
+    let total: number | null = null;
+    for (const r of rows) {
+      const c = costOf(JSON.parse(r.usage) as Usage, pricing);
+      if (c !== null) total = (total ?? 0) + c;
+    }
+    return total;
   }
 
   getMeta(key: string): string | undefined {
@@ -63,7 +80,7 @@ export class StatsStore {
   }
 
   /** Sessions, newest activity first, with the conversation they belong to and their tasks' status and token totals. */
-  sessionPage(opts: { limit: number; offset: number; q?: string }): { items: SessionSummary[]; total: number } {
+  sessionPage(opts: { limit: number; offset: number; q?: string; pricing?: Pricing | undefined }): { items: SessionSummary[]; total: number } {
     const conv = `COALESCE((SELECT MIN(key) FROM conversations WHERE session_id = s.id),
       (SELECT channel || ':' || account || ':' || chat_id FROM inbox WHERE session_id = s.id ORDER BY received_at DESC LIMIT 1))`;
     const args: string[] = [];
@@ -83,9 +100,9 @@ export class StatsStore {
          FROM sessions s ${where} ORDER BY s.updated_at DESC, s.id LIMIT ? OFFSET ?`,
       )
       .all(...args, opts.limit, opts.offset) as Record<string, string | number | null>[];
-    const tasks = this.db.prepare('SELECT status, usage FROM tasks WHERE session_id = ? ORDER BY started_at, rowid');
+    const tasks = this.db.prepare('SELECT status, usage, model_calls FROM tasks WHERE session_id = ? ORDER BY started_at, rowid');
     const items = rows.map((r): SessionSummary => {
-      const ts = tasks.all(r.id as string) as { status: string; usage: string }[];
+      const ts = tasks.all(r.id as string) as { status: string; usage: string; model_calls: number }[];
       const usage: Usage = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null };
       for (const t of ts) {
         const u = JSON.parse(t.usage) as Usage;
@@ -105,6 +122,7 @@ export class StatsStore {
         tasks: ts.length,
         taskStatus: ts.at(-1)?.status ?? null,
         usage,
+        costUsd: sumCost(ts.filter((t) => t.model_calls > 0).map((t) => costOf(JSON.parse(t.usage) as Usage, opts.pricing))),
       };
     });
     return { items, total };
@@ -125,6 +143,20 @@ export class StatsStore {
   }
 }
 
+export type DayUsage = {
+  day: string;
+  tasks: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  unknown: number;
+  /** Sum of the known task costs; null when none is known (no pricing, or no usage reported). */
+  costUsd: number | null;
+  /** Model-calling tasks whose cost is unknown, so `costUsd` is a lower bound when above 0. */
+  costUnknownTasks: number;
+};
+
 export type SessionSummary = {
   id: string;
   title: string | null;
@@ -140,5 +172,7 @@ export type SessionSummary = {
   tasks: number;
   taskStatus: string | null;
   usage: Usage;
+  /** USD for the session's tasks; null if unknown. */
+  costUsd: number | null;
 };
 export type FailureRow = { kind: 'task' | 'outbox'; id: string; status: string; at: string; detail: string | null; ref: string | null };

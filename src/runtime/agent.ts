@@ -57,6 +57,8 @@ export type AgentDeps = {
   compactAtTokens?: number;
   /** User turns kept verbatim after compaction. */
   keepTurns?: number;
+  /** Returns a message when new model-calling tasks must be refused (the daily spending cap); null otherwise. */
+  refuse?: () => string | null;
   maxOutputTokens: number;
   /** Transient provider failures retried per model call. */
   maxRetries?: number;
@@ -114,7 +116,8 @@ export class Agent {
     const emit = options.onEvent ?? (() => {});
     // A request cancelled while queued must not leave its message in history.
     const cancelledEarly = signal.aborted;
-    if (!cancelledEarly) {
+    const refused = cancelledEarly ? null : (this.deps.refuse?.() ?? null);
+    if (!cancelledEarly && !refused) {
       store.append(sessionId, {
         type: 'user_message',
         message: { role: 'user', content: typeof input === 'string' ? [{ type: 'text', text: input }] : input.map((b) => (b.type === 'attachment' ? withoutData(b) : b)) },
@@ -140,6 +143,7 @@ export class Agent {
     };
 
     if (cancelledEarly) return finish('cancelled', 'Cancelled by the owner.');
+    if (refused) return finish('budget_exhausted', refused);
     try {
       return await this.loop(sessionId, task, started, signal, emit, finish);
     } catch (e) {

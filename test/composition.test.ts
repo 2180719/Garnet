@@ -61,3 +61,21 @@ test('web tools follow net.fetch and the search backend; the owner policy carrie
     garnet.close();
   }
 });
+
+test('budgets.dailyUsd refuses new model tasks once today\'s known cost reaches the cap', async () => {
+  const home = join(tempDir(), 'garnet-home');
+  createGarnet({ home, memoryDb: true, noModel: true }).close();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 1 } }));
+  const garnet = createGarnet({ home, memoryDb: true, noModel: true });
+  try {
+    const session = garnet.store.createSession();
+    const spent = garnet.store.createTask(session.id, { inputTokens: 100_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    spent.modelCalls = 1;
+    garnet.store.updateTask(spent);
+    const task = await garnet.agent.run(session.id, 'hello');
+    assert.equal(task.status, 'budget_exhausted');
+    assert.match(task.reason ?? '', /Daily spending cap reached: \$1\.00 spent today/);
+  } finally {
+    garnet.close();
+  }
+});

@@ -437,3 +437,17 @@ test('a forwarded image or document taints the session; a voice note does not', 
   assert.ok(tainted[0]!.type === 'tainted' && tainted[0]!.source === 'file "scan.png" sent in chat');
   await t.gateway.stop(0);
 });
+
+test('/usage shows dollar cost when the model has a price', async () => {
+  const pricing = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
+  const t = setup([{ text: 'Hello.', usage: { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 } }], { gateway: { model: { id: 'fake:scripted', contextWindow: 200_000, pricing } } });
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('hi'));
+  await settle(t);
+  await t.channel.sink!(msg('/usage'));
+  await settle(t);
+  assert.match(t.channel.sent.at(-1)!.text, /cost: \$15\.00/);
+  assert.match(t.channel.sent.at(-1)!.text, /completed, cost \$15\.00/);
+  await t.gateway.stop(0);
+});

@@ -51,7 +51,7 @@ Small changes that remove the sharpest edges. About a week in total.
 | 2.7 | Session modes | S | Read-only/plan, normal, and auto-approve-within-scope per session |
 | 2.8 | Hooks | M | Owner scripts around tool calls and turns, run outside the process; they can only tighten permissions; every decision logged |
 | 2.9 | Email channel and connector presets | M | IMAP in, SMTP out; ready-made MCP configs for mail, calendar and drive |
-| 2.10 | Dollar cost per turn and budget caps | S–M | Cost is the top complaint about OpenClaw; Garnet has token usage already |
+| 2.10 | Dollar cost per turn and budget caps (done: `model.pricing`, `budgets.dailyUsd`) | S–M | Cost is the top complaint about OpenClaw; Garnet has token usage already |
 | 2.11 | Persona as workspace files with a larger budget | M | SOUL/AGENTS/USER files instead of one 4,000-character config string; OpenClaw's AGENTS template alone is 6.6k |
 | 2.12 | Load the workspace `AGENTS.md`; let skills read their `references/` and `scripts/` | S | Agent Skills and AGENTS.md compatibility |
 

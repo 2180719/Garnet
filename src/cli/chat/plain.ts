@@ -3,7 +3,7 @@
 // tool calls, status) goes to stderr, so stdout stays clean for scripts.
 
 import { createInterface } from 'node:readline';
-import { errorMessage, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
+import { costOf, errorMessage, formatUsd, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
 import type { Garnet } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
@@ -134,7 +134,7 @@ export class PlainChat {
       const task = await this.o.garnet.agent.run(this.sessionId, prepared.turn, { signal: this.current.signal, onEvent, source: 'cli' });
       if (wroteText) this.o.out('\n');
       const u = task.usage;
-      this.o.err(`  [${task.status}${task.reason ? `: ${sanitize(task.reason)}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens]\n\n`);
+      this.o.err(`  [${task.status}${task.reason ? `: ${sanitize(task.reason)}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens${task.modelCalls ? ` · ${formatUsd(costOf(u, this.o.garnet.pricing))}` : ''}]\n\n`);
     } catch (e) {
       // Like the interactive chat: report the error and keep the conversation going.
       if (wroteText) this.o.out('\n');

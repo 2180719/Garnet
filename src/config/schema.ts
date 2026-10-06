@@ -122,6 +122,15 @@ export const configSchema = z
           .boolean()
           .optional()
           .describe('The provider reads PDFs natively (document blocks). Default: on for anthropic, off for openai-compatible (OpenAI and OpenRouter accept them; most local servers do not).'),
+        pricing: z
+          .object({
+            input: z.number().min(0).describe('USD per million input tokens.'),
+            output: z.number().min(0).describe('USD per million output tokens.'),
+            cacheRead: z.number().min(0).optional().describe('USD per million cache-read tokens. Omit if the provider has no prompt cache; cache tokens then make the cost "?".'),
+            cacheWrite: z.number().min(0).optional().describe('USD per million cache-write tokens.'),
+          })
+          .optional()
+          .describe('USD per million tokens, to show dollar cost. Built in for current Anthropic models; set it for any other model. Without a price the cost shows "?", never $0.'),
       })
       .prefault({})
       .describe('Model used for interactive tasks.'),
@@ -131,6 +140,7 @@ export const configSchema = z
         maxTokens: z.number().int().positive().default(500_000).describe('Total tokens allowed per task.'),
         maxToolCalls: z.number().int().positive().default(50).describe('Tool calls allowed per task.'),
         maxWallMs: z.number().int().positive().default(15 * 60_000).describe('Wall-clock limit per task.'),
+        dailyUsd: z.number().positive().optional().describe('Daily spending cap in USD (UTC day). Once today\'s known cost reaches it, new chat turns and agent jobs are refused until tomorrow; script and reminder jobs are unaffected. Needs pricing (built in for current Anthropic models, or model.pricing). Off by default.'),
       })
       .prefault({})
       .describe('Per-task resource limits.'),

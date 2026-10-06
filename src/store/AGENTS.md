@@ -13,3 +13,4 @@ SQLite persistence through `node:sqlite` (WAL mode, foreign keys on).
 - Event sequence numbers are assigned inside a transaction; callers never choose them.
 - `inbox.attachments`/`inbox.unsupported` and `outbox.attachments` hold the JSON of the contract shapes (references, not bytes). `lastChatForSession` answers where a session's files go.
 - Must not: interpret event payloads beyond storing them, or call models or tools.
+- Cost: `costOf`/`resolvePricing` live in `src/contracts/cost.ts`; `StatsStore.usageByDay`/`sessionPage` take pricing and return `costUsd` (null = unknown).
