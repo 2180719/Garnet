@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Phase 6: hardening
+- Encrypted secret store: `ruby secrets list|set|rm|import-env|keygen`. `<RUBY_HOME>/secrets` is AES-256-GCM under a scrypt-derived key, unlocked by `RUBY_SECRETS_KEY_FILE` or `RUBY_SECRETS_PASSPHRASE`. Environment variables win over stored secrets; values come from stdin, never argv. Backups include the store, not its key.
+- Docker sandbox never runs as root. New `sandbox.user` (`uid:gid`, uid 0 refused); unset, it is the host uid, or the workspace owner when Ruby runs as root, else 65534:65534. Startup fails with a remedy if that user cannot write the workspace.
+- Dashboard: Sessions, Logs (API audit and failures) and Routing pages, with `/api/log/*`, `/api/routing`, and admin deletes for conversations and pairing codes.
+- Failure-injection tests for the gateway and channels, the agent runtime and the scheduler.
+- Channel `send` can now return `uncertain` (timeouts, resets, 502/504, unreadable success responses), and the gateway applies a send timeout (60 s). Uncertain sends are never resent. A scheduled job that pauses itself after repeated failures notifies the owner.
+- Security fixes:
+  - Workspace: a symlink (including a dangling one) can no longer escape the workspace; `write_file` re-checks the real parent at write time and refuses a symlink target.
+  - Thinking blocks recorded after a compaction checkpoint are kept; only earlier ones are stripped.
+  - Tool-argument repair no longer strips trailing commas inside strings.
+  - The admin API cannot change protected config fields (permissions, sandbox, model provider, base URL and key name, API host, port and proxy settings, demo origins, workspace, channel token names, Signal URL); edit `config.json` by hand for those.
+  - Ruby API keys are redacted in logs and output; session events shown in the dashboard are sanitized.
+  - The per-session tool set is frozen with the system prompt and the executor refuses tools outside it.
+  - With `trustProxy`, the rightmost `X-Forwarded-For` entry is used.
+  - The API audit log is pruned (90 days, 100k rows) and only authenticated requests are audited.
+  - Demo endpoint reserves its worst-case token cost before the model call, so concurrent requests cannot overspend the daily budget.
+  - Request bodies must arrive within 30 s (408 and close).
+- Fixes: cron day skips on spring-forward days, a repeated fall-back minute fires once (wildcard-hour jobs follow elapsed time), `/stop` cancels `chat()` tasks, the inbox backlog is dispatched in order before messages that arrive during channel start, and conflicts return 409.
+
 ### Phase 5–6
 - Dashboard: overview, chat, approvals, memory, skills (with proposal diffs), schedules, channels and pairing, API keys, usage, settings generated from the config schema with review-before-save, achievements and easter eggs. Static ES modules, no build, strict CSP.
 - Admin API for the dashboard (`/api/*`, read vs admin scopes), static serving with a strict CSP, `ruby dashboard` login links (key in the URL fragment).

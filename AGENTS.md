@@ -12,6 +12,8 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | `npm run ruby -- help` | All CLI commands. |
 | `npm run ruby -- start` | Run the service in the foreground (gateway, channels, API). |
 
+Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md](docs/LIVE-TESTING.md).
+
 ## Layout
 
 | Path | Owns |

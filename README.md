@@ -61,7 +61,7 @@ Ruby keeps its data in `~/.ruby` (override with `RUBY_HOME`). Tools can only tou
 npm run check    # lint + typecheck + tests (offline)
 ```
 
-Start with [AGENTS.md](AGENTS.md), the map of the codebase for humans and agents alike.
+Start with [AGENTS.md](AGENTS.md), the map of the codebase for humans and agents alike. To test a real deployment, see [docs/LIVE-TESTING.md](docs/LIVE-TESTING.md).
 
 ## License
 
