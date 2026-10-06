@@ -5,6 +5,7 @@ import type {
   ModelAdapter,
   ModelEvent,
   ModelRequest,
+  StopReason,
   Usage,
 } from '../contracts/index.ts';
 
@@ -12,7 +13,9 @@ export type FakeStep = {
   text?: string;
   toolCalls?: { name: string; input: unknown; id?: string }[];
   usage?: Partial<Usage>;
-  error?: { category: ErrorCategory; message: string };
+  /** Defaults to `tool_use` when the step has tool calls, else `end_turn`. */
+  stopReason?: StopReason;
+  error?: { category: ErrorCategory; message: string; retryAfterMs?: number };
 };
 
 export type FakeScript = (FakeStep | ((request: ModelRequest) => FakeStep))[];
@@ -64,7 +67,7 @@ export class FakeModel implements ModelAdapter {
       cacheWriteTokens: step.usage?.cacheWriteTokens ?? null,
     };
     const message: ChatMessage = { role: 'assistant', content };
-    yield { type: 'done', message, stopReason: step.toolCalls?.length ? 'tool_use' : 'end_turn', usage };
+    yield { type: 'done', message, stopReason: step.stopReason ?? (step.toolCalls?.length ? 'tool_use' : 'end_turn'), usage };
   }
 }
 
