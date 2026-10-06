@@ -114,16 +114,20 @@ export function planCompaction(events: SessionEvent[], keepTurns = 2): Compactio
   const userSeqs = events.filter((e) => e.type === 'user_message').map((e) => e.seq);
   if (userSeqs.length <= keepTurns) return null;
   const cutBefore = userSeqs[userSeqs.length - keepTurns]!;
-  const previous = events.filter((e) => e.type === 'checkpoint').at(-1);
-  if (previous?.type === 'checkpoint' && cutBefore - 1 <= previous.throughSeq) return null;
-  const head = events.filter((e) => e.seq < cutBefore);
+  const previous = events.findLast((e) => e.type === 'checkpoint');
+  if (previous && cutBefore - 1 <= previous.throughSeq) return null;
+  // The previous checkpoint is usually recorded after the cut (compaction runs
+  // once the task's user message is stored), but it still covers the turns
+  // before its throughSeq; without it they would be replayed in full.
+  const head = events.filter((e) => e.seq < cutBefore || e === previous);
   const messages = messagesFromEvents(head);
   appendUser(messages, [{ type: 'text', text: SUMMARY_PROMPT }]);
   return { throughSeq: cutBefore - 1, messages };
 }
 
+/** The text inside `<summary>` tags (or after an unclosed opening tag), else the whole text. */
 export function extractSummary(text: string): string {
-  const m = /<summary>([\s\S]*?)<\/summary>/.exec(text);
+  const m = /<summary>([\s\S]*?)(?:<\/summary>|$)/.exec(text);
   return (m ? m[1]! : text).trim();
 }
 
