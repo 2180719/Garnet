@@ -1,4 +1,4 @@
-export { planImport, defaultSourceDir, normalizeSkillName, selectFit, PERSONA_MAX, MEMORY_CAP_MAX } from './plan.ts';
+export { planImport, defaultSourceDir, normalizeSkillName, selectFit, validSenderId, PERSONA_MAX, MEMORY_CAP_MAX } from './plan.ts';
 export { applyImport, personaHasOwnText, splitPersona } from './apply.ts';
 export { importedArchiveSection, importedSources } from './archive.ts';
 export { formatPlan, formatResult } from './format.ts';

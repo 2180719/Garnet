@@ -31,7 +31,8 @@ Usage:
   ruby sessions             List recent sessions
   ruby start                Run the service (channels, gateway, API) in the foreground
   ruby pair list|approve <code>|revoke <channel> <id>
-                            Manage who may talk to Ruby
+  ruby pair add <telegram|discord|signal> <id> [--name <name>]
+                            Manage who may talk to Ruby (add: without a code)
   ruby api status|enable|disable
   ruby api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
   ruby api key list|revoke <id>
@@ -43,15 +44,18 @@ Usage:
                             Inspect and correct what Ruby remembers
   ruby skills list|show|proposal|accept|reject|archive|stale
                             Review skills Ruby has learned
-  ruby import <openclaw|hermes> [--from <dir>] [--apply]
-                            Bring memory, persona and skills over (dry run unless --apply)
+  ruby import <openclaw|hermes> [--from <dir>] [--apply] [--raise-caps] [--pairings]
+              [--persona keep|merge|replace] [--no-jobs]
+                            Bring memory, persona, skills, jobs (disabled) and
+                            allowlists over (dry run unless --apply)
   ruby secrets list|set <NAME>|rm <NAME>|import-env [NAME...] [--keep]|keygen <path>
                             Encrypted secret store (values from stdin, never argv)
   ruby backup [dir]         Copy the database, config, memory, skills, artifacts
                             and workspace
   ruby restore <dir>        Restore a backup (stop Ruby first)
-  ruby service install|uninstall|status|show
-                            Run Ruby as a background service (systemd/launchd)
+  ruby service install|uninstall|status|restart|show|list [--name <name>]
+                            Run Ruby as a background service (systemd/launchd);
+                            --name lets several RUBY_HOMEs run side by side
   ruby help                 Show this help
 
 Environment:

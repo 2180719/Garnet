@@ -10,7 +10,7 @@ import { CONFIG_VERSION, parseConfig, parseEnv, rubyHome, type RubyConfig } from
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
-import { defaultEntry, planService, serviceStatus, type CommandResult } from '../service/index.ts';
+import { defaultEntry, installedServices, resolveService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
 
@@ -162,14 +162,25 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
   }
 
   // Service
-  const plan = planService({ platform: d.platform, home: d.home, userHome: d.userHome, nodePath: process.execPath, entry: d.entry });
-  if ('unsupported' in plan) add('service', 'info', plan.unsupported);
-  else if (!existsSync(plan.path)) add('service', 'info', 'Background service not installed', 'Run `ruby service install` (or `ruby setup`) to keep Ruby running.');
+  // The service for THIS RUBY_HOME: an instance installed with --name is found by the home it runs.
+  const svc = { platform: d.platform, userHome: d.userHome };
+  const resolved = resolveService({ ...svc, home: d.home, nodePath: process.execPath, entry: d.entry });
+  if ('unsupported' in resolved) add('service', 'info', resolved.unsupported);
   else {
-    const status = await serviceStatus(plan, { run: d.run });
-    const stale = readFileSync(plan.path, 'utf8') !== plan.contents;
-    if (status.ok) add('service', stale ? 'warn' : 'ok', `Service running (${plan.path})${stale ? ', but its file is out of date (Ruby or Node moved?)' : ''}`, stale ? 'Run `ruby service install` to rewrite it.' : undefined);
-    else add('service', 'warn', `Service installed but not running (${plan.path})`, plan.platform === 'systemd' ? 'See `journalctl --user -u ruby -e`, then `systemctl --user restart ruby`.' : `See ${join(d.home, 'logs')}, then \`ruby service install\`.`);
+    const { plan, conflict } = resolved;
+    const name = /(?:ruby-|agent\.)([a-z0-9-]+)\.(?:service|plist)$/.exec(plan.path)?.[1];
+    const flag = name ? ` --name ${name}` : '';
+    const others = installedServices(svc).filter((s) => s.home !== d.home).length;
+    const alongside = others ? ` (${others} other Ruby instance${others > 1 ? 's' : ''} installed; \`ruby service list\`)` : '';
+    if (conflict || !existsSync(plan.path)) {
+      add('service', 'info', `Background service not installed for this RUBY_HOME${alongside}`, conflict ? 'Another RUBY_HOME uses the default service name: run `ruby service install --name <name>`.' : 'Run `ruby service install` (or `ruby setup`) to keep Ruby running.');
+    } else {
+      const status = await serviceStatus(plan, { run: d.run });
+      const stale = readFileSync(plan.path, 'utf8') !== plan.contents;
+      const unit = plan.path.split('/').pop()!;
+      if (status.ok) add('service', stale ? 'warn' : 'ok', `Service running (${plan.path})${stale ? ', but its file is out of date (Ruby or Node moved?)' : ''}${alongside}`, stale ? `Run \`ruby service install${flag}\` to rewrite it.` : undefined);
+      else add('service', 'warn', `Service installed but not running (${plan.path})`, plan.platform === 'systemd' ? `See \`journalctl --user -u ${unit} -e\`, then \`ruby service restart${flag}\`.` : `See ${join(d.home, 'logs')}, then \`ruby service install${flag}\`.`);
+    }
   }
   return out;
 }

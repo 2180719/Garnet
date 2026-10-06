@@ -270,6 +270,11 @@ export function validSender(channel: string, raw: string): boolean {
   return false;
 }
 
+/** The sender ID in the form Ruby's channel reports it, or null when it is not a valid one. */
+export function validSenderId(channel: string, raw: string): string | null {
+  return validSender(channel, raw.trim()) ? cleanSender(channel, raw.trim()) : null;
+}
+
 function addAllow(ctx: Ctx, channelRaw: string, raw: string, from: string, displayName: string | null = null): void {
   const channel = channelRaw.toLowerCase();
   const entry = raw.trim();
