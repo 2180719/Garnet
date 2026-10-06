@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { VirtualTerminal } from '../../../test/vt.ts';
 import type { SessionEvent, TaskRecord, ToolCallBlock, ToolResult } from '../../contracts/index.ts';
-import { approvalChoices, approvalRows, describeCall, footer, sessionTotals, toolDoneRows, transcriptRows, turnSummary } from './render.ts';
+import { COMMANDS } from './commands.ts';
+import { approvalChoices, approvalRows, describeCall, footer, sessionTotals, suggestionRows, toolDoneRows, transcriptRows, turnSummary } from './render.ts';
 import { Screen } from './screen.ts';
 import { displayWidth, stripAnsi } from './text.ts';
 import { makeTheme } from './theme.ts';
@@ -100,4 +101,12 @@ test('a live region taller than the terminal keeps its bottom rows', () => {
   assert.equal(stripAnsi(vt.text()), 'd\ne\nf\ng');
   screen.setLive(['x'], null);
   assert.equal(vt.text(), 'x');
+});
+
+test('command suggestions drop descriptions before names when narrow', () => {
+  const wide = suggestionRows(COMMANDS.slice(0, 2), plain, 80);
+  assert.match(wide[0]!, /^ {2}\/help\s+Show commands/);
+  const narrow = suggestionRows(COMMANDS, plain, 24);
+  assert.ok(narrow.every((r) => displayWidth(r) <= 24 && !r.includes('…')), narrow.join('\n'));
+  assert.ok(narrow.includes('  /resume <session-id>'));
 });

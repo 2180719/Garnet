@@ -14,10 +14,10 @@ import { KeyParser, type Key } from './keys.ts';
 import { MarkdownStream } from './markdown.ts';
 import {
   approvalChoices, approvalOutcome, approvalRows, assistantRows, banner, footer, hangingRows, sessionTotals, SPINNER,
-  toolDoneRows, toolRunningRow, transcriptRows, turnSummary, userBlock, type SessionTotals,
+  suggestionRows, toolDoneRows, toolRunningRow, transcriptRows, turnSummary, userBlock, type SessionTotals,
 } from './render.ts';
 import { Screen, type TerminalOut } from './screen.ts';
-import { displayWidth, formatDuration, padEnd, truncate, wrapText } from './text.ts';
+import { displayWidth, formatDuration, truncate, wrapText } from './text.ts';
 import type { Theme } from './theme.ts';
 
 export type TtyInput = NodeJS.ReadableStream & { isTTY?: boolean; setRawMode?: (mode: boolean) => unknown };
@@ -214,7 +214,7 @@ export class InteractiveChat {
       this.clearScreen();
       return this.render();
     }
-    if (k.ctrl && k.name === 'z' && process.platform !== 'win32') return this.suspend();
+    if (k.ctrl && k.name === 'z' && this.o.processHooks && process.platform !== 'win32') return this.suspend();
     if (k.name === 'tab' && !k.shift) {
       const c = complete(this.editor.text, (cmd) => (cmd === 'resume' ? this.o.ruby.store.listSessions(50).map((s) => s.id) : []));
       if (c.text !== this.editor.text) this.editor = { ...this.editor, text: c.text, cursor: c.text.length };
@@ -259,8 +259,10 @@ export class InteractiveChat {
   private suspend(): void {
     this.screen.release();
     this.leaveRawMode();
-    process.kill(process.pid, 'SIGTSTP');
-    // SIGCONT (installed with process hooks) restores raw mode and redraws.
+    // Stop the whole process group, as the terminal does for Ctrl+Z in cooked
+    // mode, so a parent such as `npm run` stops too and the shell takes over.
+    // SIGCONT (installed with the process hooks) restores raw mode and redraws.
+    process.kill(0, 'SIGTSTP');
   }
 
   // ── turns ────────────────────────────────────────────────────────────
@@ -515,9 +517,8 @@ export class InteractiveChat {
       const layout = layoutEditor(this.editor, w, `${r ? t.muted('›') : t.accent('›')} `, '  ', 2);
       cursor = { row: rows.length + layout.cursorRow, col: layout.cursorCol };
       rows.push(...layout.rows);
-      for (const c of matchingCommands(this.editor.text).slice(0, 8)) {
-        rows.push(truncate(`  ${t.accent(padEnd(`/${c.name}${c.args ? ` ${c.args}` : ''}`, 22))}${t.muted(c.description)}`, w));
-      }
+      const matches = matchingCommands(this.editor.text);
+      if (matches.length) rows.push(...suggestionRows(matches.slice(0, 10), t, w));
     }
     const notice = this.notice && this.notice.until > Date.now() ? this.notice.text : undefined;
     rows.push(footer({ model: this.o.ruby.model.id, sessionId: this.sessionId, totals: this.totals, contextWindow: this.o.ruby.model.capabilities.contextWindow, notice }, t, w));

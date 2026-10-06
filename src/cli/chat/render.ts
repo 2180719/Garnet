@@ -188,8 +188,17 @@ export function footer(info: FooterInfo, theme: Theme, width: number): string {
 /** `lead` then `text` wrapped so continuation rows align under the text. */
 export function hangingRows(lead: string, text: string, width: number): string[] {
   const indent = displayWidth(lead);
-  if (width - indent < 16) return wrapText(lead + text, width);
+  if (width - indent < 8) return wrapText(lead + text, width);
   return prefixRows(wrapText(text, width - indent), lead, ' '.repeat(indent));
+}
+
+/** The command palette under the input while a /command is being typed. */
+export function suggestionRows(commands: readonly SlashCommand[], theme: Theme, width: number): string[] {
+  const usage = (c: SlashCommand) => `/${c.name}${c.args ? ` ${c.args}` : ''}`;
+  const col = Math.max(...commands.map((c) => usage(c).length)) + 2;
+  return commands.map((c) =>
+    width - 2 - col >= 12 ? truncate(`  ${theme.accent(padEnd(usage(c), col))}${theme.muted(c.description)}`, width) : truncate(`  ${theme.accent(usage(c))}`, width),
+  );
 }
 
 export function helpRows(theme: Theme, width: number): string[] {

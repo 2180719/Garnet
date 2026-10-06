@@ -23,11 +23,11 @@ Use ruby red for identity, selection, and primary action. Reserve green, amber, 
 - The site uses large type and generous space. The dashboard uses the same palette, headings, rules, and controls at a denser scale.
 - Use the existing faceted gem for the icon. In terminals, `◆ RUBY` is the compact signature.
 
-## Terminal and future TUI
+## Terminal
 
-The existing CLI adds its ruby signature and colored speaker labels only on an interactive terminal. Respect `NO_COLOR` and `TERM=dumb`; piped output stays plain. Never decorate machine-readable output.
+`ruby chat` adds its ruby signature, colored speaker marks (`›` for the owner, `◆` for Ruby) and thin rules only on an interactive terminal. Respect `NO_COLOR` and `TERM=dumb`; piped output stays plain. Never decorate machine-readable output.
 
-A future full-screen TUI should use the same charcoal/ruby palette, a narrow numbered navigation rail, thin box rules, and explicit text for every status. Color must never be the only indicator. There is no full-screen TUI today.
+The chat is an inline TUI, not a full-screen one: finished output goes to the terminal's own scrollback, and only the bottom rows (streaming text, spinner, input, footer) are redrawn. It uses the dark palette (accent, secondary text, rule) with green, amber and red reserved for states, and spells out every status in words or distinct symbols. Color is never the only indicator.
 
 ## Interaction
 
@@ -35,4 +35,4 @@ Visible keyboard focus, native buttons and links, readable contrast, and reduced
 
 ## Implementation
 
-`site/styles.css` and `dashboard/styles.css` carry matching tokens in their standalone bundles. Keep them synchronized: the dashboard's strict CSP and independent static serving do not allow a remote stylesheet dependency. CLI identity lives in `src/cli/main.ts`.
+`site/styles.css` and `dashboard/styles.css` carry matching tokens in their standalone bundles. Keep them synchronized: the dashboard's strict CSP and independent static serving do not allow a remote stylesheet dependency. Terminal styling lives in `src/cli/chat/theme.ts` and `src/cli/chat/render.ts`.

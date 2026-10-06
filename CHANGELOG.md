@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Terminal chat
+- `ruby chat` is now a real terminal UI, still with no dependencies: replies stream in as rendered markdown (headings, emphasis, inline code, lists, quotes, framed code blocks, aligned tables), tool calls show as compact rows with a live spinner, a status in words (`✓`, `✗ denied`, `✗ failed (timeout)`) and a 3-line output preview (`/expand` shows all of it), and each turn ends with its time, tool calls and token usage (unknown shown as `?`).
+- Inline approvals: `y` once, `a` always for the rest of this chat (for commands, only the identical command), `n` deny. The full operation is printed first.
+- Input: a multi-line editor (Shift+Enter, Alt+Enter, Ctrl+J or a trailing `\`), bracketed paste, Unicode-aware editing, readline-style keys, and history saved in `<RUBY_HOME>/chat_history.jsonl` (mode 0600; start a message with a space to keep it out). Messages typed while Ruby works are queued.
+- Esc or Ctrl+C interrupts the running turn without leaving; Ctrl+C twice or Ctrl+D on an empty line exits; Ctrl+Z suspends.
+- Slash commands with suggestions and Tab completion: `/help`, `/new`, `/sessions`, `/resume <id>`, `/model`, `/usage`, `/compact`, `/expand [n]`, `/clear`, `/exit`. `--session` and `/resume` show the recent turns of the session.
+- A footer shows the model, session, context use and session tokens. Narrow terminals and resizes are handled (a narrower window is redrawn cleanly); `NO_COLOR` and `TERM=dumb` are respected.
+- Without a terminal (pipes) or with `--plain`, chat is line-based: replies on stdout, everything else on stderr, no escape sequences.
+- Runtime: `Agent.compact(sessionId)` compacts on request.
+
 ### Phase 6: hardening
 - Encrypted secret store: `ruby secrets list|set|rm|import-env|keygen`. `<RUBY_HOME>/secrets` is AES-256-GCM under a scrypt-derived key, unlocked by `RUBY_SECRETS_KEY_FILE` or `RUBY_SECRETS_PASSPHRASE`. Environment variables win over stored secrets; values come from stdin, never argv. Backups include the store, not its key.
 - Docker sandbox never runs as root. New `sandbox.user` (`uid:gid`, uid 0 refused); unset, it is the host uid, or the workspace owner when Ruby runs as root, else 65534:65534. Startup fails with a remedy if that user cannot write the workspace.
