@@ -5,13 +5,14 @@ import { test } from 'node:test';
 import { tempDir } from '../../../test/helpers.ts';
 import { defaultConfig } from '../../config/index.ts';
 import { Policy, type ApprovalRequest } from '../../policy/index.ts';
-import { LocalSandbox, type RunRequest, type RunResult, type Sandbox } from '../../sandbox/index.ts';
+import { DockerSandbox, LocalSandbox, type RunRequest, type RunResult, type Sandbox } from '../../sandbox/index.ts';
 import { ToolExecutor, ToolRegistry } from '../index.ts';
 import { execTool, formatResult } from './exec.ts';
 
 class FakeSandbox implements Sandbox {
   readonly kind = 'docker' as const;
   readonly isolated = true;
+  networked = false;
   readonly workspace: string;
   runs: RunRequest[] = [];
   checks = 0;
@@ -143,4 +144,28 @@ test('run_command works end to end with the local backend and says it is not san
   const r = await call({ command: 'echo ok; exit 2', cwd: 'proj' });
   assert.equal(r.status, 'ok');
   assert.equal(r.content, 'exit code 2\n[ran on the host: not sandboxed]\n--- stdout ---\nok\n--- stderr ---\n(empty)');
+});
+
+test('run_command output is untrusted when the sandbox has network access, trusted when isolated without it', async () => {
+  const isolated = setup({ exec: 'allow' });
+  const clean = await isolated.call({ command: 'echo hi' });
+  assert.equal(clean.status, 'ok');
+  assert.equal(clean.untrusted, undefined, 'isolated with no network stays trusted');
+
+  const networked = setup({ exec: 'allow' });
+  (networked.sandbox as FakeSandbox).networked = true;
+  const r = await networked.call({ command: 'curl https://example.com' });
+  assert.equal(r.status, 'ok');
+  assert.equal(r.untrusted?.source, 'command with network access');
+  (networked.sandbox as FakeSandbox).result = { exitCode: null, timedOut: true };
+  const t = await networked.call({ command: 'curl slow', timeout_seconds: 1 });
+  assert.equal(t.status === 'error' && t.category, 'timeout');
+  assert.equal(t.untrusted?.source, 'command with network access', 'a failed run is still marked');
+});
+
+test('the local backend is always networked; docker is networked unless network is none', () => {
+  const ws = tempDir();
+  assert.equal(new LocalSandbox({ workspace: ws }).networked, true);
+  assert.equal(new DockerSandbox({ workspace: ws }).networked, false);
+  assert.equal(new DockerSandbox({ workspace: ws, network: 'bridge' }).networked, true);
 });

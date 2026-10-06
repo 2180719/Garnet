@@ -26,6 +26,7 @@ export type LocalSandboxOptions = {
 export class LocalSandbox implements Sandbox {
   readonly kind = 'local' as const;
   readonly isolated = false;
+  readonly networked = true;
   readonly workspace: string;
   private readonly maxOutputBytes: number;
   private readonly spawn: SpawnFn;
