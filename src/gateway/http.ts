@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { z } from 'zod';
 import { errorMessage, isRubyError, newId, RubyError, type TaskRecord } from '../contracts/index.ts';
 import type { KeyStore, SessionStore } from '../store/index.ts';
-import type { Gateway } from './gateway.ts';
+import type { ChatResult, Gateway } from './gateway.ts';
 import { RateLimiter, type ApiKeys, type Scope } from './keys.ts';
 import { adminRoutes, type AdminBackend, type AdminRoute } from './admin.ts';
 import type { DemoChat } from './demo.ts';
@@ -15,6 +16,12 @@ const AUDIT_RETENTION_MS = 90 * 86_400_000;
 const AUDIT_MAX_ROWS = 100_000;
 const AUDIT_PRUNE_EVERY_MS = 3_600_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
+/** SSE comment interval while a streamed task runs, so proxies and clients do not cut an idle stream. */
+const KEEPALIVE_MS = 15_000;
+/** Paths a browser app on an allowed origin may call (`api.corsOrigins`). */
+const CORS_PATHS = new Set(['/v1/chat/completions', '/v1/models']);
+/** Earlier client messages replayed into a conversation Ruby has not seen, newest kept. */
+const MAX_REPLAY_CHARS = 12_000;
 
 export type ApiServerDeps = {
   gateway: Gateway;
@@ -39,6 +46,10 @@ export type ApiServerDeps = {
   bodyTimeoutMs?: number;
   /** Body cap for /v1/chat/completions, which may carry images as data URLs. Default 1 MB (no files). */
   maxChatBodyBytes?: number;
+  /** Browser origins allowed to call the OpenAI-compatible routes. Empty: no CORS headers. */
+  corsOrigins?: string[];
+  /** SSE keepalive interval (default 15 s). */
+  keepaliveMs?: number;
 };
 
 type Ctx = { req: IncomingMessage; res: ServerResponse; url: URL; keyId: string | null; scopes: string[]; ip: string | null; authAttempted: boolean };
@@ -53,14 +64,19 @@ class HttpError extends Error {
   }
 }
 
-const textPart = z.object({ type: z.literal('text'), text: z.string() });
+// Clients send history with `content: null` (assistant turns that carried tool calls) and
+// content-part arrays. In the newest message, image_url and file parts (data URLs) become
+// attachments (see filePart); earlier messages contribute only their text.
+const contentPart = z.object({ type: z.string() }).loose();
 const chatBody = z.object({
   model: z.string().optional(),
   messages: z
-    .array(z.object({ role: z.string(), content: z.union([z.string(), z.array(z.union([textPart, z.object({ type: z.string() }).loose()]))]) }))
+    .array(z.object({ role: z.string(), content: z.union([z.string(), z.array(contentPart), z.null()]).optional() }).loose())
     .min(1),
   stream: z.boolean().optional(),
+  user: z.string().max(256).optional(),
 });
+type ChatMessageIn = z.infer<typeof chatBody>['messages'][number];
 
 /**
  * The opt-in HTTP API: an OpenAI-compatible chat endpoint plus a small native
@@ -124,6 +140,7 @@ export class ApiServer {
     try {
       if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, { status: 'ok', version: this.deps.version });
       if (this.deps.demo && (await this.deps.demo.handle(req, res, url.pathname, ctx.ip ?? 'unknown', readBody))) return;
+      if (this.cors(req, res, url.pathname)) return;
       if (!url.pathname.startsWith('/v1/') && !url.pathname.startsWith('/api/')) {
         if (this.deps.fallback?.(req, res)) return;
         throw new HttpError(404, 'Not found.');
@@ -151,6 +168,28 @@ export class ApiServer {
     } finally {
       this.audit(ctx);
     }
+  }
+
+  /**
+   * Opt-in CORS for browser chat apps: only listed origins, only the
+   * OpenAI-compatible routes. Answers the preflight (returns true); the
+   * actual request still needs a valid key.
+   */
+  private cors(req: IncomingMessage, res: ServerResponse, path: string): boolean {
+    const allowed = this.deps.corsOrigins ?? [];
+    if (allowed.length === 0 || !CORS_PATHS.has(path)) return false;
+    res.setHeader('Vary', 'Origin');
+    const origin = req.headers.origin;
+    if (typeof origin !== 'string' || !allowed.some((o) => o.replace(/\/+$/, '') === origin)) return false;
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    if (req.method !== 'OPTIONS') return false;
+    res.writeHead(204, {
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Ruby-Conversation, X-OpenWebUI-Chat-Id',
+      'Access-Control-Max-Age': '600',
+    });
+    res.end();
+    return true;
   }
 
   /**
@@ -249,58 +288,72 @@ export class ApiServer {
     const { req, res } = ctx;
     const parsed = chatBody.safeParse(await readBody(Math.max(MAX_BODY, this.deps.maxChatBodyBytes ?? MAX_BODY)));
     if (!parsed.success) throw new HttpError(400, `Invalid request: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
-    const last = parsed.data.messages.at(-1)!;
+    const { messages, stream } = parsed.data;
+    const last = messages.at(-1)!;
     if (last.role !== 'user') throw new HttpError(400, 'The last message must have role "user".');
-    const text = typeof last.content === 'string' ? last.content : last.content.flatMap((p) => (p.type === 'text' && 'text' in p ? [String(p.text)] : [])).join('\n');
-    const files = typeof last.content === 'string' ? [] : last.content.flatMap((p) => filePart(p));
+    const text = contentText(last.content);
+    const files = Array.isArray(last.content) ? last.content.flatMap((p) => filePart(p)) : [];
     if (!text.trim() && files.length === 0) throw new HttpError(400, 'The last user message has no text.');
-    // Ruby keeps conversation state server-side: only the newest user message is used.
-    const conversation = String(req.headers['x-ruby-conversation'] ?? 'default');
-    if (!/^[a-z0-9-]{1,40}$/.test(conversation)) throw new HttpError(400, 'X-Ruby-Conversation must match [a-z0-9-]{1,40}.');
 
+    const id = `chatcmpl-${newId('r')}`;
+    const created = Math.floor(Date.now() / 1000);
     const abort = new AbortController();
     res.on('close', () => {
       if (!res.writableFinished) abort.abort();
     });
-    const id = `chatcmpl-${newId('r')}`;
-    const created = Math.floor(Date.now() / 1000);
-    const key = `api:${ctx.keyId}:${conversation}`;
-    const input = files.length ? { text, files } : text;
 
-    if (parsed.data.stream) {
+    // Open WebUI's background tasks (titles, tags, follow-ups...) are answered here, cheaply:
+    // they must not become agent turns with tools and memory, nor land in the conversation.
+    const task = clientTask(text);
+    if (task !== null) return this.reply(res, { id, created, stream: stream === true, text: task });
+
+    const { conversation, derived } = conversationFor(req, ctx.keyId ?? '', parsed.data.user, messages);
+    const key = `api:${ctx.keyId}:${conversation}`;
+    // A stateless client's chat that Ruby has not seen (it began elsewhere, or its first message was
+    // edited): replay the earlier messages once so the answer has their context.
+    const turnText = derived && !this.deps.gateway.hasConversation(key) ? withReplay(messages.slice(0, -1), text) : text;
+    const input = files.length ? { text: turnText, files } : turnText;
+    const approval = /^\/(approve|deny)\s+([A-Za-z0-9]{4,12})\s*$/i.exec(text.trim());
+    const run = (onEvent?: (e: { type: string; text?: string }) => void): Promise<ChatResult | { text: string }> => {
+      const options = { signal: abort.signal, source: 'api', ...(onEvent ? { onEvent } : {}) };
+      // Approvals work in API chats like in any other chat, for approvals raised in this conversation.
+      if (approval) return this.deps.gateway.approveInConversation(key, approval[2]!, approval[1]!.toLowerCase() === 'approve' ? 'approved' : 'denied', options);
+      return this.deps.gateway.chat(key, input, options);
+    };
+
+    if (stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
       const chunk = (delta: object, finish: string | null = null) =>
         res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'ruby', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
       chunk({ role: 'assistant' });
+      // Comment lines keep reverse proxies and clients from timing out during long tool runs.
+      const keepalive = setInterval(() => res.write(': keepalive\n\n'), this.deps.keepaliveMs ?? KEEPALIVE_MS);
       let streamed = false;
-      let result: Awaited<ReturnType<Gateway['chat']>>;
+      let result: ChatResult | { text: string };
       try {
-        result = await this.deps.gateway.chat(key, input, {
-          signal: abort.signal,
-          source: 'api',
-          onEvent: (e) => {
-            if (e.type === 'text') {
-              streamed = true;
-              chunk({ content: e.text });
-            }
-          },
+        result = await run((e) => {
+          if (e.type === 'text' && e.text) {
+            streamed = true;
+            chunk({ content: e.text });
+          }
         });
       } catch (e) {
         // Headers are out: an attachment nobody can read (e.g. an image for a text-only model) is answered in the stream.
         if (!isRubyError(e, 'invalid_input') || streamed) throw e;
-        chunk({ content: errorMessage(e) });
-        chunk({}, 'stop');
-        res.end('data: [DONE]\n\n');
-        return;
+        result = { text: errorMessage(e) };
+      } finally {
+        clearInterval(keepalive);
       }
+      const done = 'task' in result ? result.task : null;
       // Status notes (approval needed, stopped early) are not part of the streamed text.
-      if (!streamed || result.task.status !== 'completed') chunk({ content: streamed ? `\n\n${statusNote(result.task)}` : result.text });
-      chunk({}, finishReason(result.task));
+      if (!streamed || (done && done.status !== 'completed')) chunk({ content: streamed && done ? `\n\n${statusNote(done)}` : result.text });
+      chunk({}, done ? finishReason(done) : 'stop');
       res.end('data: [DONE]\n\n');
       return;
     }
 
-    const result = await this.deps.gateway.chat(key, input, { signal: abort.signal, source: 'api' });
+    const result = await run();
+    if (!('task' in result)) return this.reply(res, { id, created, stream: false, text: result.text });
     const u = result.task.usage;
     const prompt = (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
     send(res, 200, {
@@ -313,6 +366,106 @@ export class ApiServer {
       ruby: { task_id: result.task.id, session_id: result.sessionId, status: result.task.status },
     });
   }
+
+  /** A reply that did not run a task (client tasks, approval errors): no model was called. */
+  private reply(res: ServerResponse, r: { id: string; created: number; stream: boolean; text: string }): void {
+    if (r.stream) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
+      const chunk = (delta: object, finish: string | null = null) =>
+        res.write(`data: ${JSON.stringify({ id: r.id, object: 'chat.completion.chunk', created: r.created, model: 'ruby', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+      chunk({ role: 'assistant', content: r.text });
+      chunk({}, 'stop');
+      res.end('data: [DONE]\n\n');
+      return;
+    }
+    send(res, 200, {
+      id: r.id,
+      object: 'chat.completion',
+      created: r.created,
+      model: 'ruby',
+      choices: [{ index: 0, message: { role: 'assistant', content: r.text }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+  }
+}
+
+/** Text parts of an OpenAI message's content, joined by newlines. Other parts (images, files) are ignored. */
+function contentText(content: ChatMessageIn['content']): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.flatMap((p) => (p.type === 'text' && typeof p.text === 'string' ? [p.text] : [])).join('\n');
+}
+
+const shortHash = (...parts: string[]) => createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 20);
+
+/**
+ * Which server-side conversation a request continues. In order:
+ * 1. `X-Ruby-Conversation` (Ruby-aware clients, the dashboard): used as is.
+ * 2. `X-OpenWebUI-Chat-Id` (Open WebUI with ENABLE_FORWARD_USER_INFO_HEADERS): one conversation per chat.
+ * 3. Otherwise the client is assumed to resend the whole chat each time (Open WebUI, LibreChat
+ *    and most OpenAI frontends do): the conversation is a hash of the key, the `user` field and
+ *    the chat's first user message, which stays the same for every turn of that chat.
+ * `user` only scopes the hash: it names a person, not a chat, so keying on it alone would merge
+ * every chat of that person. A client that sends only its newest message must name the
+ * conversation with `X-Ruby-Conversation`, or each message starts a new one.
+ */
+export function conversationFor(
+  req: IncomingMessage,
+  keyId: string,
+  user: string | undefined,
+  messages: ChatMessageIn[],
+): { conversation: string; derived: boolean } {
+  const named = req.headers['x-ruby-conversation'];
+  if (named !== undefined) {
+    const name = String(named);
+    if (!/^[a-z0-9-]{1,40}$/.test(name)) throw new HttpError(400, 'X-Ruby-Conversation must match [a-z0-9-]{1,40}.');
+    return { conversation: name, derived: false };
+  }
+  const chatId = String(req.headers['x-openwebui-chat-id'] ?? '').trim();
+  // Open WebUI's temporary chats have no stable id ("local:..."); they fall through to the hash.
+  if (chatId && !chatId.startsWith('local')) return { conversation: `owui-${shortHash(keyId, chatId)}`, derived: true };
+  const first = messages.find((m) => m.role === 'user');
+  return { conversation: `chat-${shortHash(keyId, user ?? '', contentText(first?.content ?? ''))}`, derived: true };
+}
+
+/** Prefixes the newest message with the client's earlier messages (newest kept within the cap). */
+function withReplay(earlier: ChatMessageIn[], text: string): string {
+  const lines = earlier
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({ who: m.role === 'user' ? 'Owner' : 'Assistant', text: contentText(m.content).trim() }))
+    .filter((m) => m.text)
+    .map((m) => `${m.who}: ${m.text}`);
+  if (lines.length === 0) return text;
+  let transcript = lines.join('\n\n');
+  if (transcript.length > MAX_REPLAY_CHARS) transcript = `[…]\n${transcript.slice(-MAX_REPLAY_CHARS)}`;
+  return `[Earlier messages in this chat, sent by the client app. You had not seen them before:]\n${transcript}\n[End of earlier messages.]\n\n${text}`;
+}
+
+/**
+ * Detects Open WebUI's background task prompts (title, tags, follow-ups,
+ * search queries, image prompt, autocomplete). Its default templates begin
+ * with "### Task:" and embed the chat in <chat_history>. Returns the cheap
+ * answer in the JSON shape the template asks for, or null for a normal message.
+ */
+export function clientTask(text: string): string | null {
+  const t = text.trimStart();
+  if (!/^###\s*Task:/i.test(t) || !t.includes('<chat_history>')) return null;
+  if (t.includes('"follow_ups"')) return JSON.stringify({ follow_ups: [] });
+  if (t.includes('"tags"')) return JSON.stringify({ tags: ['General'] });
+  if (t.includes('"queries"')) return JSON.stringify({ queries: [] });
+  if (t.includes('"title"')) return JSON.stringify({ title: titleFrom(t) });
+  if (t.includes('"prompt"')) return JSON.stringify({ prompt: '' });
+  if (t.includes('"text"')) return JSON.stringify({ text: '' });
+  return '{}';
+}
+
+/** A short title from the chat history's last user line (Open WebUI renders history as "USER: ..." lines). */
+function titleFrom(prompt: string): string {
+  const history = /<chat_history>([\s\S]*?)<\/chat_history>/.exec(prompt)?.[1] ?? '';
+  const userLines = history.split('\n').filter((l) => /^USER:/.test(l));
+  const words = (userLines.at(0) ?? '').replace(/^USER:\s*/, '').replace(/[^\p{L}\p{N}\s'-]/gu, ' ').split(/\s+/).filter(Boolean);
+  const title = words.slice(0, 5).join(' ');
+  return title ? title.charAt(0).toUpperCase() + title.slice(1) : 'New chat';
 }
 
 /** An integer query parameter within [min, max]; 400 otherwise (NaN or a negative LIMIT would reach SQLite). */

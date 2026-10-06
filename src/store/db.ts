@@ -163,7 +163,6 @@ const MIGRATIONS: string[] = [
   `,
   `
   ALTER TABLE inbox ADD COLUMN attachments TEXT;
-  ALTER TABLE inbox ADD COLUMN unsupported TEXT;
   ALTER TABLE outbox ADD COLUMN attachments TEXT;
   CREATE INDEX inbox_by_session ON inbox(session_id);
   `,

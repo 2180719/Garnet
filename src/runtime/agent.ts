@@ -25,6 +25,7 @@ import {
 import { extractSummary, frozenContext, messagesFromEvents, planCompaction, prepareAttachments, systemPrompt, type FrozenContext } from '../context/index.ts';
 import type { SessionStore } from '../store/index.ts';
 import type { ToolExecutor, ToolRegistry } from '../tools/index.ts';
+import { sessionTaint } from './taint.ts';
 
 /** Live progress for interactive surfaces. The event log remains the record. */
 export type RuntimeEvent =
@@ -33,6 +34,8 @@ export type RuntimeEvent =
   | { type: 'tool_end'; call: ToolCallBlock; result: ToolResult }
   | { type: 'retry'; attempt: number; delayMs: number; message: string }
   | { type: 'compacting' }
+  /** Untrusted content entered the context from `source`; `sources` is the session's full list. */
+  | { type: 'tainted'; source: string; sources: readonly string[] }
   | { type: 'status'; status: TaskStatus; reason: string | null };
 
 export type AgentDeps = {
@@ -62,6 +65,11 @@ export type AgentDeps = {
   loadAttachment?: (ref: AttachmentRef) => Uint8Array | null;
   /** Most images/PDFs sent as bytes per request; older ones become placeholders. Default 8. */
   maxAttachmentsInContext?: number;
+  /**
+   * The owner's IANA time zone. When set, each user message is shown to the
+   * model with its send time (derived from the event log, not the system prompt).
+   */
+  timeZone?: string;
 };
 
 export type CompactionOutcome = {
@@ -75,6 +83,14 @@ export type RunOptions = {
   signal?: AbortSignal;
   onEvent?: (event: RuntimeEvent) => void;
   source?: string;
+  /**
+   * Taint carried in with this task: the sources a parent session had read
+   * (a subagent started by a tainted session) or an untrusted trigger
+   * payload. Recorded as inherited `tainted` events right after the user
+   * message, so the session is tainted before its first tool call and URLs in
+   * that message do not count as the owner's.
+   */
+  taint?: readonly string[];
 };
 
 /**
@@ -104,6 +120,11 @@ export class Agent {
         message: { role: 'user', content: typeof input === 'string' ? [{ type: 'text', text: input }] : input.map((b) => (b.type === 'attachment' ? withoutData(b) : b)) },
         source: options.source ?? 'cli',
       });
+      const known = sessionTaint(store.events(sessionId)).sources;
+      for (const source of new Set([...(options.taint ?? []), ...fileTaint(input)])) {
+        store.append(sessionId, { type: 'tainted', source, inherited: true });
+        if (!known.includes(source)) emit({ type: 'tainted', source, sources: [...known, source] });
+      }
     }
     const task = store.createTask(sessionId, unknownUsage());
     const started = Date.now();
@@ -154,7 +175,7 @@ export class Agent {
       const exhausted = this.budgetProblem(task, started);
       if (exhausted) return finish('budget_exhausted', exhausted);
 
-      const messages = this.view(messagesFromEvents(store.events(sessionId)));
+      const messages = this.view(messagesFromEvents(store.events(sessionId), { timeZone: this.deps.timeZone }));
       const turn = await this.callModel({ system, messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, emit, deadline);
       task.modelCalls += 1;
       if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
@@ -181,6 +202,7 @@ export class Agent {
       }
 
       let waiting: string | null = null;
+      let taint = sessionTaint(store.events(sessionId));
       for (const call of calls) {
         const operationId = `${task.id}:${call.id}`;
         let result: ToolResult;
@@ -199,11 +221,20 @@ export class Agent {
           store.append(sessionId, { type: 'tool_started', call, operationId });
           emit({ type: 'tool_start', call });
           task.toolCalls += 1;
-          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name) });
+          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name), taint });
           emit({ type: 'tool_end', call, result });
           if (result.status === 'error' && result.category === 'needs_approval') waiting = `Approval needed for ${call.name}.`;
         }
         store.append(sessionId, { type: 'tool_finished', callId: call.id, operationId, result });
+        if (result.untrusted) {
+          // Recorded after the result so the log reads in order; later calls in this turn already see it.
+          const { source } = result.untrusted;
+          if (!taint.sources.includes(source)) {
+            store.append(sessionId, { type: 'tainted', source, callId: call.id });
+            emit({ type: 'tainted', source, sources: [...taint.sources, source] });
+          }
+          taint = sessionTaint(store.events(sessionId));
+        }
       }
       store.updateTask(task);
       if (waiting) return finish('waiting_for_approval', waiting);
@@ -229,7 +260,7 @@ export class Agent {
 
   private freshSystem(): string {
     const ns = this.deps.memoryNamespace ?? 'default';
-    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [] });
+    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [], timestamps: this.deps.timeZone !== undefined });
   }
 
   /**
@@ -272,7 +303,7 @@ export class Agent {
    * re-freezes the system prompt and tool set so memory and tool changes take effect.
    */
   private async compactNow(sessionId: string, signal: AbortSignal, emit: (e: RuntimeEvent) => void, deadline = Infinity): Promise<CompactionOutcome> {
-    const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2);
+    const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2, { timeZone: this.deps.timeZone });
     if (!plan) return { status: 'nothing_to_compact', usage: null, modelCalls: 0 };
     emit({ type: 'compacting' });
     // Summarize with the current frozen prefix so the request can hit the cache.
@@ -358,6 +389,16 @@ export class Agent {
 }
 
 type ModelError = Extract<ModelEvent, { type: 'error' }>;
+
+/**
+ * Files the owner passes on (images, PDFs, documents) were usually written by
+ * someone else and can carry instructions, so they taint the session like a
+ * fetched page. Audio is the owner's own voice note and does not.
+ */
+function fileTaint(input: string | ContentBlock[]): string[] {
+  if (typeof input === 'string') return [];
+  return input.flatMap((b) => (b.type === 'attachment' && b.attachment.kind !== 'audio' ? [`file ${b.attachment.name ? JSON.stringify(b.attachment.name) : b.attachment.id} sent in chat`] : []));
+}
 
 /** Bytes never enter the event log; only the reference and derived text do. */
 function withoutData<T extends { data?: string }>(block: T): T {

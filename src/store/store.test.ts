@@ -82,10 +82,8 @@ test('inbox and outbox keep attachments; the last chat of a session is known', a
   const row = g.receive({
     channel: 'telegram', account: 'default', chatId: '7', externalId: '1', sender: { id: 'u' }, text: '', isPrivate: true, receivedAt: '2026-01-01T00:00:00.000Z',
     attachments: [{ kind: 'audio', ref: 'file-1', mimeType: 'audio/ogg', durationSec: 3 }],
-    unsupported: 'a sticker',
   })!;
   assert.deepEqual(g.inbox(row.id)!.attachments, [{ kind: 'audio', ref: 'file-1', mimeType: 'audio/ogg', durationSec: 3 }]);
-  assert.equal(g.inbox(row.id)!.unsupported, 'a sticker');
   assert.equal(g.lastChatForSession('ses_x'), undefined);
   g.setInbox(row.id, 'done', { sessionId: 'ses_x' });
   assert.deepEqual(g.lastChatForSession('ses_x'), { channel: 'telegram', account: 'default', chatId: '7' });

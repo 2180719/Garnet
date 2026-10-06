@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import type { AttachmentBlock, ContentBlock, MediaCapabilities, OutboundAttachment, ToolContext } from '../contracts/index.ts';
+import { defaultConfig } from '../config/index.ts';
+import { Policy } from '../policy/index.ts';
+import { ToolExecutor, ToolRegistry } from '../tools/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, cleanName, detectMime, sendFileTool, unreadableReply, type Transcriber } from './index.ts';
 
 const FIX = join(import.meta.dirname, '..', '..', 'test', 'media');
@@ -254,3 +257,25 @@ function hasCommand(name: string): boolean {
     return false;
   }
 }
+
+test('send_file goes through containment: allowed when clean, needs approval once the session read untrusted content', async () => {
+  const { tool, workspace, queued, tctx } = sendFileSetup();
+  writeFileSync(join(workspace, 'a.png'), fixture('pixel.png'));
+  const registry = new ToolRegistry();
+  registry.register(tool);
+  const asked: string[] = [];
+  const executor = new ToolExecutor({
+    registry,
+    policy: new Policy({ ...defaultConfig().permissions, 'message.send': 'allow' }),
+    approver: async (r) => (asked.push(r.summary), 'denied'),
+  });
+  const call = { type: 'tool_call' as const, id: 'c1', name: 'send_file', input: { path: 'a.png' } };
+  const clean = await executor.execute(call, tctx);
+  assert.equal(clean.status, 'ok');
+  assert.equal(queued.length, 1);
+  const taint = { sources: ['web_fetch https://evil.example/'], ownerUrls: new Set<string>(), seenUrls: new Set<string>() };
+  const tainted = await executor.execute({ ...call, id: 'c2' }, { ...tctx, taint });
+  assert.equal(tainted.status, 'error');
+  assert.equal(queued.length, 1, 'nothing queued without approval');
+  assert.match(asked[0]!, /send_file[\s\S]*untrusted content/);
+});

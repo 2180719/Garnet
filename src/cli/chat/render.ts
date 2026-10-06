@@ -130,6 +130,8 @@ export function approvalRows(req: ApprovalRequest, theme: Theme, width: number):
 }
 
 export function approvalChoices(req: ApprovalRequest, theme: Theme, width: number): string[] {
+  // After untrusted content, every escalated operation is decided on its own: no standing "always".
+  if (req.taint?.length) return hangingRows(`  ${theme.warn('Allow?')} `, `${theme.bold('y')} allow once · ${theme.bold('n')} deny`, width);
   const always = req.capability === 'exec' ? 'this exact command' : sanitize(req.tool);
   const choices = `${theme.bold('y')} allow once · ${theme.bold('a')} always allow ${always} in this chat · ${theme.bold('n')} deny`;
   return hangingRows(`  ${theme.warn('Allow?')} `, choices, width);
@@ -140,13 +142,20 @@ export function approvalOutcome(decision: 'once' | 'always' | 'denied', theme: T
   return `    ${theme.ok('✓ approved')}${theme.muted(decision === 'always' ? ' (for the rest of this chat)' : ' (once)')}`;
 }
 
-export type SessionTotals = { usage: Usage; contextTokens: number | null; turns: number };
+export type SessionTotals = {
+  usage: Usage;
+  contextTokens: number | null;
+  turns: number;
+  /** Sources of untrusted content this session has read (empty: none). */
+  untrusted: string[];
+};
 
 /** Token totals for a session (assistant turns and compaction calls) and the size of the latest request. */
 export function sessionTotals(events: SessionEvent[]): SessionTotals {
   let usage = unknownUsage();
   let contextTokens: number | null = null;
   let turns = 0;
+  const untrusted: string[] = [];
   for (const e of events) {
     if (e.type === 'assistant_message') {
       usage = addUsage(usage, e.usage);
@@ -157,9 +166,11 @@ export function sessionTotals(events: SessionEvent[]): SessionTotals {
       contextTokens = null; // unknown until the next request
     } else if (e.type === 'user_message') {
       turns++;
+    } else if (e.type === 'tainted' && !untrusted.includes(e.source)) {
+      untrusted.push(e.source);
     }
   }
-  return { usage, contextTokens, turns };
+  return { usage, contextTokens, turns, untrusted };
 }
 
 export type FooterInfo = { model: string; sessionId: string; totals: SessionTotals; contextWindow: number; notice?: string | undefined };
@@ -168,6 +179,8 @@ export function footer(info: FooterInfo, theme: Theme, width: number): string {
   if (info.notice) return truncate(`  ${info.notice}`, width);
   const t = info.totals;
   const stats: string[] = [];
+  // Spelled out, not just colored: risky actions now ask first (see taintedRows).
+  if (t.untrusted.length) stats.push('⚠ untrusted content read');
   if (t.contextTokens !== null) {
     const pct = Math.round((t.contextTokens / info.contextWindow) * 100);
     stats.push(`context ${formatTokens(t.contextTokens)}/${formatTokens(info.contextWindow)} (${pct}%)`);
@@ -183,6 +196,12 @@ export function footer(info: FooterInfo, theme: Theme, width: number): string {
   ];
   const text = variants.map((v) => `  ${v.join(' · ')}`).find((v) => displayWidth(v) <= width) ?? `  ${variants.at(-1)!.join(' · ')}`;
   return theme.muted(truncate(text, width));
+}
+
+/** Committed when untrusted content first enters the conversation from a source. */
+export function taintedRows(source: string, first: boolean, theme: Theme, width: number): string[] {
+  const why = first ? ' From now on in this conversation, risky actions ask first (/new starts clean).' : '';
+  return hangingRows(`  ${theme.warn('⚠')} `, theme.muted(`Read untrusted content: ${sanitize(source)}.${why}`), width);
 }
 
 /** `lead` then `text` wrapped so continuation rows align under the text. */
@@ -242,6 +261,8 @@ export function transcriptRows(events: SessionEvent[], theme: Theme, width: numb
       if (call) rows.push(...toolDoneRows(call, e.result, theme, width, 0));
     } else if (e.type === 'checkpoint') {
       rows.push(theme.muted('  ── earlier turns were compacted into a summary ──'));
+    } else if (e.type === 'tainted') {
+      rows.push(...taintedRows(e.source, false, theme, width));
     } else if (e.type === 'task_status' && e.status !== 'completed' && e.status !== 'running') {
       rows.push(`  ${statusLabel(e.status, theme)}${e.reason ? theme.muted(` — ${sanitize(e.reason)}`) : ''}`);
     }

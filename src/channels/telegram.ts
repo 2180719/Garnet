@@ -1,4 +1,4 @@
-// Telegram Bot API adapter: long-polling receive with durable offset acks, chunked plain-text send.
+// Telegram Bot API adapter: long-polling receive with durable offset acks, chunked send (markdown as Telegram HTML, plain-text fallback).
 import {
   RubyError,
   errorMessage,
@@ -10,8 +10,10 @@ import {
   type InboundSink,
   type OutboundMessage,
   type SendResult,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
 import { AMBIGUOUS_STATUSES, abortableSleep, fileBlob, mayHaveReachedServer, readCapped, sendChunks, sendUnits, type ChunkFailure, type SendUnit } from './delivery.ts';
+import { markdownToPlain, markdownToTelegramHtml, splitMarkdown } from './markdown.ts';
 
 export type TelegramOptions = {
   token: string;
@@ -162,7 +164,7 @@ export class TelegramChannel implements ChannelAdapter {
     const replyTo = Number(message.replyToExternalId);
     const replyParameters = message.replyToExternalId !== undefined && Number.isInteger(replyTo) ? { message_id: replyTo, allow_sending_without_reply: true } : undefined;
     return sendChunks(
-      sendUnits(message, MAX_CHARS, MAX_CAPTION),
+      sendUnits(message, MAX_CHARS, MAX_CAPTION, splitMarkdown),
       async (unit, i) => {
         const sent = (await this.#sendUnit(message.chatId, unit, i === 0 ? replyParameters : undefined)) as { message_id: number };
         this.#lastSuccessAt = Date.now();
@@ -175,9 +177,13 @@ export class TelegramChannel implements ChannelAdapter {
 
   async #sendUnit(chatId: string, unit: SendUnit, replyParameters: Record<string, unknown> | undefined): Promise<unknown> {
     if (unit.kind === 'text') {
-      const body: Record<string, unknown> = { chat_id: chatId, text: unit.text };
-      if (replyParameters) body.reply_parameters = replyParameters;
-      return this.#call('sendMessage', body, AbortSignal.timeout(REQUEST_TIMEOUT_MS));
+      const base: Record<string, unknown> = { chat_id: chatId };
+      if (replyParameters) base.reply_parameters = replyParameters;
+      // Replies are markdown; Telegram renders its HTML subset. A rejected entity is a definite 400 (nothing was sent): resend as plain text.
+      return this.#withPlainFallback(
+        () => this.#call('sendMessage', { ...base, text: markdownToTelegramHtml(unit.text), parse_mode: 'HTML' }, AbortSignal.timeout(REQUEST_TIMEOUT_MS)),
+        () => this.#call('sendMessage', { ...base, text: markdownToPlain(unit.text) }, AbortSignal.timeout(REQUEST_TIMEOUT_MS)),
+      );
     }
     const f = unit.file;
     if (f.size > MAX_UPLOAD_BYTES) throw new TelegramApiError(413, `Telegram bots can send files up to 50 MB; ${f.name} is larger`);
@@ -190,13 +196,32 @@ export class TelegramChannel implements ChannelAdapter {
           : f.mimeType === 'audio/mpeg' || f.mimeType === 'audio/mp4'
             ? ['sendAudio', 'audio']
             : ['sendDocument', 'document'];
-    const form = new FormData();
-    form.append('chat_id', chatId);
-    form.append(field, await fileBlob(f.path, f.mimeType), f.name);
-    if (unit.caption) form.append('caption', unit.caption);
-    if (replyParameters) form.append('reply_parameters', JSON.stringify(replyParameters));
-    // Uploads take longer than a text message; still bounded so the gateway never waits forever.
-    return this.#call(method, form, AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4));
+    const upload = async (caption: { text: string; html: boolean } | null) => {
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append(field, await fileBlob(f.path, f.mimeType), f.name);
+      if (caption) form.append('caption', caption.text);
+      if (caption?.html) form.append('parse_mode', 'HTML');
+      if (replyParameters) form.append('reply_parameters', JSON.stringify(replyParameters));
+      // Uploads take longer than a text message; still bounded so the gateway never waits forever.
+      return this.#call(method, form, AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4));
+    };
+    const caption = unit.caption;
+    if (!caption) return upload(null);
+    return this.#withPlainFallback(
+      () => upload({ text: markdownToTelegramHtml(caption), html: true }),
+      () => upload({ text: markdownToPlain(caption), html: false }),
+    );
+  }
+
+  /** Runs `html`; if Telegram rejects its entities (a 400, so nothing was sent), runs `plain` instead. */
+  async #withPlainFallback(html: () => Promise<unknown>, plain: () => Promise<unknown>): Promise<unknown> {
+    try {
+      return await html();
+    } catch (e) {
+      if (!(e instanceof TelegramApiError && e.status === 400 && /parse entities|start tag|end tag|entity/i.test(e.message))) throw e;
+      return plain();
+    }
   }
 
   async fetchAttachment(ref: string, options: { maxBytes: number; signal: AbortSignal }): Promise<{ data: Uint8Array; mimeType?: string }> {
@@ -299,8 +324,9 @@ export class TelegramChannel implements ChannelAdapter {
     if (!m || !m.from) return null;
     const text = typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : '';
     const attachments = this.#attachments(m);
+    // Files are attachments; only content with nothing to download (stickers, locations, polls) is unsupported.
     const unsupported = attachments.length ? undefined : unsupportedOf(m);
-    if (text === '' && attachments.length === 0 && !unsupported) return null;
+    if (text === '' && attachments.length === 0 && !unsupported) return null; // service messages (joins, pins...)
     const name = [m.from.first_name, m.from.last_name].filter(Boolean).join(' ') || m.from.username;
     return {
       channel: this.channel,
@@ -310,9 +336,9 @@ export class TelegramChannel implements ChannelAdapter {
       sender: { id: String(m.from.id), ...(name ? { displayName: name } : {}) },
       text,
       ...(attachments.length ? { attachments } : {}),
-      ...(unsupported ? { unsupported } : {}),
       isPrivate: m.chat.type === 'private',
       receivedAt: new Date(m.date * 1000).toISOString(),
+      ...(unsupported ? { unsupported } : {}),
     };
   }
 
@@ -379,11 +405,8 @@ function kindOfClaim(mime: string | undefined): InboundAttachment['kind'] {
 }
 
 /** Message types with no file or text Ruby could read. */
-function unsupportedOf(m: TgMessage): string | undefined {
-  if (m.sticker) return 'a sticker';
-  if (m.location || m.venue) return 'a location';
-  if (m.contact) return 'a contact card';
-  if (m.poll) return 'a poll';
-  if (m.dice) return 'a dice roll';
+function unsupportedOf(m: TgMessage): UnsupportedContent | undefined {
+  if (m.sticker) return 'sticker';
+  if (m.location || m.venue || m.contact || m.poll || m.dice) return 'other';
   return undefined;
 }

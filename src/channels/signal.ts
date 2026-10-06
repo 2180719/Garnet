@@ -10,9 +10,11 @@ import {
   type InboundSink,
   type OutboundMessage,
   type SendResult,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
 import { readFile } from 'node:fs/promises';
-import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, sendUnits, type ChunkFailure } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, sendUnits, splitText, type ChunkFailure } from './delivery.ts';
+import { markdownToPlain } from './markdown.ts';
 
 export type SignalOptions = {
   /** signal-cli daemon base URL. Plain http is only allowed for loopback hosts. */
@@ -168,7 +170,8 @@ export class SignalChannel implements ChannelAdapter {
 
   async send(message: OutboundMessage): Promise<SendResult> {
     return sendChunks(
-      sendUnits(message, MAX_CHARS, MAX_CHARS),
+      // Signal shows markdown markers literally: send plain text (captions too).
+      sendUnits({ ...message, text: markdownToPlain(message.text) }, MAX_CHARS, MAX_CHARS, splitText),
       async (unit) => {
         const params: Record<string, unknown> = { ...this.#target(message.chatId), message: unit.kind === 'text' ? unit.text : (unit.caption ?? '') };
         if (unit.kind === 'file') {
@@ -356,7 +359,7 @@ export class SignalChannel implements ChannelAdapter {
     if (!dm) return null;
     const text = typeof dm.message === 'string' ? dm.message : '';
     const rawAttachments = Array.isArray(dm.attachments) ? dm.attachments.filter((a) => typeof a?.id === 'string') : [];
-    const unsupported = !text && rawAttachments.length === 0 && dm.sticker ? 'a sticker' : undefined;
+    const unsupported = !text && rawAttachments.length === 0 && dm.sticker ? ('sticker' as UnsupportedContent) : undefined;
     if (text === '' && rawAttachments.length === 0 && !unsupported) return null;
     const number = env.sourceNumber ?? (env.source && env.source.startsWith('+') ? env.source : undefined) ?? undefined;
     if (number === this.account || env.source === this.account) return null; // never process our own messages
@@ -384,9 +387,9 @@ export class SignalChannel implements ChannelAdapter {
       sender: { id: senderId, ...(env.sourceName ? { displayName: env.sourceName } : {}) },
       text,
       ...(attachments.length ? { attachments } : {}),
-      ...(unsupported ? { unsupported } : {}),
       isPrivate: !groupId,
       receivedAt: new Date(env.timestamp).toISOString(),
+      ...(unsupported ? { unsupported } : {}),
     };
   }
 

@@ -83,7 +83,9 @@ export class FakeModel implements ModelAdapter {
 function echo(request: ModelRequest): string {
   const last = [...request.messages].reverse().find((m) => m.role === 'user');
   const files = last?.content.filter((b) => b.type === 'attachment' && b.data).length ?? 0;
-  const text = last?.content.find((b) => b.type === 'text');
+  // The last text block the user typed: turns may start with a time stamp block (see context/messagesFromEvents)
+  // and attachments come with a "[... attached: ...]" label.
+  const text = last?.content.findLast((b) => b.type === 'text' && !/^\[(\w{3} \d{4}-\d\d-\d\d |\w+ attached: )/.test(b.text));
   const said = text && text.type === 'text' ? `You said: ${text.text}` : 'Done.';
   return files ? `${said}\n(${files} file(s) arrived as native blocks.)` : said;
 }

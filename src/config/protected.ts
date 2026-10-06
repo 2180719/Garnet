@@ -23,6 +23,10 @@ export const PROTECTED_CONFIG_PATHS: readonly string[] = [
   'workspace',
   'media.transcription.*', // a host command, or where voice notes and a key are sent
   'media.pdfText.*', // a host command
+  'containment.*',
+  'web.allowHosts',
+  'web.search.searxngUrl',
+  'web.search.backend',
   '*Env', // any environment-variable / stored-secret name, at any depth
 ];
 

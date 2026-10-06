@@ -37,7 +37,6 @@ const inboxFrom = (r: Row): InboxRow => ({
   isPrivate: r.is_private === 1,
   text: r.text as string,
   ...(r.attachments ? { attachments: JSON.parse(r.attachments as string) as InboundAttachment[] } : {}),
-  ...(r.unsupported ? { unsupported: r.unsupported as string } : {}),
   receivedAt: r.received_at as string,
   status: r.status as InboxStatus,
   sessionId: (r.session_id as string | null) ?? null,
@@ -73,8 +72,8 @@ export class GatewayStore {
     const id = newId('in');
     const result = this.db
       .prepare(
-        `INSERT OR IGNORE INTO inbox (id, channel, account, chat_id, external_id, sender_id, sender_name, is_private, text, attachments, unsupported, received_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        `INSERT OR IGNORE INTO inbox (id, channel, account, chat_id, external_id, sender_id, sender_name, is_private, text, attachments, received_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       )
       .run(
         id,
@@ -87,7 +86,6 @@ export class GatewayStore {
         m.isPrivate ? 1 : 0,
         m.text,
         m.attachments?.length ? JSON.stringify(m.attachments) : null,
-        m.unsupported ?? null,
         m.receivedAt,
       );
     return result.changes === 0 ? null : this.inbox(id)!;

@@ -235,8 +235,39 @@ test('send splits long text at paragraph boundaries within 4096 chars, replying 
   assert.equal(sends[1]!.body.text, para);
   assert.deepEqual(sends[0]!.body.reply_parameters, { message_id: 9, allow_sending_without_reply: true });
   assert.equal(sends[1]!.body.reply_parameters, undefined);
-  assert.equal(sends[0]!.body.parse_mode, undefined);
+  assert.equal(sends[0]!.body.parse_mode, 'HTML');
   assert.equal(sends[0]!.body.chat_id, '42');
+});
+
+test('send renders markdown as Telegram HTML with model text escaped', async () => {
+  const api = fakeApi({ sendMessage: () => ok({ message_id: 1 }) });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: '**Done**: wrote `a<b>.txt` & checked <script>.' });
+  assert.equal(r.status, 'sent');
+  const body = api.of('sendMessage')[0]!.body;
+  assert.equal(body.parse_mode, 'HTML');
+  assert.equal(body.text, '<b>Done</b>: wrote <code>a&lt;b&gt;.txt</code> &amp; checked &lt;script&gt;.');
+});
+
+test('send falls back to plain text when Telegram cannot parse the entities', async () => {
+  let n = 0;
+  const api = fakeApi({ sendMessage: (body) => (++n === 1 && body.parse_mode ? fail(400, "Bad Request: can't parse entities: unexpected end tag") : ok({ message_id: 7 })) });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'A **bold** [link](https://example.com)', replyToExternalId: '3' });
+  assert.deepEqual(r, { status: 'sent', externalIds: ['7'] });
+  const [first, second] = api.of('sendMessage');
+  assert.equal(first!.body.parse_mode, 'HTML');
+  assert.equal(second!.body.parse_mode, undefined);
+  assert.equal(second!.body.text, 'A bold link (https://example.com)');
+  assert.deepEqual(second!.body.reply_parameters, { message_id: 3, allow_sending_without_reply: true });
+});
+
+test('a 400 that is not a parse error is not retried as plain text', async () => {
+  const api = fakeApi({ sendMessage: () => fail(400, 'Bad Request: chat not found') });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'hi' });
+  assert.equal(r.status, 'failed');
+  assert.equal(api.of('sendMessage').length, 1);
 });
 
 test('send hard-splits text without natural boundaries', async () => {
@@ -325,7 +356,7 @@ test('photos, voice notes, documents and captions arrive as attachments; sticker
   assert.equal(got[1]!.text, '');
   assert.deepEqual(got[1]!.attachments, [{ kind: 'audio', ref: 'v1', name: 'voice.ogg', mimeType: 'audio/ogg', size: 9000, durationSec: 4 }]);
   assert.deepEqual(got[2]!.attachments, [{ kind: 'document', ref: 'd1', name: 'report.pdf', mimeType: 'application/pdf', size: 50_000 }]);
-  assert.equal(got[3]!.unsupported, 'a sticker');
+  assert.equal(got[3]!.unsupported, 'sticker');
   assert.equal(got[3]!.attachments, undefined);
   await channel.stop();
 });
@@ -375,10 +406,28 @@ test('send with files: photos via sendPhoto (multipart) with the text as caption
   assert.deepEqual(JSON.parse(String(photo.get('reply_parameters'))), { message_id: 3, allow_sending_without_reply: true });
   const voice = api.of('sendVoice')[0]!.body as FormData;
   assert.equal(voice.get('caption'), 'Here you go');
+  assert.equal(voice.get('parse_mode'), 'HTML', 'captions use the same markdown to HTML conversion as messages');
   assert.equal(voice.get('reply_parameters'), null, 'only the first message replies');
 
   const long = await channel.send({ deliveryId: 'd2', channel: 'telegram', account: 'default', chatId: '7', text: 'x'.repeat(1500), attachments: [{ path: png, name: 'doc.bin', mimeType: 'application/octet-stream', kind: 'file', size: 4 }] });
   assert.equal(long.status, 'sent');
   assert.equal(api.of('sendDocument').length, 1, 'other files go as documents');
   assert.equal(api.of('sendMessage').at(-1)!.body.text.length, 1500, 'text too long for a caption follows as a message');
+});
+
+test('a caption Telegram cannot parse as HTML is resent as plain text', async () => {
+  const dir = tempDir();
+  const png = join(dir, 'c.png');
+  writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  let calls = 0;
+  const api = fakeApi({
+    sendPhoto: (body: FormData) => (++calls === 1 && body.get('parse_mode') === 'HTML' ? fail(400, "Bad Request: can't parse entities: unsupported start tag") : ok({ message_id: 20 })),
+  });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '7', text: '**Chart** for `Q3`', attachments: [{ path: png, name: 'c.png', mimeType: 'image/png', kind: 'image', size: 4 }] });
+  assert.deepEqual(r, { status: 'sent', externalIds: ['20'] });
+  const [html, plain] = api.of('sendPhoto').map((c) => c.body as FormData);
+  assert.equal(html!.get('caption'), '<b>Chart</b> for <code>Q3</code>');
+  assert.equal(plain!.get('parse_mode'), null);
+  assert.equal(plain!.get('caption'), 'Chart for Q3');
 });

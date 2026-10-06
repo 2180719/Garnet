@@ -189,12 +189,17 @@ export type SendUnit = { kind: 'file'; file: OutboundAttachment; caption?: strin
  * text fits in a caption it rides on the last file instead of a separate
  * message (a lone caption reads better and costs one request less).
  */
-export function sendUnits(message: { text: string; attachments?: OutboundAttachment[] | undefined }, maxChars: number, maxCaption: number): SendUnit[] {
+export function sendUnits(
+  message: { text: string; attachments?: OutboundAttachment[] | undefined },
+  maxChars: number,
+  maxCaption: number,
+  split: (text: string, max: number) => string[] = splitText,
+): SendUnit[] {
   const files = message.attachments ?? [];
   const text = message.text.trim();
-  if (files.length === 0) return splitText(message.text, maxChars).map((t) => ({ kind: 'text', text: t }));
+  if (files.length === 0) return split(message.text, maxChars).map((t) => ({ kind: 'text', text: t }));
   const units: SendUnit[] = files.map((file) => ({ kind: 'file', file }));
   if (text && text.length <= maxCaption) (units[units.length - 1] as { caption?: string }).caption = text;
-  else if (text) units.push(...splitText(text, maxChars).map((t): SendUnit => ({ kind: 'text', text: t })));
+  else if (text) units.push(...split(text, maxChars).map((t): SendUnit => ({ kind: 'text', text: t })));
   return units;
 }

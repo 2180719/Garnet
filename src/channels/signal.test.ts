@@ -427,3 +427,10 @@ test('send with a file uses a data URI attachment, with the text in the same mes
   assert.equal(call.method, 'send');
   assert.deepEqual(call.params, { recipient: ['+15559998888'], message: 'see', attachments: ['data:image/png;filename=my_chart_v2.png;base64,AQID'] });
 });
+
+test('send strips markdown, since Signal shows the markers literally', async () => {
+  const d = fakeDaemon();
+  const { channel } = setup(d);
+  await channel.send({ deliveryId: 'x', channel: 'signal', account: ACCOUNT, chatId: '+15559998888', text: '**Saved** `notes.txt`:\n- one' });
+  assert.equal((d.rpcs.at(-1)!.params as { message: string }).message, 'Saved notes.txt:\n• one');
+});

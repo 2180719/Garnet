@@ -37,13 +37,21 @@ export type InboundMessage = {
   sender: { id: string; displayName?: string };
   /** Message text or media caption; empty for a file without a caption. */
   text: string;
+  /** Files, not yet downloaded. */
   attachments?: InboundAttachment[];
-  /** Content Ruby cannot read at all (a sticker, a location, a poll), described for an honest reply. */
-  unsupported?: string;
   /** True for one-to-one chats. Group chats never get private memory or pairing. */
   isPrivate: boolean;
   receivedAt: string; // ISO timestamp
+  /**
+   * Set when the message carried content with nothing to download or read
+   * (a sticker, a location, a poll). Files are `attachments`, never this.
+   * `text` then holds the caption, if any. The gateway answers honestly
+   * instead of dropping the message.
+   */
+  unsupported?: UnsupportedContent;
 };
+
+export type UnsupportedContent = 'voice' | 'audio' | 'photo' | 'video' | 'file' | 'sticker' | 'other';
 
 export type OutboundMessage = {
   deliveryId: string;

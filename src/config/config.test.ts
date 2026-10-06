@@ -27,6 +27,16 @@ test('invalid config lists every problem', () => {
   }
 });
 
+test('timezone and api.corsOrigins are validated; CORS is off by default', () => {
+  assert.deepEqual(defaultConfig().api.corsOrigins, []);
+  assert.equal(defaultConfig().timezone, undefined);
+  const c = parseConfig({ version: CONFIG_VERSION, timezone: 'Europe/London', api: { corsOrigins: ['https://chat.example.com', 'http://localhost:3000'] } });
+  assert.equal(c.timezone, 'Europe/London');
+  for (const bad of [{ timezone: 'Mars/Olympus' }, { api: { corsOrigins: ['*'] } }, { api: { corsOrigins: ['https://chat.example.com/app'] } }]) {
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, ...bad }), (e) => isRubyError(e, 'config'));
+  }
+});
+
 test('config without a version is migrated and backed up', () => {
   const home = tempDir();
   writeFileSync(join(home, 'config.json'), JSON.stringify({ persona: 'Be brief.' }));

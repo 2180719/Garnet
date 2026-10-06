@@ -20,7 +20,7 @@ function row(s) {
       h('span', { class: 'title' }, name),
       h('span', { class: 'small muted' }, `Created ${fmtDate(s.createdAt)} · last activity ${ago(s.updatedAt)} · ${num(s.events)} events · ${num(s.tasks)} task${s.tasks === 1 ? '' : 's'}`),
       h('span', { class: 'small muted mono' }, s.id)),
-    h('div', { class: 'badges' }, s.taskStatus ? pill(label(s.taskStatus), STATUS[s.taskStatus] ?? '') : pill('no tasks'), s.bound ? null : pill('not linked', 'warn'), pill(tokens(s.usage))));
+    h('div', { class: 'badges' }, s.taskStatus ? pill(label(s.taskStatus), STATUS[s.taskStatus] ?? '') : pill('no tasks'), s.bound ? null : pill('not linked', 'warn'), s.tainted ? pill('read untrusted content', 'warn') : null, pill(tokens(s.usage))));
 }
 
 async function list(root) {
@@ -74,7 +74,7 @@ function renderEvent(e, names) {
     case 'tool_finished': {
       const r = e.result;
       const name = names.get(e.callId) || e.callId;
-      const meta = [r.truncated ? 'truncated' : null, r.repairs?.length ? `repaired: ${r.repairs.join(', ')}` : null, r.artifactId ? `artifact ${r.artifactId}` : null].filter(Boolean).join(' · ');
+      const meta = [r.untrusted ? 'untrusted content' : null, r.truncated ? 'truncated' : null, r.repairs?.length ? `repaired: ${r.repairs.join(', ')}` : null, r.artifactId ? `artifact ${r.artifactId}` : null].filter(Boolean).join(' · ');
       return h('li', { class: `ev tool${r.status === 'error' ? ' bad' : ''}` },
         head(e, 'Tool result', h('span', null, `${r.status === 'error' ? `error (${r.category})` : 'ok'} · ${num(r.durationMs)} ms`)),
         details(`${name}${meta ? ` (${meta})` : ''}`, r.content));
@@ -83,6 +83,9 @@ function renderEvent(e, names) {
       return h('li', { class: `ev${e.status === 'failed' ? ' bad' : ''}` }, head(e, 'Task', pill(label(e.status), STATUS[e.status] ?? '')), e.reason ? h('div', { class: 'ev-text small' }, e.reason) : null);
     case 'model_error':
       return h('li', { class: 'ev bad' }, head(e, 'Model error', h('span', null, e.category)), h('div', { class: 'ev-text' }, e.message));
+    case 'tainted':
+      return h('li', { class: 'ev mark' }, head(e, 'Untrusted content', h('span', null, e.inherited ? 'inherited with the task' : 'read by a tool')),
+        h('div', { class: 'ev-text' }, `${e.source}. From here on, actions set to allow ask first (see containment in settings); /new starts a clean conversation.`));
     case 'checkpoint':
       return h('li', { class: 'ev mark' }, head(e, 'Compaction checkpoint', h('span', null, `covers events up to #${e.throughSeq}`)), details('Summary kept in place of the earlier events', e.summary));
     case 'context_frozen':

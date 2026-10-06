@@ -15,8 +15,10 @@ import {
   type InboundSink,
   type OutboundMessage,
   type SendResult,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
 import { AMBIGUOUS_STATUSES, abortableSleep, fileBlob, mayHaveReachedServer, readCapped, sendChunks, sendUnits, type ChunkFailure } from './delivery.ts';
+import { splitMarkdown } from './markdown.ts';
 
 export type DiscordOptions = {
   token: string;
@@ -187,7 +189,7 @@ export class DiscordChannel implements ChannelAdapter {
     if (!/^\d+$/.test(message.chatId)) return { status: 'failed', retryable: false, error: 'Invalid Discord channel id' };
     const replyTo = message.replyToExternalId !== undefined && /^\d+$/.test(message.replyToExternalId) ? message.replyToExternalId : undefined;
     return sendChunks(
-      sendUnits(message, MAX_CHARS, MAX_CHARS),
+      sendUnits(message, MAX_CHARS, MAX_CHARS, splitMarkdown), // Discord renders markdown itself; keep code blocks whole per chunk
       async (unit, i) => {
         const body: Record<string, unknown> = {
           content: unit.kind === 'text' ? unit.text : (unit.caption ?? ''),
@@ -465,7 +467,7 @@ export class DiscordChannel implements ChannelAdapter {
         },
       ];
     });
-    const unsupported = !text && attachments.length === 0 && Array.isArray(m.sticker_items) && m.sticker_items.length ? 'a sticker' : undefined;
+    const unsupported: UnsupportedContent | undefined = !text && attachments.length === 0 && Array.isArray(m.sticker_items) && m.sticker_items.length ? 'sticker' : undefined;
     if (text === '' && attachments.length === 0 && !unsupported) return null;
     const name = author.global_name ?? author.username;
     const ts = m.timestamp ? Date.parse(m.timestamp) : NaN;
@@ -477,9 +479,9 @@ export class DiscordChannel implements ChannelAdapter {
       sender: { id: author.id, ...(name ? { displayName: name } : {}) },
       text,
       ...(attachments.length ? { attachments } : {}),
-      ...(unsupported ? { unsupported } : {}),
       isPrivate: m.guild_id === undefined || m.guild_id === null,
       receivedAt: new Date(Number.isNaN(ts) ? Date.now() : ts).toISOString(),
+      ...(unsupported ? { unsupported } : {}),
     };
   }
 

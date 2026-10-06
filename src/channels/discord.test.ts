@@ -386,7 +386,7 @@ test('attachments and stickers in DMs are passed on; CDN downloads only', async 
   await until(() => got.length === 2, 'two messages');
   assert.equal(got[0]!.text, '');
   assert.deepEqual(got[0]!.attachments, [{ kind: 'audio', ref: a.url, name: 'voice-message.ogg', mimeType: 'audio/ogg', size: 2, durationSec: 3.5 }]);
-  assert.equal(got[1]!.unsupported, 'a sticker');
+  assert.equal(got[1]!.unsupported, 'sticker');
   const file = await t.channel.fetchAttachment(a.url, { maxBytes: 10, signal: new AbortController().signal });
   assert.deepEqual(file.data, new Uint8Array([9, 9]));
   assert.equal(t.reqs.at(-1)!.headers.authorization, undefined, 'the bot token is never sent to the CDN');

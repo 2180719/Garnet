@@ -53,12 +53,14 @@ export class PlainChat {
 
   readonly approve = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
     const key = req.capability === 'exec' ? `${req.tool}|${JSON.stringify(req.input)}` : `${req.tool}|${req.capability}`;
-    if (this.always.has(`${this.sessionId}|${key}`)) return 'approved';
+    const tainted = Boolean(req.taint?.length);
+    // An operation escalated by untrusted content is never covered by an earlier "always".
+    if (!tainted && this.always.has(`${this.sessionId}|${key}`)) return 'approved';
     // stderr is usually the owner's terminal: show control characters instead of sending them.
     this.o.err(`\n  ? ${sanitize(req.tool)} wants ${req.capability}${req.targets.length ? ` on ${sanitize(req.targets.join(', '))}` : ''}\n`);
     for (const line of sanitize(req.summary).split('\n')) this.o.err(`    | ${line}\n`);
-    const answer = ((await this.ask('  allow? [y]es once, [a]lways in this chat, [N]o: ')) ?? '').trim().toLowerCase();
-    if (answer === 'a' || answer === 'always') {
+    const answer = ((await this.ask(tainted ? '  allow? [y]es once, [N]o: ' : '  allow? [y]es once, [a]lways in this chat, [N]o: ')) ?? '').trim().toLowerCase();
+    if (!tainted && (answer === 'a' || answer === 'always')) {
       this.always.add(`${this.sessionId}|${key}`);
       return 'approved';
     }
@@ -119,6 +121,8 @@ export class PlainChat {
         this.o.err(`  [retrying in ${Math.round(e.delayMs / 1000)}s: ${sanitize(e.message)}]\n`);
       } else if (e.type === 'compacting') {
         this.o.err('  [compacting older turns]\n');
+      } else if (e.type === 'tainted') {
+        this.o.err(`  [untrusted content read: ${sanitize(e.source)}; risky actions now ask first until /new]\n`);
       }
     };
     try {

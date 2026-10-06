@@ -70,6 +70,11 @@ export const configSchema = z
       .string()
       .optional()
       .describe('Directory tools may work in. Defaults to <home>/workspace.'),
+    timezone: z
+      .string()
+      .refine(validTimeZone, "Unknown time zone (use an IANA name like Europe/London)")
+      .optional()
+      .describe("Your IANA time zone, e.g. Europe/London. Ruby shows each message's send time in it, and jobs without their own timezone use it. Defaults to the host zone."),
     model: z
       .object({
         provider: z
@@ -220,6 +225,55 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Default permission for each capability: allow, ask (owner approval) or deny.'),
+    containment: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(true)
+          .describe('Once a conversation has read untrusted content (web pages, search results), ask before consequential actions even if they are set to allow. Off: taint is still recorded and shown, but nothing is escalated.'),
+        escalate: z
+          .array(z.enum(['fs.read', 'fs.write', 'net.fetch', 'exec', 'message.send', 'memory.write', 'schedule.edit']))
+          .default(['fs.write', 'exec', 'message.send', 'memory.write', 'schedule.edit', 'net.fetch'])
+          .describe('Capabilities that change from allow to ask in a conversation that has read untrusted content. deny always stays deny.'),
+        fetchSeenUrls: z
+          .boolean()
+          .default(true)
+          .describe('In such a conversation, still fetch without asking a URL that a search result or fetched page contained word for word (it carries nothing Ruby composed). URLs you wrote yourself are always allowed.'),
+      })
+      .prefault({})
+      .describe('Prompt-injection containment: untrusted content cannot quietly trigger actions. Lasts until /new starts a fresh conversation.'),
+    web: z
+      .object({
+        allowHosts: z
+          .array(z.string().regex(/^(\*\.)?[a-z0-9.-]+$/i, 'a host name such as example.com or *.example.com'))
+          .default([])
+          .describe('Hosts web_fetch may read without asking when net.fetch is ask, e.g. en.wikipedia.org or *.python.org.'),
+        fetch: z
+          .object({
+            maxBytes: z.number().int().min(10_000).max(50_000_000).default(5_000_000).describe('Largest response body read; longer bodies are cut off at this size.'),
+            timeoutSeconds: z.number().int().min(1).max(120).default(20).describe('Time limit for one fetch, redirects included.'),
+            maxRedirects: z.number().int().min(0).max(10).default(5).describe('Redirects followed; each target is checked again.'),
+          })
+          .prefault({})
+          .describe('web_fetch limits. Private, loopback, link-local and cloud metadata addresses are always refused.'),
+        search: z
+          .object({
+            backend: z
+              .enum(['duckduckgo', 'searxng', 'brave', 'tavily', 'none'])
+              .default('duckduckgo')
+              .describe('duckduckgo: keyless, reads the HTML results page (unofficial, may be rate limited). searxng: your instance. brave, tavily: API with a key. none: no web_search tool.'),
+            searxngUrl: z.string().url().optional().describe('SearXNG base URL, e.g. http://127.0.0.1:8888 (the instance must allow format=json).'),
+            apiKeyEnv: z
+              .string()
+              .optional()
+              .describe('Environment variable (or encrypted secret) holding the brave or tavily API key. Defaults to BRAVE_API_KEY or TAVILY_API_KEY.'),
+            maxResults: z.number().int().min(1).max(20).default(8).describe('Results returned per search.'),
+          })
+          .prefault({})
+          .describe('web_search backend.'),
+      })
+      .prefault({})
+      .describe('web_fetch and web_search (both need net.fetch). Their output is untrusted.'),
     persona: z
       .string()
       .max(4000)
@@ -231,6 +285,15 @@ export const configSchema = z
         host: z.string().default('127.0.0.1').describe('Bind address. Non-loopback requires at least one API key.'),
         port: z.number().int().min(1).max(65535).default(7311).describe('HTTP port.'),
         rateLimitPerMinute: z.number().int().positive().default(120).describe('Requests per minute allowed for each API key (the dashboard polls, so keep this comfortably above 60).'),
+        corsOrigins: z
+          .array(
+            z
+              .string()
+              .url()
+              .refine((o) => { try { return new URL(o).origin === o.replace(/\/+$/, ''); } catch { return false; } }, 'must be an origin like https://chat.example.com (scheme, host and optional port; no path)'),
+          )
+          .default([])
+          .describe('Browser apps allowed to call /v1/chat/completions and /v1/models directly (CORS), e.g. https://chat.example.com. Empty (the default) sends no CORS headers. List exact origins; there is no wildcard.'),
         trustProxy: z.boolean().default(false).describe('Behind your own reverse proxy: take the client IP from X-Forwarded-For. The rightmost entry (the one your proxy appends) is used, so the proxy must append the client address to X-Forwarded-For.'),
         demo: z
           .object({
@@ -336,6 +399,9 @@ export const configSchema = z
     }
     if (t.backend === 'command' && !t.command) {
       ctx.addIssue({ code: 'custom', path: ['media', 'transcription', 'command'], message: 'command transcription needs command' });
+    }
+    if (c.web.search.backend === 'searxng' && !c.web.search.searxngUrl) {
+      ctx.addIssue({ code: 'custom', path: ['web', 'search', 'searxngUrl'], message: 'The searxng backend needs web.search.searxngUrl' });
     }
     if (c.channels.signal.enabled && !c.channels.signal.account) {
       ctx.addIssue({ code: 'custom', path: ['channels', 'signal', 'account'], message: "Signal needs the bot's number" });

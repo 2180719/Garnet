@@ -6,6 +6,10 @@ import { resolveInWorkspace } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
 
 export const NOTHING = 'NOTHING_TO_REPORT';
+/** OpenClaw's heartbeat acknowledgement; imported checklists still ask for it. */
+export const HEARTBEAT_OK = 'HEARTBEAT_OK';
+/** Text left beside HEARTBEAT_OK up to this length still counts as "nothing to report" (OpenClaw's default ackMaxChars). */
+const ACK_MAX_CHARS = 300;
 const FAILURE_THRESHOLD = 3;
 /** Abort reason for runs cancelled because Ruby is shutting down (not the job's fault). */
 const SHUTDOWN = 'shutdown';
@@ -27,9 +31,29 @@ export type SchedulerDeps = {
   /** Override the built-in pre-checks (tests). */
   check?: CheckFn;
   fetch?: typeof fetch;
+  /** Time zone for jobs without their own `timezone` (the owner's). Defaults to the host zone. */
+  timeZone?: string;
 };
 
 const hostZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/**
+ * Whether a reply means "nothing to report": `NOTHING_TO_REPORT` as the whole
+ * reply or its end, or `HEARTBEAT_OK` at its start or end with at most a short
+ * remark beside it. Returns the text to send otherwise (an acknowledgement
+ * token around a longer report is removed).
+ */
+export function quietReply(reply: string): { nothing: boolean; text: string } {
+  const t = reply.trim();
+  if (t === NOTHING || t.endsWith(NOTHING)) return { nothing: true, text: t };
+  // The token may be wrapped in markdown (**HEARTBEAT_OK**) or followed by punctuation.
+  const lead = /^[\s*_`]*HEARTBEAT_OK[\s*_`.!]*/;
+  const trail = /[\s*_`]*HEARTBEAT_OK[\s*_`.!]*$/;
+  if (!lead.test(t) && !trail.test(t)) return { nothing: false, text: t };
+  const rest = t.replace(lead, '').replace(trail, '').trim();
+  if (rest.length <= ACK_MAX_CHARS) return { nothing: true, text: t };
+  return { nothing: false, text: rest };
+}
 
 /**
  * Enqueues cron jobs and heartbeats into the normal agent runtime. Disabled
@@ -117,7 +141,7 @@ export class Scheduler {
       return { at: new Date(slot), missed: now.getTime() - slot > 2 * tick };
     }
     const cron = parseCron(job.cron!);
-    const zone = job.timezone ?? hostZone();
+    const zone = job.timezone ?? this.deps.timeZone ?? hostZone();
     let at = nextRun(cron, new Date(last), zone);
     if (!at || at > now) return null;
     // Coalesce missed occurrences into the latest one.
@@ -164,7 +188,7 @@ export class Scheduler {
           return;
         }
       }
-      const zone = job.timezone ?? hostZone();
+      const zone = job.timezone ?? this.deps.timeZone ?? hostZone();
       const p = zonedParts(at, zone);
       const when = `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')} ${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')} ${zone}`;
       const text = [
@@ -191,9 +215,9 @@ export class Scheduler {
         this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${task.reason ?? 'unknown'}. Resume with: ruby jobs resume ${job.id}`);
       }
       store.saveState(fresh);
-      const nothing = reply.trim() === NOTHING || reply.trim().endsWith(NOTHING);
+      const quiet = quietReply(reply);
       // Completed runs with nothing to report stay quiet unless the job asks for every result.
-      if (task.status !== 'completed' || job.notifyWhen === 'always' || !nothing) this.notify(job, `[${job.id}] ${reply}`);
+      if (task.status !== 'completed' || job.notifyWhen === 'always' || !quiet.nothing) this.notify(job, `[${job.id}] ${task.status === 'completed' ? quiet.text : reply}`);
     } catch (e) {
       if (controller.signal.reason === SHUTDOWN) {
         finish('interrupted', { note: 'Stopped because Ruby shut down.' });

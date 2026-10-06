@@ -43,7 +43,7 @@ export const msg = (text: string, over: Partial<InboundMessage> = {}): InboundMe
   sender: { id: 'u1', displayName: 'Ada' }, text, isPrivate: true, receivedAt: new Date().toISOString(), ...over,
 });
 
-export function setup(script: FakeScript = [], opts: { routes?: Route[]; db?: ReturnType<typeof openDb>; withApprovals?: boolean; tools?: ToolDefinition[]; agent?: Partial<AgentDeps>; gateway?: Partial<GatewayDeps> } = {}) {
+export function setup(script: FakeScript = [], opts: { routes?: Route[]; db?: ReturnType<typeof openDb>; withApprovals?: boolean; tools?: ToolDefinition[]; agent?: Partial<AgentDeps>; gateway?: Partial<GatewayDeps>; policy?: Policy } = {}) {
   const db = opts.db ?? openDb(':memory:');
   const sessions = new SessionStore(db);
   const store = new GatewayStore(db);
@@ -56,7 +56,7 @@ export function setup(script: FakeScript = [], opts: { routes?: Route[]; db?: Re
   const agent = new Agent({
     store: sessions, model, registry, workspace: tempDir(), maxOutputTokens: 100, budget: config.budgets,
     ...opts.agent,
-    executor: new ToolExecutor({ registry, policy: new Policy(config.permissions), approver }),
+    executor: new ToolExecutor({ registry, policy: opts.policy ?? new Policy(config.permissions), approver }),
   });
   const channel = new FakeChannel();
   const lanes = new LaneQueue(2);
