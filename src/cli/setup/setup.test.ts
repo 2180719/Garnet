@@ -3,12 +3,11 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../../test/helpers.ts';
-import { parseConfig, parseEnv, writeConfig, defaultConfig } from '../../config/index.ts';
+import { parseConfig, parseEnv, writeConfig, defaultConfig, readPersona, writePersona } from '../../config/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore } from '../../secrets/index.ts';
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
 import { init, setup } from './command.ts';
-import { readPersona, writePersona } from './persona.ts';
 import { AnswerPrompter, makeStyle, stripKeySequences, type Answer } from './prompt.ts';
 import { runSetup, type Pairing, type SetupDeps } from './wizard.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
@@ -414,4 +413,80 @@ test('non-interactive: the service is only touched with --service (install, or r
 test('hidden input ignores arrow keys and paste markers', () => {
   assert.equal(stripKeySequences('sk-\x1b[Dab\x1bOHc\x1b[200~def\x1b[201~\x1b[1;5C'), 'sk-abcdef');
   assert.equal(stripKeySequences('plain-value_123'), 'plain-value_123');
+});
+
+// ---------- wake-up onboarding ----------
+
+const FAKE_ANSWERS = { provider: 'fake', telegram: false, discord: false, signal: false, service: false } as const;
+
+test('wake-up: choosing "Wake it up" skips the form questions and starts the chat after everything is saved', async () => {
+  const h = harness();
+  const calls: { fake: boolean; saved: boolean }[] = [];
+  h.deps.wake = async ({ fake }) => {
+    // The chat runs against a saved config, so it can write its own changes to it.
+    calls.push({ fake, saved: existsSync(join(h.home, 'config.json')) });
+    return 0;
+  };
+  const { p, done } = h.run({ ...FAKE_ANSWERS, onboarding: 'wake' });
+  assert.equal(await done, 0);
+  assert.deepEqual(calls, [{ fake: true, saved: true }]);
+  assert.ok(p.asked.includes('onboarding'));
+  for (const id of ['name', 'owner', 'notes']) assert.equal(p.asked.includes(id), false, `${id} is asked by the agent, not the form`);
+  assert.deepEqual(readPersona(h.config().persona), { name: 'Garnet', owner: '', notes: '' });
+  assert.match(h.out(), /Waking your assistant up/);
+  assert.match(h.out(), /Garnet is ready\./);
+});
+
+test('wake-up: the quick form stays the default and works exactly as before', async () => {
+  const h = harness();
+  let woke = 0;
+  h.deps.wake = async () => ++woke * 0;
+  const { p, done } = h.run({ ...FAKE_ANSWERS, name: 'Juno', owner: 'Sam', notes: 'Be brief.' });
+  assert.equal(await done, 0);
+  assert.equal(woke, 0);
+  assert.deepEqual(p.asked.filter((id) => ['onboarding', 'name', 'owner', 'notes'].includes(id)), ['onboarding', 'name', 'owner', 'notes']);
+  assert.deepEqual(readPersona(h.config().persona), { name: 'Juno', owner: 'Sam', notes: 'Be brief.' });
+});
+
+test('wake-up: a script (non-interactive) is never asked and never starts a chat, even with an answer for it', async () => {
+  const h = harness();
+  let woke = 0;
+  h.deps.wake = async () => ++woke * 0;
+  const { p, done } = h.run({ ...FAKE_ANSWERS, onboarding: 'wake', name: 'Juno' }, {}, false);
+  assert.equal(await done, 0);
+  assert.equal(woke, 0);
+  assert.equal(p.asked.includes('onboarding'), false);
+  assert.equal(readPersona(h.config().persona).name, 'Juno');
+});
+
+test('wake-up: without a usable model key only the form is offered', async () => {
+  const h = harness();
+  let woke = 0;
+  h.deps.wake = async () => ++woke * 0;
+  const { p, done } = h.run({ provider: 'anthropic', secrets: 'env', check: false, telegram: false, discord: false, signal: false, service: false, onboarding: 'wake', name: 'Juno' });
+  assert.equal(await done, 0);
+  assert.equal(woke, 0);
+  assert.equal(p.asked.includes('onboarding'), false);
+  assert.equal(readPersona(h.config().persona).name, 'Juno');
+});
+
+test('wake-up: a chat that cannot start leaves setup saved and says how to retry', async () => {
+  const h = harness();
+  h.deps.wake = async () => {
+    throw new Error('no terminal');
+  };
+  const { done } = h.run({ ...FAKE_ANSWERS, onboarding: 'wake' });
+  assert.equal(await done, 0);
+  assert.ok(existsSync(join(h.home, 'config.json')));
+  assert.match(h.out(), /wake-up chat could not start \(no terminal\)\. Run `garnet wake`/);
+});
+
+test('wake-up: the persona menu on a re-run can choose it too, and that counts as a change', async () => {
+  const h = harness();
+  assert.equal(await h.run({ ...FAKE_ANSWERS, name: 'Juno' }).done, 0);
+  let woke = 0;
+  h.deps.wake = async () => ++woke * 0;
+  const { done } = h.run({ section: ['persona', 'done'], onboarding: 'wake' });
+  assert.equal(await done, 0);
+  assert.equal(woke, 1);
 });

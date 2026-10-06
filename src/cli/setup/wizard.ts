@@ -7,13 +7,17 @@ import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
+  DEFAULT_NAME,
+  PERSONA_MAX,
   defaultConfig,
   parseConfig,
   parseEnv,
   pathsFor,
+  readPersona,
   removeFromEnvFile,
   setInEnvFile,
   writeConfig,
+  writePersona,
   type GarnetConfig,
 } from '../../config/index.ts';
 import { GarnetError, errorMessage } from '../../contracts/index.ts';
@@ -21,7 +25,7 @@ import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, u
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram, type CheckResult, type FetchFn } from './checks.ts';
-import { DEFAULT_NAME, PERSONA_MAX, readPersona, validBasic, writePersona } from './persona.ts';
+import { askBasics } from './persona.ts';
 import type { Choice, Prompter, Style } from './prompt.ts';
 
 export type ImportSource = { source: 'openclaw' | 'hermes'; dir: string };
@@ -54,6 +58,11 @@ export type SetupDeps = {
    * to the owner.
    */
   runImport: (args: string[], draft: ImportDraft) => number | Promise<number>;
+  /**
+   * Starts the wake-up chat (`garnet chat --onboard`) after setup is saved; resolves with its exit code.
+   * Absent where there is nowhere to chat (scripts and tests that do not offer it).
+   */
+  wake?: (opts: { fake: boolean }) => Promise<number>;
   /** Pending pairing requests in Garnet's database (written by the running service). */
   pairing: () => { pending: () => Pairing[]; approve: (code: string) => Pairing | null; close: () => void };
 };
@@ -83,6 +92,8 @@ type State = {
   bots: Record<string, string>;
   todo: string[];
   changed: boolean;
+  /** The owner chose to set up the persona by talking to the agent, after setup is saved. */
+  wake: boolean;
 };
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1';
@@ -161,13 +172,14 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
   save(io, deps, st);
   const service = await serviceStep(p, io, deps, st, wantService);
   await pairingStep(p, io, deps, st, service);
+  if (st.wake) await wakeStep(io, deps, st);
   io.out(nextSteps(st, deps, service));
   return 0;
 }
 
 function loadState(io: Io, deps: SetupDeps): State {
   const file = join(deps.home, 'config.json');
-  const base: State = { config: defaultConfig(), existing: false, resetFrom: null, secrets: new Map(), storage: null, keyFile: null, consent: null, bots: {}, todo: [], changed: true };
+  const base: State = { config: defaultConfig(), existing: false, resetFrom: null, secrets: new Map(), storage: null, keyFile: null, consent: null, bots: {}, todo: [], changed: true, wake: false };
   if (!existsSync(file)) return base;
   try {
     // Migrations are applied in memory; the file is only rewritten on save.
@@ -199,7 +211,7 @@ async function runSection(section: Exclude<Section, 'service' | 'done' | 'quit'>
   if (section === 'persona') await personaStep(p, io, deps, st);
   if (section === 'channels') await channelsStep(p, io, deps, st);
   if (section === 'import') await importStep(p, io, deps, st);
-  if (JSON.stringify(st.config) + st.secrets.size !== before) st.changed = true;
+  if (JSON.stringify(st.config) + st.secrets.size !== before || st.wake) st.changed = true;
 }
 
 const heading = (io: Io, s: Style, n: string) => io.out(`\n${s.accent('◆')} ${s.bold(n)}\n`);
@@ -443,16 +455,27 @@ async function checked(
 
 async function personaStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   heading(io, deps.style, 'Persona');
+  st.wake = false;
+  // Only a person at a terminal is offered the chat, and only when the model can answer. Scripts always get the form.
+  if (p.interactive && deps.wake && wakeReady(deps, st)) {
+    const how = await p.select<'form' | 'wake'>({
+      id: 'onboarding',
+      message: 'How would you like to set up your assistant?',
+      help: 'The quick form asks three short questions. "Wake it up" opens a first chat where your assistant introduces itself and asks the same things.',
+      choices: [
+        { value: 'form', label: 'Quick form', hint: 'name, what to call you, answer style' },
+        { value: 'wake', label: 'Wake it up', hint: 'a first conversation, right after setup is saved' },
+      ],
+      default: 'form',
+      auto: 'form',
+    });
+    if (how === 'wake') {
+      st.wake = true;
+      return;
+    }
+  }
   const cur = readPersona(st.config.persona);
-  const name = await p.text({ id: 'name', message: 'What should your assistant be called?', default: cur.name, validate: validBasic(40) });
-  const owner = await p.text({ id: 'owner', message: 'And what should it call you?', help: 'Optional. Press Enter to skip.', default: cur.owner, validate: validBasic(60) });
-  const notes = await p.text({
-    id: 'notes',
-    message: 'Anything about how you like answers?',
-    help: 'Optional, one line. For example: "Brief answers. I live in Lisbon and work in UTC."',
-    default: cur.notes,
-    validate: validBasic(500),
-  });
+  const { name, owner, notes } = await askBasics(p, cur);
   const persona = writePersona(st.config.persona, { name: name || DEFAULT_NAME, owner, notes });
   if ((persona ?? '').length > PERSONA_MAX) {
     io.out(`  ${deps.style.warn('!')} The persona would exceed ${PERSONA_MAX} characters, so these basics were not added. Shorten config.persona first.\n`);
@@ -460,6 +483,30 @@ async function personaStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Pro
   }
   if (persona === undefined) delete st.config.persona;
   else st.config.persona = persona;
+}
+
+/** The wake-up chat needs a model that can answer: the offline demo, a local server, or a key that is already available. */
+function wakeReady(deps: SetupDeps, st: State): boolean {
+  const provider = providerOf(st.config.model);
+  return provider === 'fake' || provider === 'local' || lookup(deps, st, st.config.model.apiKeyEnv).found;
+}
+
+/** Runs after everything is saved. A failure never undoes setup: the form is one command away. */
+async function wakeStep(io: Io, deps: SetupDeps, st: State): Promise<void> {
+  const s = deps.style;
+  io.out(`\n${s.accent('◆')} ${s.bold('Waking your assistant up')}\n  ${s.muted('Say /exit when you are done. If the model cannot use its tools, you will get the short form instead.')}\n\n`);
+  try {
+    const code = await deps.wake!({ fake: providerOf(st.config.model) === 'fake' });
+    if (code !== 0) st.todo.push('The wake-up chat ended with an error. Run `garnet wake` to try again, or `garnet setup` for the form.');
+  } catch (e) {
+    st.todo.push(`The wake-up chat could not start (${errorMessage(e)}). Run \`garnet wake\` to try again, or \`garnet setup\` for the form.`);
+  }
+  // The chat saves through the same config file; show what it stored.
+  try {
+    st.config = parseConfig(JSON.parse(readFileSync(join(deps.home, 'config.json'), 'utf8')));
+  } catch {
+    // Keep the draft: the summary is informational.
+  }
 }
 
 // ---------- channels ----------

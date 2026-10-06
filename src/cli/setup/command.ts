@@ -9,6 +9,7 @@ import { approvePairing } from '../../gateway/index.ts';
 import { createGarnet } from '../../main.ts';
 import { defaultSourceDir, runImport } from '../../migrate/index.ts';
 import { defaultEntry, installService, resolveService, restartService } from '../../service/index.ts';
+import { chat } from '../chat/index.ts';
 import { importDeps } from '../import.ts';
 import type { Io } from '../main.ts';
 import { AnswerPrompter, TerminalPrompter, makeStyle, wantsColor, type Answer, type Prompter } from './prompt.ts';
@@ -170,6 +171,7 @@ function defaultDeps(io: Io): SetupDeps {
         garnet.close();
       }
     },
+    wake: ({ fake }) => chat(['--onboard', ...(fake ? ['--fake'] : [])], { ...io, stdin: process.stdin, stdout: process.stdout, env: process.env }),
     pairing: () => {
       const garnet = createGarnet({ noModel: true, home });
       return {

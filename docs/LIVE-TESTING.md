@@ -80,8 +80,9 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 3. With another program called `garnet` on PATH: expect the installer to warn about shadowing and never to overwrite it; `--name garnet-agent` works; `garnet doctor` reports which `garnet` is on PATH.
 4. `garnet setup` on a real terminal: arrow-free numbered menus, hidden key input (dots only), Ctrl+C at any question saves nothing. Accept the live checks: a real Anthropic key (expect "key accepted"), a wrong key (expect "rejected", and the offer to re-enter), an OpenRouter key (uses `GET /api/v1/key`; confirm that endpoint still exists), a local Ollama (`/v1/models`), a Telegram token (expect the bot's @username), a Discord token. The key must not appear on screen, in `config.json` or in shell history.
 5. Let setup install the service, then pair through it: message the bot, press Enter at the prompt, approve the code. Expect the greeting in the chat. On macOS check that `launchctl kickstart -k` restarts the agent when setup offers a restart.
-6. Re-run `garnet setup`: the menu shows the current values; changing only the persona keeps everything else in `config.json` byte-for-byte apart from `persona`.
-7. `garnet doctor` on the finished host: expect no failures; stop Docker with `permissions.exec` at `ask` and expect a sandbox failure with a fix.
+6. Wake-up: in `garnet setup` choose "Wake it up" with a real key (and again with a weak or local model). Expect the agent to speak first, ask name, your name, answer style, time zone and what you want help with, call `set_profile` and `memory` (visible tool rows), and print "Tool check passed". Check `config.json` (`persona` between the `garnet setup` markers, `timezone`) and `memory/default/USER.md`. With a model that cannot call tools, expect the chat to stop with "Setup chat is stopping because ..." and the three form questions, never a loop. `garnet setup -y` must not open a chat. `garnet wake` re-runs it.
+7. Re-run `garnet setup`: the menu shows the current values; changing only the persona keeps everything else in `config.json` byte-for-byte apart from `persona`.
+8. `garnet doctor` on the finished host: expect no failures; stop Docker with `permissions.exec` at `ask` and expect a sandbox failure with a fix.
 
 ### 1. Anthropic model
 

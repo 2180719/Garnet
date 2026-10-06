@@ -52,7 +52,7 @@ export type AgentDeps = {
    * snapshot, skills index). Read when a session's prompt is frozen: at its
    * first task and after each compaction.
    */
-  promptSections?: (memoryNamespace: string) => string[];
+  promptSections?: (memoryNamespace: string, sessionId: string) => string[];
   /** Compact before a task when the previous request used at least this many input tokens. */
   compactAtTokens?: number;
   /** User turns kept verbatim after compaction. */
@@ -257,7 +257,7 @@ export class Agent {
   private frozenFor(sessionId: string): { system: string; tools: ToolSchema[] } {
     const frozen: FrozenContext | undefined = frozenContext(this.deps.store.events(sessionId));
     if (frozen?.tools) return { system: frozen.system, tools: frozen.tools };
-    return this.freeze(sessionId, frozen?.system ?? this.freshSystem());
+    return this.freeze(sessionId, frozen?.system ?? this.freshSystem(sessionId));
   }
 
   private freeze(sessionId: string, system: string): { system: string; tools: ToolSchema[] } {
@@ -266,9 +266,9 @@ export class Agent {
     return { system, tools };
   }
 
-  private freshSystem(): string {
+  private freshSystem(sessionId: string): string {
     const ns = this.deps.memoryNamespace ?? 'default';
-    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [], timestamps: this.deps.timeZone !== undefined });
+    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns, sessionId) ?? [], timestamps: this.deps.timeZone !== undefined });
   }
 
   /**
@@ -329,7 +329,7 @@ export class Agent {
       return { status: 'failed', usage: turn.usage, modelCalls: 1 };
     }
     this.deps.store.append(sessionId, { type: 'checkpoint', summary, throughSeq: plan.throughSeq, usage: turn.usage });
-    this.freeze(sessionId, this.freshSystem());
+    this.freeze(sessionId, this.freshSystem(sessionId));
     return { status: 'compacted', usage: turn.usage, modelCalls: 1 };
   }
 

@@ -1,0 +1,11 @@
+# onboarding
+
+The first-run "wake-up": instead of a form, the agent introduces itself in a chat, asks the same questions and saves the answers with real tools.
+
+- Public API: `bootstrapPrompt()` (+ `BOOTSTRAP_VERSION`, `ONBOARDING_TITLE`, `KICKOFF_MESSAGE`), `profileTool(home)` (`set_profile`), `applyProfile(home, update)`, `OnboardingWatch`.
+- The bootstrap prompt is versioned (`# First-run onboarding (bootstrap vN)`; bump `BOOTSTRAP_VERSION` when the wording changes). It is a prompt section of sessions titled `ONBOARDING_TITLE` only, and only in a Garnet created with `onboarding: true` (`src/main.ts`). It is frozen with that session like any other prompt section; other sessions never contain it. `set_profile` is registered under the same flag, so it is not in every session's tool list.
+- Writes only through sanctioned paths: `set_profile` and the fallback form call `applyProfile`, which reads config with `loadConfig`, edits the persona with `readPersona`/`writePersona` (the `<!-- garnet setup -->` markers, so hand-written persona text survives), validates with `validBasic` and `validTimeZone`, and saves with `writeConfig`; nothing is written when validation fails. Memory facts go through the `memory` tool and its versioned store. `set_profile` needs `memory.write` (a tainted session is asked first like any write). The running session's own prompt does not change (frozen); the new name applies from the next session.
+- `OnboardingWatch` reads only the event log. Verified means a real `set_profile` finished ok. It gives up (fallback to the form) on 2 failed saves, 2 failed turns in a row, a spent budget, or 7 owner replies with nothing saved. Every limit is finite and a fallback is final, so the conversation cannot loop and no answer is dropped: the chat stays in the session log and the form's defaults are whatever was already saved.
+- The bootstrap text and every message here avoid em-dashes (owners often ask for that and the agent copies the tone). Keep it that way; a test checks the prompt.
+- Uses `zod` in `profile.ts`: `onboarding` is in the lint allowlist.
+- The chat UIs, the `garnet wake` command and the setup wizard step live in `src/cli`; the scripted offline conversation is `onboardingScript` in `src/models`.

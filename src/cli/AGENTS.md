@@ -1,6 +1,6 @@
 # cli
 
-The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lists config, chat-made and CLI-added jobs with their schedule and next run in words; `add`/`edit` take natural schedules (`parseWhen`); `delete`/`edit` refuse config.json jobs. Commands: `setup`, `doctor`, `init`, `chat [--fake] [--session <id>] [--plain]`, `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `garnet help` lists them all).
+The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lists config, chat-made and CLI-added jobs with their schedule and next run in words; `add`/`edit` take natural schedules (`parseWhen`); `delete`/`edit` refuse config.json jobs. Commands: `setup`, `doctor`, `init`, `chat [--fake] [--session <id>] [--plain] [--onboard]`, `wake [--fake]`, `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `garnet help` lists them all).
 
 - `main(argv, io)` returns an exit code and writes through `io`, so it is testable.
 - The CLI is a surface, not logic: it calls `createGarnet()` from `src/main.ts` and renders runtime events.
@@ -15,11 +15,14 @@ The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lis
 - Each prompt has a stable `id` that doubles as its `--flag` in non-interactive mode (`AnswerPrompter`). Adding a question: give it an id, a `default`, and an `auto` (what a script gets without the flag; optional steps must default to off), and add the flag to `FLAGS` and `SETUP_USAGE`.
 - Nothing is written before the save step, except an import the owner applies (memory and skills go straight to their stores). Secrets go to the encrypted store or `<home>/env`, never config, and never into output. A new key file for the store must be outside `<home>`.
 - Live checks (`checks.ts`) run only after the owner agrees, cost no tokens, and scrub the secret from every message. Tests inject `fetch`.
-- The persona basics live between `<!-- garnet setup -->` markers in `config.persona`, so hand-written or imported text survives re-runs.
+- The persona basics live between `<!-- garnet setup -->` markers in `config.persona`, so hand-written or imported text survives re-runs. The marker code is `readPersona`/`writePersona` in `src/config`; `setup/persona.ts` only holds `askBasics`, the three questions shared by the form and the onboarding fallback.
+- Wake-up choice: in `personaStep`, when `deps.wake` exists, the prompter is interactive and the model is usable (demo, local, or a key already found), a `select` with id `onboarding` offers `form` (default, the existing questions) or `wake`. `wake` skips the questions, and `wakeStep` runs `deps.wake` (real: `chat --onboard`, plus `--fake` for the demo provider) after save, service and pairing; a failure only adds a "still to do" line. Non-interactive runs (`-y`) never ask and never chat; there is deliberately no flag for it.
 - `doctor.ts` is read-only and offline: it reports which secret names exist but never prints a value, never calls a provider, and probes Docker only when `exec` is allowed. Each finding has a fix. `--json` for scripts; exit 1 when anything fails.
 - The installer (`install.sh` at the repo root) is POSIX sh. Check it with `sh -n install.sh`; see the root AGENTS.md.
 
 ## `garnet chat` (`chat/`)
+
+`garnet chat --onboard` (alias `garnet wake`) is the first-run wake-up: a new session titled `ONBOARDING_TITLE` in a Garnet created with `onboarding: true` (this registers `set_profile` and adds the bootstrap prompt to that session only), and the CLI sends `KICKOFF_MESSAGE` so the agent speaks first (not echoed in the TUI). Both UIs take an `OnboardFlow` (`chat/flow.ts`): after every turn `OnboardingWatch.afterTurn` says continue (with a one-time "Tool check passed" note once `set_profile` really succeeded) or fall back. On fallback the plain chat asks the form questions inline from its own input; the TUI exits (terminal restored) and `chat()` asks them with a `TerminalPrompter`. Both save through `applyProfile`, so answers already saved by the agent are the form's defaults and the chat stays in the session log. `--fake` plays `onboardingScript()`. `--onboard` cannot combine with `--session`.
 
 `chat/index.ts` picks the mode: the interactive TUI when stdin and stdout are both terminals (and `TERM` is not `dumb`, and no `--plain`), otherwise a plain line chat. `main.ts` only dispatches to it.
 

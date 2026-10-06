@@ -4,3 +4,4 @@ export { loadConfig, writeConfig, parseConfig, defaultConfig, garnetHome, pathsF
 export { redact } from './redact.ts';
 export { envVar, deprecatedEnvVars, loadEnvFile, parseEnv, removeFromEnvFile, setInEnvFile, secretNames } from './env.ts';
 export { PROTECTED_CONFIG_PATHS, isProtectedConfigPath, changedProtectedPaths } from './protected.ts';
+export { DEFAULT_NAME, PERSONA_MAX, readPersona, writePersona, validBasic, type PersonaBasics } from './persona.ts';
