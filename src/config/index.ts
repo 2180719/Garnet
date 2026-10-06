@@ -2,5 +2,5 @@ export { configSchema, CONFIG_VERSION, type RubyConfig, type Permission, type Jo
 export { parseCron, nextRun, zonedParts, validTimeZone, type Cron } from './cron.ts';
 export { loadConfig, writeConfig, parseConfig, defaultConfig, rubyHome, pathsFor, type Paths, type Loaded } from './load.ts';
 export { redact } from './redact.ts';
-export { loadEnvFile, parseEnv, removeFromEnvFile, secretNames } from './env.ts';
+export { loadEnvFile, parseEnv, removeFromEnvFile, setInEnvFile, secretNames } from './env.ts';
 export { PROTECTED_CONFIG_PATHS, isProtectedConfigPath, changedProtectedPaths } from './protected.ts';

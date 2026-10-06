@@ -9,7 +9,7 @@ export type ServicePlan = {
   /** Where the unit / plist file is written. */
   path: string;
   contents: string;
-  commands: { install: string[][]; uninstall: string[][]; status: string[][] };
+  commands: { install: string[][]; uninstall: string[][]; status: string[][]; restart: string[][] };
   notes: string[];
 };
 
@@ -111,6 +111,7 @@ WantedBy=default.target
       ],
       uninstall: [['systemctl', '--user', 'disable', '--now', SYSTEMD_UNIT]],
       status: [['systemctl', '--user', 'status', SYSTEMD_UNIT, '--no-pager']],
+      restart: [['systemctl', '--user', 'restart', SYSTEMD_UNIT]],
     },
     notes: [
       `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`ruby secrets set\` and put only RUBY_SECRETS_KEY_FILE=<path> there.`,
@@ -169,6 +170,7 @@ ${args}
       install: [['launchctl', 'bootstrap', `gui/${uid}`, path]],
       uninstall: [['launchctl', 'bootout', target]],
       status: [['launchctl', 'print', target]],
+      restart: [['launchctl', 'kickstart', '-k', target]],
     },
     notes: [
       `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`ruby secrets set\` and put only RUBY_SECRETS_KEY_FILE=<path> there.`,
@@ -278,5 +280,13 @@ export async function serviceStatus(plan: ServicePlan, deps: Partial<ServiceDeps
   const d = { ...defaultDeps, ...deps };
   const result: ServiceResult = { ok: true, files: [], commands: [], notes: [] };
   await runAll(plan.commands.status, d, result);
+  return result;
+}
+
+/** Restarts the service so it picks up config and secret changes. */
+export async function restartService(plan: ServicePlan, deps: Partial<ServiceDeps> = {}): Promise<ServiceResult> {
+  const d = { ...defaultDeps, ...deps };
+  const result: ServiceResult = { ok: true, files: [], commands: [], notes: [] };
+  await runAll(plan.commands.restart, d, result);
   return result;
 }

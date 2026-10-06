@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { defaultEntry, installService, planService, serviceStatus, shellQuote, uninstallService } from './index.ts';
+import { defaultEntry, installService, planService, restartService, serviceStatus, shellQuote, uninstallService } from './index.ts';
 import type { CommandResult, ServicePlan } from './index.ts';
 
 const base = {
@@ -205,4 +205,14 @@ test('status runs the status command and reports its output', async () => {
   assert.equal(r.ok, false);
   assert.equal(r.commands[0]?.stdout, 'inactive');
   assert.deepEqual(calls, ['systemctl --user status ruby.service --no-pager']);
+});
+
+test('restart uses systemctl restart or launchctl kickstart -k', async () => {
+  const { p } = tempPlan();
+  const calls: Calls = [];
+  const r = await restartService(p, { run: fakeRun(calls, {}) });
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls, ['systemctl --user restart ruby.service']);
+  const mac = plan({ ...base, platform: 'darwin', uid: 501 });
+  assert.deepEqual(mac.commands.restart, [['launchctl', 'kickstart', '-k', 'gui/501/dev.ruby.agent']]);
 });
