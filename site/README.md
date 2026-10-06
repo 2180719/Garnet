@@ -4,6 +4,10 @@ Plain static HTML, CSS and a little vanilla JS. No build step, no dependencies, 
 
 Files: `index.html`, `styles.css`, `main.js`, `favicon.svg`, `404.html`, `robots.txt`.
 
+## Keeping the copy true
+
+The page quotes real details from the code: the line count in the hero (about 9,400 lines of non-test TypeScript in `src/`), config defaults (`src/config/schema.ts`), the CLI output in the transcripts (`src/cli/`, `src/gateway/gateway.ts`), the `src/` layout and the Status section (from `PLAN.md`). When any of those change, update the page. Anything not built yet should read as planned.
+
 ## Preview
 
     cd site && python3 -m http.server 8080

@@ -27,7 +27,7 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | `src/skills/` | `SKILL.md` skills (agentskills.io format) with provenance, owner-edit locks and proposals. |
 | `src/runtime/` | Agent loop, budgets, cancellation, retries, per-session lanes. |
 | `src/gateway/` | Identity and pairing, chat approvals (`/approve`, `/deny`), conversation routing, durable inbox/outbox delivery, restart recovery, API keys, HTTP API. |
-| `src/channels/` | Messaging adapters (Telegram, Signal via signal-cli). Normalize a platform; no routing or persistence. |
+| `src/channels/` | Messaging adapters (Telegram, Signal via signal-cli, Discord). Normalize a platform; no routing or persistence. |
 | `src/scheduler/` | Cron jobs and heartbeats with pre-checks, budgets, catch-up and failure pausing; runs go through the gateway. |
 | `src/service/` | systemd/launchd service definitions and install. |
 | `src/migrate/` | `ruby import openclaw|hermes`: memory, persona and skills from other harnesses (dry run by default, never secrets). |

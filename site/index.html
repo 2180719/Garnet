@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ruby: a personal AI agent you can read</title>
-<meta name="description" content="Ruby is an open-source, self-hosted personal AI agent, small enough to read and secure by default. Pre-release and in active development.">
+<title>Ruby, a personal agent you can read</title>
+<meta name="description" content="Ruby is a self-hosted personal AI agent. It answers on Telegram, Signal and Discord, keeps its memory in two capped Markdown files and asks before it writes. Open source, pre-release.">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#9b111e">
+<meta name="theme-color" content="#f8f5f0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141112" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
 <script>try{var t=localStorage.getItem('ruby-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
@@ -18,199 +19,183 @@
   See site/README.md. The page POSTs to {endpoint}/v1/demo/chat/completions.
 -->
 <body data-demo-endpoint="">
-<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-  <defs>
-    <symbol id="gem" viewBox="0 0 64 64">
-      <path fill="var(--accent)" d="M17 7h30l15 17-30 35L2 24z"/>
-      <path fill="#fff" fill-opacity=".38" d="M17 7h30l-7 17H24z"/>
-      <path fill="#fff" fill-opacity=".16" d="M17 7l7 17H2z"/>
-      <path fill="#000" fill-opacity=".12" d="M47 7l15 17H40z"/>
-      <path fill="#000" fill-opacity=".22" d="M2 24h22l8 35z"/>
-      <path fill="#000" fill-opacity=".38" d="M40 24h22L32 59z"/>
-      <path fill="#fff" fill-opacity=".1" d="M24 24h16L32 59z"/>
-    </symbol>
-    <symbol id="arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-  </defs>
-</svg>
 <a class="skip" href="#main">Skip to content</a>
-<header class="site-header">
-  <div class="wrap bar">
-    <a class="brand" href="#top" aria-label="Ruby, home"><svg aria-hidden="true"><use href="#gem"/></svg>Ruby</a>
-    <nav id="nav" class="nav" aria-label="Primary">
-      <a href="#why">Why</a><a href="#features">Features</a><a href="#how">How it works</a><a href="#security">Security</a><a href="#start">Quick start</a><a href="#faq">FAQ</a>
-    </nav>
-    <div class="tools">
-      <button id="theme-toggle" class="icon-btn" type="button" aria-label="Toggle color theme" aria-pressed="false">
-        <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>
-        <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg>
-      </button>
-      <button id="menu-toggle" class="icon-btn" type="button" aria-expanded="false" aria-controls="nav" aria-label="Menu">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-      </button>
-    </div>
-  </div>
+<header class="top wrap">
+  <a class="brand" href="./" aria-label="Ruby, home"><svg viewBox="0 0 64 64" aria-hidden="true"><path class="g1" d="M18 8h28l14 16-28 34L4 24z"/><path class="g2" d="M4 24h56L32 58z"/><path class="g3" d="M18 8h28l-6 16H24z"/><path class="g4" d="M24 24h16L32 58z"/></svg>Ruby</a>
+  <nav aria-label="Primary">
+    <a href="#status">Status</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/2180719/Ruby">Source</a>
+  </nav>
+  <button id="theme-toggle" class="theme" type="button" aria-label="Toggle color theme" aria-pressed="false">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
+  </button>
 </header>
 
 <main id="main">
-<section class="hero" id="top">
-  <div class="wrap">
-    <div class="reveal">
-      <p class="badge"><i aria-hidden="true"></i>Pre-release · in active development</p>
-      <h1>A personal agent you can <em>actually read.</em></h1>
-      <p class="lede">Ruby is an open-source, self-hosted AI agent you reach through Telegram, Signal, Discord, a dashboard or an API. It is designed to be small enough to audit, secure by default, and frugal with tokens.</p>
-      <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/2180719/Ruby/blob/main/PLAN.md">Read the plan</a>
-        <a class="btn btn-ghost" href="https://github.com/2180719/Ruby">View on GitHub</a>
-      </div>
-    </div>
-    <div class="gem" role="img" aria-label="Ruby logo: a faceted ruby gem"><svg viewBox="0 0 64 64" aria-hidden="true"><use href="#gem"/></svg></div>
+<section class="hero wrap" aria-labelledby="h-top">
+  <div class="hero-text">
+    <h1 id="h-top">A personal agent you can actually read.</h1>
+    <p class="lede">Ruby runs on your own server or laptop and answers you on Telegram, Signal or Discord. Its memory is two Markdown files with a hard size limit, and it asks before it writes a file.</p>
+    <p>The whole thing is about 9,400 lines of TypeScript with two runtime dependencies. You can read all of it, and so can your coding agent. It hasn't reached 1.0 yet; <a href="#status">Status</a> says what that means in practice.</p>
+    <p class="links"><a href="https://github.com/2180719/Ruby">Source on GitHub</a><a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">Read PLAN.md</a></p>
+  </div>
+  <figure class="term hero-term">
+    <figcaption>First run, then pairing a Telegram bot</figcaption>
+<pre class="wrapped"><code><span class="p">$</span> npm run ruby -- init
+<span class="o">Created /home/sam/.ruby/config.json and /home/sam/.ruby/workspace.
+Set ANTHROPIC_API_KEY, then run `ruby chat`.</span>
+
+<span class="p">$</span> npm run ruby -- start
+<span class="c"># message the bot from your phone; it replies with a code</span>
+
+<span class="p">$</span> npm run ruby -- pair approve K7Q2MX
+<span class="o">Paired telegram Sam (40213377). They'll get a greeting
+from the running service.</span></code></pre>
+  </figure>
+</section>
+
+<section class="sec wrap" id="what" aria-labelledby="h-what">
+  <h2 id="h-what">What it does</h2>
+  <div class="body">
+    <p class="intro">One process holds everything: the chat channels, a durable inbox and outbox in SQLite, the agent loop, the scheduler and an optional HTTP API. A message is stored before Ruby acts on it, so a restart picks up where it left off and a duplicate delivery doesn't run twice.</p>
+    <dl class="rows">
+      <div><dt>Channels</dt><dd>Telegram through the bot API, Signal through a local <code>signal-cli</code> daemon, and Discord direct messages. Someone Ruby doesn't know gets a six-character pairing code and nothing else until you run <code>ruby pair approve</code> on the host.</dd></div>
+      <div><dt>Approvals</dt><dd>
+        <p>Every tool capability is set to allow, ask or deny. Out of the box, reading files is allowed, writing asks, and running commands is off. An approval covers one operation and expires after a day. In chat it looks like this:</p>
+        <figure class="term chat" aria-label="Approval over chat">
+          <div class="chatlog"><span class="w">you</span><span>tidy notes.md and put today's date at the top</span><span class="w">ruby</span><span>I need your approval to continue:
+• write_file on notes.md {"path":"notes.md",…}
+  /approve 8RWQD   /deny 8RWQD</span><span class="w">you</span><span>/approve 8RWQD</span></div>
+        </figure>
+      </dd></div>
+      <div><dt>Memory</dt><dd><code>MEMORY.md</code> holds Ruby's own notes, capped at 2,200 characters. <code>USER.md</code> holds what it knows about you, capped at 1,400. When a file is full, Ruby has to consolidate instead of appending forever. Every change is versioned, so <code>ruby memory rollback</code> undoes a bad edit.</dd></div>
+      <div><dt>Skills</dt><dd>Folders with a <code>SKILL.md</code>, in the agentskills.io format. Only each skill's name and a one-line summary go into the prompt. If you edit a skill by hand it becomes locked, and Ruby can only propose a diff for you to accept. It never downloads skills from anywhere.</dd></div>
+      <div><dt>Schedules</dt><dd>Cron jobs and heartbeats, each with its own token budget and timeout. A heartbeat can watch a file or a URL and only wake the model when it changes, so an hour in which nothing happened costs no tokens.</dd></div>
+      <div><dt>Long chats</dt><dd>When a conversation gets large, older turns are summarized and the last two are kept word for word. The system prompt stays fixed for the session so the provider's prompt cache keeps working.</dd></div>
+      <div><dt>Commands</dt><dd><code>run_command</code> runs each command in a fresh Docker container: <code>debian:stable-slim</code>, no network, 512&nbsp;MB of memory. There is also a <code>local</code> backend, and the config says plainly that it is not a security boundary.</dd></div>
+      <div><dt>API</dt><dd>Off until you run <code>ruby api enable</code>. Then it serves an OpenAI-compatible <code>/v1/chat/completions</code> on <code>127.0.0.1:7311</code>, so existing chat apps can connect with a scoped key. Keys are stored hashed and every request is rate-limited.</dd></div>
+      <div><dt>Models</dt><dd>Anthropic, or anything that speaks the OpenAI API: OpenRouter, Ollama, llama.cpp, vLLM, LM Studio.</dd></div>
+      <div><dt>Housekeeping</dt><dd><code>ruby service install</code> writes a systemd unit or a launchd plist. <code>ruby backup</code> copies the database, config, memory, skills and workspace. <code>ruby import openclaw</code> (or <code>hermes</code>) brings over memory, persona and skills, as a dry run unless you add <code>--apply</code>. It never copies secrets.</dd></div>
+    </dl>
   </div>
 </section>
 
-<section id="why" class="alt why">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Why Ruby</p>
-      <h2>Agents shouldn't be a black box you hand the keys to.</h2>
-      <p class="lede">Many agent harnesses grow into sprawling codebases with exposed defaults and surprise bills. Ruby is being built as the opposite.</p>
-    </div>
-    <div class="grid c4">
-      <div class="card"><h3>Small and auditable</h3><p>One job per module, a predictable layout, and a fast offline test suite. The goal is a codebase a person, or their own agent, can read end to end.</p></div>
-      <div class="card"><h3>Secure by default</h3><p>Designed to bind to loopback, refuse public exposure without auth, and ask before consequential actions. Safe settings first, opt-in for the rest.</p></div>
-      <div class="card"><h3>Token-efficient</h3><p>A stable prompt prefix, bounded memory, tools loaded on demand and cheap checks before any model call, so idle time costs close to nothing.</p></div>
-      <div class="card"><h3>Yours</h3><p>Runs on your VPS or computer. Memory, persona and skills are plain files you can open, edit and version. No telemetry.</p></div>
+<section class="sec wrap" id="defaults" aria-labelledby="h-defaults">
+  <h2 id="h-defaults">Defaults</h2>
+  <div class="body">
+    <p class="intro">Ruby exists partly because of what went wrong elsewhere: agent gateways left open on the internet, heartbeats that paid a large model to report that nothing had changed, skills from public registries that turned out to be malware. So the defaults are conservative, and loosening them is a config edit you make on purpose.</p>
+    <div class="pair">
+    <figure class="term">
+      <figcaption>An excerpt of <code>~/.ruby/config.json</code>, as <code>ruby init</code> writes it</figcaption>
+<pre class="json"><code>{
+  <span class="k">"api"</span>: {
+    <span class="k">"enabled"</span>: false,
+    <span class="k">"host"</span>: <span class="s">"127.0.0.1"</span>,
+    <span class="k">"port"</span>: 7311
+  },
+  <span class="k">"permissions"</span>: {
+    <span class="k">"fs.read"</span>: <span class="s">"allow"</span>,
+    <span class="k">"fs.write"</span>: <span class="s">"ask"</span>,
+    <span class="k">"net.fetch"</span>: <span class="s">"ask"</span>,
+    <span class="k">"exec"</span>: <span class="s">"deny"</span>,
+    <span class="k">"message.send"</span>: <span class="s">"ask"</span>
+  },
+  <span class="k">"sandbox"</span>: {
+    <span class="k">"backend"</span>: <span class="s">"docker"</span>,
+    <span class="k">"network"</span>: <span class="s">"none"</span>,
+    <span class="k">"memory"</span>: <span class="s">"512m"</span>
+  },
+  <span class="k">"memory"</span>: {
+    <span class="k">"memoryChars"</span>: 2200,
+    <span class="k">"userChars"</span>: 1400
+  }
+}</code></pre>
+    </figure>
+    <p>A few things aren't settings at all. Ruby refuses to listen on a public address until at least one API key exists. Tools can only touch one workspace directory, <code>~/.ruby/workspace</code> unless you point it elsewhere. API keys and bot tokens are referenced by the name of an environment variable, never stored in the config, and are redacted from logs. If you ask for the Docker sandbox and Docker isn't there, you get an error rather than a quiet fallback to running on the host. <code>ruby config explain</code> prints every setting with its default.</p>
     </div>
   </div>
 </section>
 
-<section id="features">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Features</p>
-      <h2>Designed around how you actually use an agent.</h2>
-      <p class="lede">Everything below is the design target from the project plan. Ruby is pre-release, and none of it should be assumed to be shipped yet.</p>
-    </div>
-    <div class="grid c3">
-      <article class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></div><h3>Multi-channel gateway</h3><p>One gateway for Telegram, Signal, Discord, the dashboard and the API. Durable inbox and outbox, deduplication, one active run per session, and pairing codes for unknown senders.</p><span class="tag">Roadmap: Telegram first</span></article>
-      <article class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="12" r="3.5"/><path d="M11.5 12H21m-3 0v3m-3-3v2"/></svg></div><h3>Opt-in, key-gated API</h3><p>Off by default. When enabled: scoped, revocable, hashed keys, rate limits, an audit log and an OpenAI-compatible <code>/v1/chat/completions</code> endpoint, so existing chat frontends can connect.</p><span class="tag">Designed</span></article>
-      <article class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5"/></svg></div><h3>Bounded memory and skills</h3><p>Hard-capped <code>MEMORY.md</code> and <code>USER.md</code>, versioned and rollback-able. Skills are plain <code>SKILL.md</code> files. Your edits are locked, and the agent can only propose a patch.</p><span class="tag">Designed</span></article>
-      <article class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-4.4-7-10.5A4.5 4.5 0 0 1 12 7a4.5 4.5 0 0 1 7 3.5C19 16.6 12 21 12 21z"/></svg></div><h3>Heartbeats that don't burn tokens</h3><p>Scheduled checks run cheap, deterministic pre-checks first (file changed, URL hash changed, exit code) and wake the model only when something does.</p><span class="tag">Designed</span></article>
-      <article class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg></div><h3>Sandboxed tools and approvals</h3><p>Permission profiles set each capability to allow, ask or deny. Approvals are bound to one operation and expire. Sandbox backends: local, Docker, then SSH.</p><span class="tag">Designed</span></article>
-      <article class="card"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 14l2 2 4-4"/></svg></div><h3>Opt-in dashboard with achievements</h3><p>A light dashboard for sessions, approvals, memory, schedules and usage, plus achievements unlocked by real milestones. Stored locally, and never phoning home.</p><span class="tag">Roadmap</span></article>
+<section class="sec wrap" id="code" aria-labelledby="h-code">
+  <h2 id="h-code">The code</h2>
+  <div class="body">
+    <p class="intro">Node 22.18 runs the TypeScript directly, so there is no build step. Storage is SQLite through the built-in <code>node:sqlite</code>. The only runtime dependencies are <code>zod</code> and the Anthropic SDK, and the lint script fails if someone adds a third without a reason.</p>
+    <figure class="tree">
+      <figcaption><code>src/</code>, one job per folder</figcaption>
+<dl>
+<dt>contracts/</dt><dd>shared types; the only module everyone imports</dd>
+<dt>config/</dt><dd>schema, loading, migrations, redaction</dd>
+<dt>store/</dt><dd>SQLite: sessions, event log, inbox/outbox, keys</dd>
+<dt>runtime/</dt><dd>agent loop, budgets, cancellation, session lanes</dd>
+<dt>models/</dt><dd>anthropic, openai-compatible, and a fake for tests</dd>
+<dt>tools/</dt><dd>registry, executor, file and command tools</dd>
+<dt>policy/</dt><dd>permissions, approvals, path containment</dd>
+<dt>context/</dt><dd>system prompt, history, compaction</dd>
+<dt>memory/</dt><dd>MEMORY.md and USER.md, versioned</dd>
+<dt>skills/</dt><dd>SKILL.md files, locks, proposals</dd>
+<dt>gateway/</dt><dd>pairing, routing, delivery, HTTP API</dd>
+<dt>channels/</dt><dd>telegram, signal, discord</dd>
+<dt>scheduler/</dt><dd>cron, heartbeats, pre-checks</dd>
+<dt>sandbox/</dt><dd>docker or local command execution</dd>
+<dt>service/</dt><dd>systemd and launchd</dd>
+<dt>migrate/</dt><dd>import from OpenClaw and Hermes</dd>
+<dt>cli/</dt><dd>the ruby command</dd>
+<dt>main.ts</dt><dd>the one place modules are wired together</dd>
+</dl>
+    </figure>
+    <p>Modules talk to each other only through their <code>index.ts</code>, and each folder has an <code>AGENTS.md</code> saying what it owns and what it must not do. Despite the name, those files are written for people as much as for agents. They also let a coding agent asked to change Ruby find the right file without reading everything first. <code>npm run check</code> runs lint, the type checker and the tests, offline, in one go.</p>
+  </div>
+</section>
+
+<section class="sec wrap" id="status" aria-labelledby="h-status">
+  <h2 id="h-status">Status</h2>
+  <div class="body">
+    <div class="note">
+      <p><strong>Pre-release, version 0.1.0.</strong> Everything described above is in the repository, with tests. The tests run offline against a fake model and fake channels; Ruby has not yet been run against live Telegram, Signal or Discord servers or real provider APIs as part of testing. Expect rough edges the first time it meets a real bot.</p>
+      <p>The dashboard's API is done and its interface is being built. Still to come before a 1.0: an encrypted secret store (today secrets live in an env file with mode 600), failure-injection tests, a docs site, and the live tests above. The <a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">plan</a> tracks each phase.</p>
     </div>
   </div>
 </section>
 
-<section id="how" class="alt">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">How it works</p>
-      <h2>One gateway, one source of truth.</h2>
-      <p class="lede">Channels stay thin. The gateway owns delivery and routing, and the runtime owns the agent loop. Tools and memory sit behind a policy layer.</p>
-    </div>
-    <div class="flow" role="group" aria-label="Diagram: channels flow into the gateway, then the runtime, then tools and memory">
-      <div class="node"><h3>Channels</h3><ul><li>Telegram</li><li>Signal</li><li>Discord</li><li>Dashboard</li><li>API</li></ul></div>
-      <div class="arrow" aria-hidden="true"><svg><use href="#arrow"/></svg></div>
-      <div class="node core"><h3>Gateway</h3><ul><li>Verify sender</li><li>Dedupe</li><li>Inbox / outbox</li><li>Routing</li></ul></div>
-      <div class="arrow" aria-hidden="true"><svg><use href="#arrow"/></svg></div>
-      <div class="node core"><h3>Runtime</h3><ul><li>Agent loop</li><li>Policy</li><li>Scheduler</li></ul></div>
-      <div class="arrow" aria-hidden="true"><svg><use href="#arrow"/></svg></div>
-      <div class="split">
-        <div class="node"><h3>Tools</h3><ul><li>Sandboxed</li><li>Approvals</li></ul></div>
-        <div class="node"><h3>Memory</h3><ul><li>MEMORY.md</li><li>Skills</li><li>Search</li></ul></div>
-      </div>
-    </div>
-    <ol class="steps">
-      <li><b>Message arrives.</b> The sender is verified, the message is deduplicated and persisted, then queued on that session's lane.</li>
-      <li><b>Context is built.</b> A stable prefix, a frozen memory snapshot and recent turns keep prompt caching effective.</li>
-      <li><b>Tools are gated.</b> Each call is validated and checked against policy, and anything risky waits for your approval.</li>
-      <li><b>Reply is honest.</b> Completion reports say what was done, what was verified and what remains.</li>
-    </ol>
+<section class="sec wrap" id="install" aria-labelledby="h-install">
+  <h2 id="h-install">Install</h2>
+  <div class="body">
+    <p class="intro">You need Node.js 22.18 or newer, and an Anthropic key or an OpenAI-compatible endpoint once you're past the fake model.</p>
+    <figure class="term">
+      <figcaption class="bar"><span>Shell</span><button id="copy-btn" class="copy" type="button" aria-describedby="install-code">Copy</button></figcaption>
+<pre><code id="install-code">git clone https://github.com/2180719/Ruby &amp;&amp; cd Ruby
+npm install
+npm run ruby -- init
+npm run ruby -- chat --fake    # offline, no key needed
+export ANTHROPIC_API_KEY=...
+npm run ruby -- chat</code></pre>
+    </figure>
+    <p>For Telegram, create a bot with @BotFather, put <code>TELEGRAM_BOT_TOKEN</code> in <code>~/.ruby/env</code>, set <code>channels.telegram.enabled</code> to <code>true</code>, and run <code>ruby start</code>. The <a href="https://github.com/2180719/Ruby#readme">README</a> covers the rest, including the API and keeping it running as a service.</p>
   </div>
 </section>
 
-<section id="security">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Security posture</p>
-      <h2>Designed to be safe before it is convenient.</h2>
-      <p class="lede">These are design commitments from the plan. They are targets for the implementation, not audited claims.</p>
-    </div>
-    <ul class="checks">
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>Loopback by default.</b> A non-loopback bind is refused unless an API key exists.</li>
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>Hashed, scoped API keys.</b> Salted scrypt hashes, expiry, revocation, rate limits and an audit log.</li>
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>Pairing for unknown senders.</b> One-time codes approved by the owner. Display names are never identity.</li>
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>Approvals that mean something.</b> Persisted, tied to a single operation, from an authorized identity, and expiring.</li>
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>Real isolation or an error.</b> An isolated profile never silently falls back to an unsandboxed backend.</li>
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>Secrets stay out of prompts.</b> An encrypted store, credentials injected by name and redacted from logs.</li>
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>No automatic third-party skills.</b> Only local or reviewed skills, and no third-party code run in-process.</li>
-      <li><svg aria-hidden="true"><use href="#check"/></svg><b>No tracking.</b> No telemetry in the agent, and none on this website.</li>
-    </ul>
-  </div>
-</section>
-
-<section id="start" class="alt">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Quick start</p>
-      <h2>Install in four commands.</h2>
-      <p class="lede">The installer does not exist yet. This is the intended experience, and the snippet will not work today.</p>
-    </div>
-    <div class="code">
-      <div class="code-top"><span>shell <span class="soon">&nbsp;· coming soon</span></span><button id="copy-btn" class="copy" type="button" aria-describedby="install-code">Copy</button></div>
-<pre><code id="install-code" style="background:none;padding:0;color:inherit;font-size:inherit">git clone https://github.com/2180719/Ruby &amp;&amp; cd Ruby &amp;&amp; npm install &amp;&amp; npm run ruby -- init</code></pre>
-    </div>
-    <p class="note">Planned requirement: Node.js 22.18 or newer. Follow progress in the <a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">build phases</a>.</p>
-  </div>
-</section>
-
-<section id="demo" hidden>
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Talk to Ruby</p>
-      <h2>Try a bounded demo.</h2>
-      <p class="lede">A cheap model with no tools and no memory, behind daily budgets. Messages are sent to the demo server, so don't share anything private.</p>
-    </div>
+<section class="sec wrap" id="demo" aria-labelledby="h-demo" hidden>
+  <h2 id="h-demo">Talk to it</h2>
+  <div class="body">
+    <p class="intro">This box talks to a Ruby instance running a small model with no tools and no memory, on a daily budget. Whatever you type is sent to that server, so leave out anything private.</p>
     <div class="demo-box">
       <div id="demo-log" class="log" role="log" aria-live="polite" aria-label="Conversation with Ruby"></div>
       <form id="demo-form" class="demo-form">
-        <label for="demo-input" class="sr" style="position:absolute;left:-9999px">Your message</label>
-        <input id="demo-input" type="text" maxlength="500" autocomplete="off" placeholder="Say hello (max 500 characters)">
-        <button id="demo-send" class="btn btn-primary" type="submit">Send</button>
+        <label for="demo-input" class="sr">Your message</label>
+        <input id="demo-input" type="text" maxlength="500" autocomplete="off" placeholder="Say hello (500 characters max)">
+        <button id="demo-send" class="send" type="submit">Send</button>
       </form>
       <p id="demo-status" class="status" role="status"></p>
     </div>
   </div>
 </section>
-
-<section id="faq">
-  <div class="wrap">
-    <div class="head"><p class="eyebrow">FAQ</p><h2>Straight answers.</h2></div>
-    <div class="faq">
-      <details><summary>Can I use Ruby today?</summary><p>Not yet. Ruby is pre-release and in active development. The plan is public, and the code and docs will land in the repository as the build phases progress.</p></details>
-      <details><summary>Where does it run?</summary><p>On your own VPS or computer, as one service managed by systemd or launchd. A Docker image is optional.</p></details>
-      <details><summary>Which models will it support?</summary><p>The plan starts with the Anthropic Messages API, then an OpenAI-compatible adapter for providers such as OpenRouter and local models.</p></details>
-      <details><summary>Is there a skill marketplace?</summary><p>No. A public marketplace is a non-goal for v1. Ruby is designed to install only local or reviewed skills, in the plain <code>SKILL.md</code> format.</p></details>
-      <details><summary>Does this website track me?</summary><p>No. There are no analytics, cookies, third-party requests or web fonts. The only thing stored in your browser is your light or dark theme choice, if you make one.</p></details>
-      <details><summary>How can I help?</summary><p>Read the plan and open an issue or discussion on GitHub. Small, well-tested modules are easy to contribute to by design.</p></details>
-    </div>
-  </div>
-</section>
 </main>
 
-<footer>
-  <div class="wrap foot">
-    <div>
-      <a class="brand" href="#top" aria-label="Ruby, back to top"><svg aria-hidden="true"><use href="#gem"/></svg>Ruby</a>
-      <p style="margin-top:12px;max-width:44ch">An open-source, self-hosted personal AI agent. Pre-release and in active development. Released under the Apache License 2.0.</p>
-    </div>
-    <ul aria-label="Footer links">
-      <li><a href="https://github.com/2180719/Ruby">GitHub</a></li>
-      <li><a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">Plan</a></li>
-      <li><a href="https://github.com/2180719/Ruby/blob/main/LICENSE">License (Apache-2.0)</a></li>
-    </ul>
-  </div>
+<footer class="foot wrap">
+  <p>Ruby is open source under the <a href="https://github.com/2180719/Ruby/blob/main/LICENSE">Apache License 2.0</a>. Code and issues are on <a href="https://github.com/2180719/Ruby">GitHub</a>.</p>
+  <p>This page sets no cookies and loads nothing from anyone else's servers. The theme button remembers your choice in your browser's local storage, and that is all it stores.</p>
+  <p class="aside">There is also <code>ruby --sparkle</code>. It prints a gem.</p>
 </footer>
 <script src="main.js" defer></script>
 </body>

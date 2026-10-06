@@ -17,6 +17,7 @@
     var dark = current() === 'dark';
     toggle.setAttribute('aria-pressed', String(dark));
     toggle.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+    toggle.title = dark ? 'Light theme' : 'Dark theme';
   }
   if (toggle) {
     toggle.addEventListener('click', function () {
@@ -26,19 +27,6 @@
       syncToggle();
     });
     syncToggle();
-  }
-
-  // Mobile nav
-  var nav = document.getElementById('nav');
-  var menuBtn = document.getElementById('menu-toggle');
-  if (nav && menuBtn) {
-    var setOpen = function (open) {
-      nav.classList.toggle('open', open);
-      menuBtn.setAttribute('aria-expanded', String(open));
-    };
-    menuBtn.addEventListener('click', function () { setOpen(!nav.classList.contains('open')); });
-    nav.addEventListener('click', function (e) { if (e.target.tagName === 'A') setOpen(false); });
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setOpen(false); });
   }
 
   // Copy install snippet
