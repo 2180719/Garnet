@@ -245,6 +245,17 @@ test('send hard-splits text without natural boundaries', async () => {
   assert.deepEqual(lengths, [4096, 4096, 808]);
 });
 
+test('a rate limit on a later chunk is waited out without resending the earlier chunks', async () => {
+  let n = 0;
+  const api = fakeApi({ sendMessage: () => (++n === 2 ? fail(429, 'Too Many Requests: retry after 2', { retry_after: 2 }) : ok({ message_id: n })) });
+  const { channel, sleeps } = setup(api);
+  const para = 'a'.repeat(3000);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: `${para}\n\n${'b'.repeat(3000)}` });
+  assert.deepEqual(r, { status: 'sent', externalIds: ['1', '3'] });
+  assert.deepEqual(api.of('sendMessage').map((c) => c.body.text[0]), ['a', 'b', 'b']);
+  assert.deepEqual(sleeps, [2000]);
+});
+
 test('send maps 429 with retry_after to a retryable failure', async () => {
   const api = fakeApi({ sendMessage: () => fail(429, 'Too Many Requests: retry after 7', { retry_after: 7 }) });
   const { channel } = setup(api);

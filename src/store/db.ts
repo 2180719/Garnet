@@ -158,26 +158,44 @@ const MIGRATIONS: string[] = [
     value TEXT NOT NULL
   );
   `,
+  `
+  CREATE INDEX outbox_by_chat ON outbox(channel, account, chat_id, status);
+  `,
 ];
 
 export type Db = DatabaseSync;
+
+/**
+ * The WAL is truncated back to this size whenever a checkpoint resets it, so a
+ * burst of writes (an import, a long session) does not leave a huge -wal file
+ * behind for good. Automatic checkpoints (every 1000 pages, SQLite's default,
+ * set explicitly) keep it from growing in normal use; they can complete because
+ * Ruby never holds a read transaction open (rows are read with get()/all(),
+ * never with a lingering iterate()).
+ */
+export const WAL_SIZE_LIMIT_BYTES = 16 * 1024 * 1024;
 
 /** Opens (or creates) the database, enables WAL and foreign keys, and runs pending migrations. */
 export function openDb(file: string): Db {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  db.exec(
+    `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA wal_autocheckpoint = 1000; PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`,
+  );
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
-  const row = db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
-  let version = row?.version ?? 0;
-  if (!row) db.prepare('INSERT INTO schema_version (version) VALUES (0)').run();
-  while (version < MIGRATIONS.length) {
+  // The version is re-read inside each write transaction, so two processes opening the
+  // database at once (the service and a CLI command after an upgrade) never apply a migration twice.
+  const migrateOne = (): boolean =>
     transaction(db, () => {
+      const row = db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+      if (!row) db.prepare('INSERT INTO schema_version (version) VALUES (0)').run();
+      const version = row?.version ?? 0;
+      if (version >= MIGRATIONS.length) return false;
       db.exec(MIGRATIONS[version]!);
       db.prepare('UPDATE schema_version SET version = ?').run(version + 1);
+      return true;
     });
-    version += 1;
-  }
+  while (migrateOne());
   return db;
 }
 

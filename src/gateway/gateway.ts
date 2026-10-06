@@ -166,8 +166,8 @@ export class Gateway {
 
   /** Channel liveness and delivery backlog, for health endpoints. */
   health(): { channels: { channel: string; account: string; ok: boolean; lastSuccessAt: string | null; lastError: string | null }[]; outbox: Record<string, number> } {
-    const outbox: Record<string, number> = {};
-    for (const status of ['pending', 'failed', 'uncertain'] as const) outbox[status] = this.deps.store.outboxByStatus(status).length;
+    const { pending, failed, uncertain } = this.deps.store.outboxCounts();
+    const outbox: Record<string, number> = { pending, failed, uncertain };
     return {
       channels: [...this.channels.values()].map((c) => ({ channel: c.channel, account: c.account, ...c.health() })),
       outbox,
@@ -287,7 +287,10 @@ export class Gateway {
     const now = this.now();
     if (this.deps.store.pairingFor(row.channel, row.sender.id, now.toISOString())) return; // one prompt per code lifetime
     const ttl = this.deps.pairingTtlMinutes ?? 60;
-    const code = Array.from({ length: 6 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
+    this.deps.store.pruneExpiredPairings(now.toISOString());
+    let code: string;
+    do code = Array.from({ length: 6 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
+    while (this.deps.store.hasPairingCode(code));
     this.deps.store.addPairing({
       code,
       channel: row.channel,

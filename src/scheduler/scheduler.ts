@@ -7,6 +7,8 @@ import type { JobRunStatus, JobStore } from '../store/index.ts';
 
 export const NOTHING = 'NOTHING_TO_REPORT';
 const FAILURE_THRESHOLD = 3;
+/** Abort reason for runs cancelled because Ruby is shutting down (not the job's fault). */
+const SHUTDOWN = 'shutdown';
 
 export type RunJob = (job: JobConfig, text: string, signal: AbortSignal) => Promise<{ task: TaskRecord; text: string }>;
 export type Notify = (job: JobConfig, text: string) => void;
@@ -63,7 +65,7 @@ export class Scheduler {
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    for (const c of this.running.values()) c.abort();
+    for (const c of this.running.values()) c.abort(SHUTDOWN);
     await Promise.allSettled([...this.inflight]);
   }
 
@@ -174,6 +176,11 @@ export class Scheduler {
         .join('\n\n');
       const { task, text: reply } = await this.deps.run(job, text, controller.signal);
       const tokens = billedTokens(task.usage);
+      if (task.status === 'cancelled' && controller.signal.reason === SHUTDOWN) {
+        // A restart is not a job failure: record it, but do not count it towards pausing or message the owner.
+        finish('interrupted', { taskId: task.id, tokens, note: 'Stopped because Ruby shut down.' });
+        return;
+      }
       const failed = task.status === 'failed' || task.status === 'cancelled';
       finish(task.status, { taskId: task.id, tokens, ...(task.reason ? { note: task.reason } : {}) });
       const fresh = store.state(job.id);
@@ -188,6 +195,10 @@ export class Scheduler {
       // Completed runs with nothing to report stay quiet unless the job asks for every result.
       if (task.status !== 'completed' || job.notifyWhen === 'always' || !nothing) this.notify(job, `[${job.id}] ${reply}`);
     } catch (e) {
+      if (controller.signal.reason === SHUTDOWN) {
+        finish('interrupted', { note: 'Stopped because Ruby shut down.' });
+        return;
+      }
       finish('failed', { note: errorMessage(e) });
       const fresh = store.state(job.id);
       fresh.consecutiveFailures += 1;

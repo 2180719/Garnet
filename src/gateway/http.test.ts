@@ -43,6 +43,26 @@ test('scopes are enforced and admin implies all', async () => {
   assert.equal((await s.call('/v1/chat/completions', { key: admin, ...chat('hi') })).status, 200);
 });
 
+test('key creation rejects a nonsensical expiry and reports deduplicated scopes', async () => {
+  const s = await server();
+  for (const days of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 5000]) {
+    assert.throws(() => s.keys.create('k', ['chat'], days), /Expiry must be/, String(days));
+  }
+  assert.deepEqual(s.keys.create('k', ['chat', 'chat', 'read'], 30).scopes, ['chat', 'read']);
+});
+
+test('malformed paging parameters are a 400, not a 500 or an unbounded query', async () => {
+  const s = await server();
+  const { key } = s.keys.create('reader', ['read', 'admin']);
+  for (const q of ['limit=abc', 'limit=-1', 'limit=0', 'limit=1.5', 'limit=100000']) {
+    assert.equal((await s.call(`/api/sessions?${q}`, { key })).status, 400, q);
+  }
+  assert.equal((await s.call('/api/sessions?limit=2', { key })).status, 200);
+  const session = s.t.sessions.createSession();
+  assert.equal((await s.call(`/api/sessions/${session.id}/events?after=x`, { key })).status, 400);
+  assert.equal((await s.call(`/api/sessions/${session.id}/events?after=0`, { key })).status, 200);
+});
+
 test('chat completions run a task in a per-key conversation', async () => {
   const s = await server([{ text: 'First answer.' }, { text: 'Second answer.' }]);
   const { key } = s.keys.create('app', ['chat']);

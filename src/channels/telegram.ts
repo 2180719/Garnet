@@ -10,7 +10,7 @@ import {
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, mayHaveReachedServer } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
 
 export type TelegramOptions = {
   token: string;
@@ -48,38 +48,6 @@ class TelegramApiError extends Error {
   }
 }
 
-const defaultSleep = (ms: number, signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal.addEventListener('abort', done, { once: true });
-  });
-
-/** Split into chunks of at most `max` chars, preferring paragraph, then line, boundaries. */
-function splitText(text: string, max: number): string[] {
-  const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > max) {
-    const window = rest.slice(0, max);
-    let cut = window.lastIndexOf('\n\n');
-    if (cut <= 0) cut = window.lastIndexOf('\n');
-    if (cut <= 0) {
-      cut = max;
-      const last = window.charCodeAt(max - 1);
-      if (last >= 0xd800 && last <= 0xdbff) cut -= 1; // do not split a surrogate pair
-    }
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\n+/, '');
-  }
-  chunks.push(rest);
-  return chunks.map((c) => c.trimEnd()).filter((c) => c.length > 0);
-}
-
 export class TelegramChannel implements ChannelAdapter {
   readonly channel = 'telegram';
   readonly account: string;
@@ -106,7 +74,7 @@ export class TelegramChannel implements ChannelAdapter {
     this.#fetch = options.fetch ?? fetch;
     this.#base = (options.apiBase ?? 'https://api.telegram.org').replace(/\/+$/, '');
     this.#pollTimeoutSec = options.pollTimeoutSec ?? 30;
-    this.#sleep = options.sleep ?? defaultSleep;
+    this.#sleep = options.sleep ?? abortableSleep;
   }
 
   async start(sink: InboundSink): Promise<void> {
@@ -162,34 +130,30 @@ export class TelegramChannel implements ChannelAdapter {
   }
 
   async send(message: OutboundMessage): Promise<SendResult> {
-    const chunks = splitText(message.text, MAX_CHARS);
-    if (chunks.length === 0) return { status: 'failed', retryable: false, error: 'Cannot send an empty message' };
-    const externalIds: string[] = [];
-    for (const [i, text] of chunks.entries()) {
-      const body: Record<string, unknown> = { chat_id: message.chatId, text };
-      const replyTo = Number(message.replyToExternalId);
-      if (i === 0 && message.replyToExternalId !== undefined && Number.isInteger(replyTo)) {
-        body.reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
-      }
-      try {
+    const replyTo = Number(message.replyToExternalId);
+    const replyParameters = message.replyToExternalId !== undefined && Number.isInteger(replyTo) ? { message_id: replyTo, allow_sending_without_reply: true } : undefined;
+    return sendChunks(
+      splitText(message.text, MAX_CHARS),
+      async (text, i) => {
+        const body: Record<string, unknown> = { chat_id: message.chatId, text };
+        if (i === 0 && replyParameters) body.reply_parameters = replyParameters;
         const sent = (await this.#call('sendMessage', body, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { message_id: number };
-        externalIds.push(String(sent.message_id));
         this.#lastSuccessAt = Date.now();
-      } catch (e) {
-        const err = e instanceof TelegramApiError ? e : new TelegramApiError(0, this.#redact(errorMessage(e)), undefined, true);
-        const partial = externalIds.length ? ` (after sending ${externalIds.length} of ${chunks.length} chunks)` : '';
-        // Resending after an ambiguous failure could duplicate the message; the gateway leaves it for the owner.
-        if (err.maybeDelivered) return { status: 'uncertain', error: `${err.message}${partial}` };
-        const retryable = err.status === 0 || err.status === 429 || err.status >= 500;
-        return {
-          status: 'failed',
-          retryable,
-          error: `${err.message}${partial}`,
-          ...(err.status === 429 && err.retryAfterSec !== undefined ? { retryAfterMs: err.retryAfterSec * 1000 } : {}),
-        };
-      }
-    }
-    return { status: 'sent', externalIds };
+        return String(sent.message_id);
+      },
+      (e) => this.#classify(e),
+      (ms) => this.#sleep(ms, new AbortController().signal),
+    );
+  }
+
+  #classify(e: unknown): ChunkFailure {
+    const err = e instanceof TelegramApiError ? e : new TelegramApiError(0, this.#redact(errorMessage(e)), undefined, true);
+    return {
+      message: err.message,
+      maybeDelivered: err.maybeDelivered,
+      retryable: err.status === 0 || err.status === 429 || err.status >= 500,
+      retryAfterMs: err.status === 429 && err.retryAfterSec !== undefined ? err.retryAfterSec * 1000 : undefined,
+    };
   }
 
   async #poll(sink: InboundSink, signal: AbortSignal): Promise<void> {
