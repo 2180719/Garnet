@@ -3,7 +3,7 @@ import { request as httpRequest, type IncomingMessage, type OutgoingHttpHeaders 
 import { request as httpsRequest } from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
-import type { Readable } from 'node:stream';
+import { pipeline, type Readable } from 'node:stream';
 import { RubyError } from '../../contracts/index.ts';
 import { isPublicAddress } from './address.ts';
 
@@ -196,10 +196,12 @@ export function parseTarget(raw: string): URL {
 
 async function readBody(res: IncomingMessage, maxBytes: number, signal: AbortSignal): Promise<{ data: Buffer; truncated: boolean }> {
   const encoding = String(res.headers['content-encoding'] ?? '').trim().toLowerCase();
-  let stream: Readable = res;
-  if (encoding === 'gzip' || encoding === 'x-gzip') stream = res.pipe(createGunzip());
-  else if (encoding === 'deflate') stream = res.pipe(createInflate());
-  else if (encoding === 'br') stream = res.pipe(createBrotliDecompress());
+  const decoder = encoding === 'gzip' || encoding === 'x-gzip' ? createGunzip() : encoding === 'deflate' ? createInflate() : encoding === 'br' ? createBrotliDecompress() : null;
+  // pipeline forwards errors and aborts of the response to the decoder (a bare pipe does not, so a stalled compressed body never settled).
+  const stream: Readable = decoder ? pipeline(res, decoder, () => {}) : res;
+  const onAbort = () => stream.destroy(signal.reason as Error);
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
   const chunks: Buffer[] = [];
   let size = 0;
   let truncated = false;
@@ -222,6 +224,7 @@ async function readBody(res: IncomingMessage, maxBytes: number, signal: AbortSig
     if (size === 0) throw new RubyError('tool_failed', `The response body could not be read (${(e as Error).message}).`);
     truncated = true;
   } finally {
+    signal.removeEventListener('abort', onAbort);
     res.destroy();
     if (stream !== res) stream.destroy();
   }
