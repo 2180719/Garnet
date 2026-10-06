@@ -98,6 +98,7 @@ export class PlainChat {
         if (slash) {
           const result = await executeCommand(slash, {
             garnet, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog, attachments: this.attachments,
+            ...(this.o.onboard ? { onboarding: true } : {}),
             switchTo: (id) => (this.sessionId = id),
           });
           if (result.effect === 'exit') return 0;

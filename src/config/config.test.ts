@@ -4,7 +4,16 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import { isGarnetError } from '../contracts/index.ts';
-import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, parseEnv, redact, setInEnvFile } from './index.ts';
+import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, parseEnv, redact, setInEnvFile, validBasic } from './index.ts';
+
+test('validBasic: one visible line only (it goes into every future system prompt)', () => {
+  const ok = validBasic(20);
+  assert.equal(ok('Sam'), null);
+  assert.equal(ok(''), null, 'empty means skip');
+  for (const bad of ['a\nb', 'a\rb', 'a b', 'a b', 'a\u0085b', 'a\u0000b', 'a\u001bb', 'a\tb', '   ', ' ', 'x --> y', 'x'.repeat(21)]) {
+    assert.notEqual(ok(bad), null, JSON.stringify(bad));
+  }
+});
 
 test('defaults are secure', () => {
   const c = defaultConfig();

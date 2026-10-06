@@ -329,6 +329,9 @@ export class InteractiveChat {
   private async kick(flow: OnboardFlow): Promise<void> {
     const status = await this.turn(flow.kickoff, false);
     if (status && (await this.checkOnboarding(status))) return;
+    // An answer typed while the agent was still greeting waits in the queue; send it like process() does.
+    const next = this.queue.shift();
+    if (next !== undefined && !this.exiting) return this.process(next);
     this.render();
   }
 
@@ -358,6 +361,7 @@ export class InteractiveChat {
       const prepared = await prepareTurn(this.o.garnet, this.sessionId, text, files, signal);
       if ('reply' in prepared) {
         this.commit((w) => ['', ...wrapText(`  ${sanitize(prepared.reply)}`, w), '']);
+        status = 'completed';
         return;
       }
       const task: TaskRecord = await this.o.garnet.agent.run(this.sessionId, prepared.turn, { signal, onEvent: (e) => this.onEvent(e), source: 'cli' });
@@ -459,6 +463,7 @@ export class InteractiveChat {
         width: this.width,
         toolLog: this.toolLog,
         attachments: this.attachments,
+        ...(this.o.onboard ? { onboarding: true } : {}),
         switchTo: (id) => this.switchTo(id),
         ...(signal ? { signal } : {}),
       });

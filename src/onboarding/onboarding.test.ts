@@ -32,6 +32,16 @@ test('applyProfile rejects bad input without writing anything', () => {
   assert.equal(readFileSync(join(home, 'config.json'), 'utf8'), before);
 });
 
+test('applyProfile: a whitespace-only owner name is rejected and does not clear the stored owner', () => {
+  const home = tempDir();
+  writeConfig(home, defaultConfig());
+  applyProfile(home, { name: 'Ruby', owner: 'Sam' });
+  for (const bad of ['  ', ' ', 'Sam Evil', 'a\u0085b']) {
+    assert.throws(() => applyProfile(home, { owner: bad }), /single line|control|only spaces/i, JSON.stringify(bad));
+  }
+  assert.equal(readPersona(loadConfig(home).config.persona).owner, 'Sam');
+});
+
 test('set_profile: needs the memory.write permission and summarizes what it saves', async () => {
   const home = tempDir();
   const tool = profileTool(home);
@@ -57,8 +67,24 @@ test('OnboardingWatch: verified after a successful set_profile, and says so once
   assert.equal(w.state, 'verified');
 });
 
+test('OnboardingWatch: failures count per turn and only for set_profile and memory', () => {
+  // A bad time zone and a failing memory call in the same reply are one strike.
+  const oneReply = [user(), user(), call('1', 'set_profile'), done('1', 'error'), call('2', 'memory'), done('2', 'error'), call('3', 'set_profile'), done('3', 'error')];
+  assert.equal(new OnboardingWatch(() => oneReply).afterTurn('completed').next, 'continue');
+  // Other tools failing (a denied command, say) never count.
+  const other = [user(), user(), call('1', 'run_command'), done('1', 'error'), user(), call('2', 'read_file'), done('2', 'error')];
+  assert.equal(new OnboardingWatch(() => other).afterTurn('completed').next, 'continue');
+});
+
+test('OnboardingWatch: a successful memory call also passes the tool check, without claiming a profile was saved', () => {
+  const events = [user(), user(), call('1', 'set_profile'), done('1', 'error'), call('2', 'memory'), done('2', 'ok')];
+  const v = new OnboardingWatch(() => events).afterTurn('completed');
+  assert.equal(v.next, 'continue');
+  assert.match((v as { note?: string }).note ?? '', /Tool check passed.*\(memory\); it has not called set_profile yet/);
+});
+
 test('OnboardingWatch: gives up on failures, failed turns, a spent budget and endless chatter, and never recovers', () => {
-  const failing = [user(), call('1', 'set_profile'), done('1', 'error'), call('2', 'set_profile'), done('2', 'error')];
+  const failing = [user(), user(), call('1', 'set_profile'), done('1', 'error'), user(), call('2', 'memory'), done('2', 'error')];
   assert.deepEqual(new OnboardingWatch(() => failing).afterTurn('completed'), { next: 'fallback', reason: 'saving kept failing' });
 
   const w = new OnboardingWatch(() => [user()]);

@@ -48,7 +48,9 @@ export function writePersona(persona: string | undefined, b: PersonaBasics): str
 /** Single-line, short answers only (they go into the system prompt). */
 export function validBasic(max: number) {
   return (v: string): string | null => {
-    if (/[\r\n]/.test(v)) return 'Use a single line.';
+    if (/[\r\n\u2028\u2029\u0085]/.test(v)) return 'Use a single line.';
+    if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(v)) return 'Leave out control characters.';
+    if (v.length > 0 && v.trim() === '') return 'Use real text, not only spaces. Leave it empty to skip.';
     if (v.includes('<!--') || v.includes('-->')) return 'Leave out HTML comment markers.';
     return v.length > max ? `Keep it under ${max} characters.` : null;
   };

@@ -23,7 +23,7 @@ function clean(answer: string, lead: RegExp): string | undefined {
 }
 
 const QUESTIONS = [
-  'Hello! I have just woken up, so this is our first conversation. I will ask a few quick questions and you can skip any of them. First: what would you like to call me?',
+  'Hello! I have just woken up. I will ask a few quick questions and you can skip any of them. First: what would you like to call me?',
   'Nice to meet you. And what should I call you?',
   'How do you like your answers? Short or detailed, any tone, and anything I should never do?',
   'Optional: what is your time zone, or the city you live in?',
@@ -90,6 +90,12 @@ export function onboardingScript(mode: OnboardingMode = 'ok'): FakeScript {
   if (mode === 'no-tools') {
     // Never saves: keeps chatting for as long as the owner answers.
     for (let i = 0; i < 20; i++) script.push(asking(QUESTIONS.length - 1));
+    return script;
+  }
+  if (mode === 'broken-tools') {
+    // A saving turn that fails and says so, then one more failing turn when the owner replies: two failed turns.
+    const tryAgain = (): FakeStep => ({ text: 'Let me try saving once more.', toolCalls: [{ name: 'set_profile', input: { assistant_name: 'Bad\nName' } }] });
+    script.push(save, report, after, tryAgain, after, after);
     return script;
   }
   script.push(save, report, after, after, after);

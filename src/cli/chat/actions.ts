@@ -23,6 +23,8 @@ export type CommandContext = {
   signal?: AbortSignal;
   /** Files attached with /attach, sent with the next message. Owned by the chat; this list is changed in place. */
   attachments?: PendingFile[];
+  /** The wake-up chat: one session only. `/new` and `/resume` are refused (see `garnet wake` in src/cli/AGENTS.md). */
+  onboarding?: boolean;
 };
 
 export type PendingFile = { data: Uint8Array; name: string; mimeType: string };
@@ -64,6 +66,9 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
   const { garnet, theme: t } = ctx;
   if ('unknown' in parsed) return { rows: (w: number) => ['', `  ${t.error('✗')} Unknown command /${sanitize(parsed.unknown)}. Type ${t.bold('/help')} for the list.`] };
   const { command, args } = parsed;
+  if (ctx.onboarding && (command.name === 'new' || command.name === 'resume')) {
+    return { rows: () => ['', `  ${t.error('✗')} /${command.name} is not available in the wake-up chat, which is one conversation. Say /exit when you are done.`] };
+  }
   switch (command.name) {
     case 'help':
       return { rows: (w: number) => helpRows(t, w) };

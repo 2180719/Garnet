@@ -37,7 +37,7 @@ garnet chat      # talk to Garnet in the terminal (`garnet chat --fake` needs no
 garnet wake      # first-run wake-up: Garnet introduces itself and sets itself up by talking (`--fake` works offline)
 ```
 
-Setup offers two ways to name your assistant and tell it how you like answers: a quick form (three questions), or "Wake it up", a first chat where the agent asks the same things itself and saves them with its real tools (`set_profile` and `memory`). The transcript shows those tool calls. If the model cannot use its tools, the chat stops after a few tries and asks the form questions instead, so nothing is lost. `garnet setup -y` never starts a chat. Run `garnet wake` (or `garnet chat --onboard`) any time to do it again.
+Setup offers two ways to name your assistant and tell it how you like answers: a quick form (three questions), or "Wake it up", a first chat where the agent asks the same things itself and saves them with its real tools (`set_profile` and `memory`). The transcript shows those tool calls. If the model cannot use its tools, the chat stops after a few tries and asks the form questions instead (your replies stay in the session log, and the form starts from whatever was already saved). `garnet setup -y` never starts a chat. Run `garnet wake` (or `garnet chat --onboard`) any time to do it again.
 
 `garnet setup` asks a few questions and saves nothing until the end:
 
