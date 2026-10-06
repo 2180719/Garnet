@@ -1,10 +1,10 @@
 import { tempDir } from './helpers.ts';
 import { defaultConfig } from '../src/config/index.ts';
-import type { ChannelAdapter, InboundMessage, InboundSink, OutboundMessage, SendResult } from '../src/contracts/index.ts';
-import { Gateway, persistentApprover, type Route } from '../src/gateway/index.ts';
+import type { ChannelAdapter, InboundMessage, ToolDefinition, InboundSink, OutboundMessage, SendResult } from '../src/contracts/index.ts';
+import { Gateway, persistentApprover, type GatewayDeps, type Route } from '../src/gateway/index.ts';
 import { FakeModel, type FakeScript } from '../src/models/index.ts';
 import { Policy, deferAll } from '../src/policy/index.ts';
-import { Agent, LaneQueue } from '../src/runtime/index.ts';
+import { Agent, LaneQueue, type AgentDeps } from '../src/runtime/index.ts';
 import { ApprovalStore, GatewayStore, openDb, SessionStore } from '../src/store/index.ts';
 import { ToolExecutor, ToolRegistry, fileTools } from '../src/tools/index.ts';
 
@@ -33,23 +33,24 @@ export const msg = (text: string, over: Partial<InboundMessage> = {}): InboundMe
   sender: { id: 'u1', displayName: 'Ada' }, text, isPrivate: true, receivedAt: new Date().toISOString(), ...over,
 });
 
-export function setup(script: FakeScript = [], opts: { routes?: Route[]; db?: ReturnType<typeof openDb>; withApprovals?: boolean } = {}) {
+export function setup(script: FakeScript = [], opts: { routes?: Route[]; db?: ReturnType<typeof openDb>; withApprovals?: boolean; tools?: ToolDefinition[]; agent?: Partial<AgentDeps>; gateway?: Partial<GatewayDeps> } = {}) {
   const db = opts.db ?? openDb(':memory:');
   const sessions = new SessionStore(db);
   const store = new GatewayStore(db);
   const registry = new ToolRegistry();
-  for (const t of fileTools) registry.register(t);
+  for (const t of [...fileTools, ...(opts.tools ?? [])]) registry.register(t);
   const config = defaultConfig();
   const approvals = new ApprovalStore(db);
   const approver = opts.withApprovals ? persistentApprover(approvals) : deferAll;
   const model = new FakeModel(script);
   const agent = new Agent({
     store: sessions, model, registry, workspace: tempDir(), maxOutputTokens: 100, budget: config.budgets,
+    ...opts.agent,
     executor: new ToolExecutor({ registry, policy: new Policy(config.permissions), approver }),
   });
   const channel = new FakeChannel();
   const lanes = new LaneQueue(2);
-  const gateway = new Gateway({ store, sessions, agent, lanes, channels: [channel], routes: opts.routes ?? [], deliveryIntervalMs: 10_000, ...(opts.withApprovals ? { approvals } : {}) });
+  const gateway = new Gateway({ store, sessions, agent, lanes, channels: [channel], routes: opts.routes ?? [], deliveryIntervalMs: 10_000, ...(opts.withApprovals ? { approvals } : {}), ...opts.gateway });
   return { db, sessions, store, approvals, model, channel, lanes, gateway };
 }
 

@@ -314,13 +314,27 @@ test('send splits at 2000 chars, never pings, replies on the first chunk only', 
   assert.equal(t.channel.capabilities.maxMessageChars, 2000);
 });
 
-test('send maps 429 (float seconds), 5xx, network errors and 4xx without throwing', async () => {
+test('send maps 429 (float seconds), 5xx, ambiguous network errors and 4xx without throwing', async () => {
   const send = (t: ReturnType<typeof setup>) =>
     t.channel.send({ deliveryId: 'd', channel: 'discord', account: 'default', chatId: '777', text: 'hi' });
   let t = setup({ 'POST /channels/:id/messages': () => json(429, { message: 'You are being rate limited.', retry_after: 1.5, global: false }) });
   assert.deepEqual(await send(t), { status: 'failed', retryable: true, error: 'Discord POST /channels/:id/messages failed with 429: You are being rate limited.', retryAfterMs: 1500 });
-  t = setup({ 'POST /channels/:id/messages': () => json(502, {}) });
-  assert.equal(((await send(t)) as any).retryable, true);
+  for (const status of [500, 503]) {
+    t = setup({ 'POST /channels/:id/messages': () => json(status, {}) });
+    assert.equal(((await send(t)) as any).retryable, true);
+  }
+  // A gateway error or a success without a message id may hide a created message: never resend it.
+  t = setup({ 'POST /channels/:id/messages': () => json(504, {}) });
+  assert.equal((await send(t)).status, 'uncertain');
+  t = setup({ 'POST /channels/:id/messages': () => json(200, {}) });
+  assert.equal((await send(t)).status, 'uncertain');
+  // Connection refused happens before the request reaches Discord: safe to retry.
+  t = setup({
+    'POST /channels/:id/messages': () => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    },
+  });
+  assert.deepEqual(await send(t), { status: 'failed', retryable: true, error: 'Discord POST /channels/:id/messages request failed: fetch failed' });
   for (const status of [400, 403, 404]) {
     t = setup({ 'POST /channels/:id/messages': () => json(status, { message: 'Missing Access', code: 50001 }) });
     const r = await send(t);
@@ -333,7 +347,7 @@ test('send maps 429 (float seconds), 5xx, network errors and 4xx without throwin
     },
   });
   const net = (await send(t)) as any;
-  assert.equal(net.retryable, true);
+  assert.equal(net.status, 'uncertain', 'a reset after sending may have delivered the message');
   assert.ok(!net.error.includes(TOKEN));
   const bad = await t.channel.send({ deliveryId: 'd', channel: 'discord', account: 'default', chatId: '../x', text: 'hi' });
   assert.equal(bad.status, 'failed');

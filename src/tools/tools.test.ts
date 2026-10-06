@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { z } from 'zod';
@@ -123,4 +123,51 @@ test('repairs never guess ambiguous names; oversized output becomes an artifact'
   assert.equal(more.content, 'abcdefghij');
   const other = await executor.execute({ type: 'tool_call', id: 'c', name: 'read_artifact', input: { id: r.artifactId } }, { ...ctx, sessionId: 's2' });
   assert.equal(other.status === 'error' && other.category, 'denied');
+});
+
+test('trailing-comma repair never changes string contents', async () => {
+  const { repairCall } = await import('./index.ts');
+  const repaired = (input: string) => repairCall({ type: 'tool_call', id: '1', name: 'write_file', input }, ['write_file']).call.input;
+  assert.deepEqual(repaired('{"path": "a.js", "content": "f({a:1,})",}'), { path: 'a.js', content: 'f({a:1,})' });
+  // An escaped quote does not end the string: `,  ]` inside it is content.
+  assert.deepEqual(repaired(String.raw`{"content": "x\",  ]", "list": [1, 2,],}`), { content: 'x",  ]', list: [1, 2] });
+  assert.deepEqual(repaired(String.raw`{"content": "x\\", "n": [1,],}`), { content: 'x\\', n: [1] });
+  assert.deepEqual(repaired('{"a": {"b": [1,]},}'), { a: { b: [1] } });
+});
+
+test('file tools never write or read through symlinks that leave the workspace', async () => {
+  const { workspace, call } = setup({ perms: { 'fs.write': 'allow' } });
+  const outside = tempDir();
+  // A dangling link (e.g. planted by a sandboxed command) pointing outside.
+  symlinkSync(join(outside, 'autostart.desktop'), join(workspace, 'dangling'));
+  const w = await call('write_file', { path: 'dangling', content: 'pwned' });
+  assert.equal(w.status === 'error' && w.category, 'denied');
+  assert.ok(!existsSync(join(outside, 'autostart.desktop')), 'nothing was written outside the workspace');
+  const w2 = await call('write_file', { path: 'dangling/x.txt', content: 'pwned' });
+  assert.equal(w2.status, 'error');
+  // Even a link to a file inside the workspace is not written through.
+  writeFileSync(join(workspace, 'real.txt'), 'orig');
+  symlinkSync(join(workspace, 'real.txt'), join(workspace, 'alias'));
+  const w3 = await call('write_file', { path: 'alias', content: 'new', overwrite: true });
+  assert.equal(w3.status === 'error' && w3.category, 'denied');
+  assert.equal(readFileSync(join(workspace, 'real.txt'), 'utf8'), 'orig');
+  // Reads may follow links that stay inside, never ones that leave.
+  assert.equal((await call('read_file', { path: 'alias' })).status, 'ok');
+  mkdirSync(join(outside, 'd'));
+  writeFileSync(join(outside, 'd', 'secret'), 'secret');
+  symlinkSync(join(outside, 'd'), join(workspace, 'out'));
+  const r = await call('read_file', { path: 'out/secret' });
+  assert.equal(r.status === 'error' && r.category, 'denied');
+  assert.equal((await call('list_files', { path: 'out' })).status, 'error');
+});
+
+test('a registered tool absent from the frozen tool list is refused', async () => {
+  const { registry, workspace } = setup();
+  const executor = new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'approved' });
+  const run = (allowedTools: string[]) =>
+    executor.execute({ type: 'tool_call', id: 'c', name: 'list_files', input: {} }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal, allowedTools });
+  const refused = await run(['read_file']);
+  assert.equal(refused.status, 'error');
+  assert.match(refused.content, /not available in this session/);
+  assert.equal((await run(['list_files'])).status, 'ok');
 });

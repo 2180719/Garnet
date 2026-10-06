@@ -1,13 +1,45 @@
 // Part of the composition root: implements the dashboard/admin API on top of
 // every module. Keeps the gateway free of memory, skills and scheduler imports.
 import { Achievements, type Stats } from './achievements/index.ts';
-import { configSchema, parseConfig, writeConfig } from './config/index.ts';
-import { RubyError } from './contracts/index.ts';
+import { changedProtectedPaths, configSchema, loadConfig, PROTECTED_CONFIG_PATHS, parseConfig, redact, writeConfig } from './config/index.ts';
+import { RubyError, type ContentBlock, type SessionEvent } from './contracts/index.ts';
 import { approvePairing, type AdminBackend, type Gateway, type Scope } from './gateway/index.ts';
 import { isMemoryFile } from './memory/index.ts';
 import type { Scheduler } from './scheduler/index.ts';
 import { StatsStore } from './store/index.ts';
 import type { Ruby } from './main.ts';
+
+const CLIP = 4000;
+/** Shortens long strings anywhere in a value so one huge tool result cannot flood the page. */
+function clip(v: unknown): unknown {
+  if (typeof v === 'string') return v.length > CLIP ? `${v.slice(0, CLIP)}\n… [${v.length - CLIP} more characters not shown]` : v;
+  if (Array.isArray(v)) return v.map(clip);
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clip(x)]));
+  return v;
+}
+const safe = <T>(v: T): T => clip(redact(v)) as T;
+
+const blockView = (b: ContentBlock): unknown =>
+  // Provider blocks hold signed thinking and other opaque data: never sent to the dashboard.
+  b.type === 'provider' ? { type: 'provider', provider: b.provider, hidden: true } : safe(b);
+
+/** A read-only, secret-redacted view of one event for the dashboard. */
+function eventView(e: SessionEvent): unknown {
+  switch (e.type) {
+    case 'user_message':
+      return { ...safe({ seq: e.seq, at: e.at, type: e.type, source: e.source }), content: e.message.content.map(blockView) };
+    case 'assistant_message':
+      return { ...safe({ seq: e.seq, at: e.at, type: e.type, model: e.model, stopReason: e.stopReason, usage: e.usage }), content: e.message.content.map(blockView) };
+    case 'context_frozen':
+      return { seq: e.seq, at: e.at, type: e.type, chars: e.system.length }; // the prompt embeds memory; show only its size
+    default: {
+      const { sessionId: _s, ...rest } = e;
+      return safe(rest);
+    }
+  }
+}
+
+const AUDIT_PATH_SECRETS = /(\/api\/pairing\/)[^/]+/;
 
 export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler, version: string): AdminBackend & { unlockEasterEgg(id: string): boolean } {
   const stats = new StatsStore(ruby.db);
@@ -54,9 +86,18 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
       scheduler: { enabled: ruby.config.scheduler.enabled, jobs: ruby.config.jobs.length },
       api: { host: ruby.config.api.host, port: ruby.config.api.port },
     }),
-    getConfig: () => ({ config: ruby.config, schema: configSchema.toJSONSchema({ io: 'input', unrepresentable: 'any' }) }),
+    // The file, not the startup config: after a PUT the page must show what was saved.
+    getConfig: () => ({
+      config: loadConfig(ruby.paths.home).config,
+      schema: configSchema.toJSONSchema({ io: 'input', unrepresentable: 'any' }),
+      protectedPaths: PROTECTED_CONFIG_PATHS,
+    }),
     putConfig: (raw) => {
       const parsed = parseConfig(raw); // throws a config error listing every problem
+      const changed = changedProtectedPaths(loadConfig(ruby.paths.home).config, parsed);
+      if (changed.length > 0) {
+        throw new RubyError('denied', `These settings can only be changed by editing config.json on the host (then run "ruby config check"), not over the API: ${changed.join(', ')}.`, { paths: changed });
+      }
       writeConfig(ruby.paths.home, parsed);
       return { restartRequired: true };
     },
@@ -113,6 +154,35 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
       return p;
     },
     revokeIdentity: (channel, senderId) => ruby.gatewayStore.removeIdentity(channel, senderId),
+    sessions: (opts) => stats.sessionPage(opts),
+    sessionEvents: (id, after, limit) => {
+      const session = ruby.store.getSession(id);
+      if (!session) throw new RubyError('invalid_input', `No session "${id}".`);
+      const { events, lastSeq } = ruby.store.eventsPage(id, after, limit);
+      const next = events.at(-1)?.seq ?? after;
+      return {
+        session: { id, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt, conversation: ruby.gatewayStore.keyForSession(id) ?? null },
+        events: events.map(eventView),
+        lastSeq,
+        nextAfter: next < lastSeq ? next : null,
+      };
+    },
+    audit: (opts) => {
+      const { entries, total } = ruby.keyStore.auditPage(opts);
+      return { total, entries: entries.map((e) => ({ ...e, path: redact(e.path.replace(AUDIT_PATH_SECRETS, '$1…')) })) };
+    },
+    failures: (opts) => {
+      const { items, total } = stats.failurePage(opts);
+      return { total, items: items.map((f) => ({ ...f, detail: f.detail === null ? null : (clip(redact(f.detail)) as string) })) };
+    },
+    routing: ({ limit, offset }) => ({
+      routes: ruby.config.routes,
+      conversations: ruby.gatewayStore.conversationPage(limit, offset),
+      identities: ruby.gatewayStore.identities(),
+      pending: ruby.gatewayStore.pairings(new Date().toISOString()),
+    }),
+    unlinkConversation: (key) => ruby.gatewayStore.removeConversation(key),
+    denyPairing: (code) => ruby.gatewayStore.removePairing(code),
     usage: (days) => ({ days: stats.usageByDay(days) }),
     achievements: () => ({ achievements: achievements.evaluate(collect()) }),
     unlockEasterEgg: (id) => achievements.unlockEasterEgg(id),

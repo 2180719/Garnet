@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, realpathSync, symlinkSync } from 'node:fs';
+import { chmodSync, chownSync, mkdirSync, realpathSync, statSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import { isRubyError } from '../contracts/index.ts';
-import { DockerSandbox, LocalSandbox, OutputCollector, assertSandboxReady, createSandbox, openSandbox, type SpawnFn } from './index.ts';
+import { DockerSandbox, LocalSandbox, NOBODY, OutputCollector, assertSandboxReady, canWrite, createSandbox, openSandbox, sandboxUser, type SpawnFn } from './index.ts';
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough();
@@ -135,16 +135,88 @@ test('docker run uses the full lockdown flag set, an args array and no host envi
   assert.equal(fake.sub('kill').length, 0);
 });
 
-test('docker user defaults to the host uid:gid', async () => {
+/** A workspace the sandbox user can write: when tests run as root, hand it to uid 1000 like an owner would. */
+function userWorkspace(): string {
   const workspace = tempDir();
-  const fake = fakeDocker();
-  const sb = new DockerSandbox({ workspace, spawn: fake.spawn });
-  const pending = sb.run(req());
-  fake.runCall().child.close(0);
-  await pending;
-  const args = fake.runCall().args;
-  assert.equal(args[args.indexOf('--user') + 1], `${process.getuid!()}:${process.getgid!()}`);
+  if (process.getuid?.() === 0) chownSync(workspace, 1000, 1000);
+  return workspace;
+}
+
+const userArg = (args: string[]) => args[args.indexOf('--user') + 1];
+
+test('the container user is never root', () => {
+  const root = { uid: 0, gid: 0 };
+  const owner = { uid: 1000, gid: 1000 };
+  // Ruby as a regular user: the host uid:gid, so files written in the workspace belong to the owner.
+  assert.equal(sandboxUser({ host: { uid: 501, gid: 20 }, workspaceOwner: root }), '501:20');
+  // Ruby as root: the workspace owner when that is a regular user, else nobody.
+  assert.equal(sandboxUser({ host: root, workspaceOwner: owner }), '1000:1000');
+  assert.equal(sandboxUser({ host: root, workspaceOwner: root }), NOBODY);
+  // No uids on this platform.
+  assert.equal(sandboxUser({ host: null, workspaceOwner: null }), NOBODY);
+  assert.equal(sandboxUser({ host: null, workspaceOwner: owner }), '1000:1000');
+  // Explicit users win, but never uid 0, and must be numeric uid:gid.
+  assert.equal(sandboxUser({ user: '2000:2000', host: root, workspaceOwner: root }), '2000:2000');
+  for (const user of ['0:0', '0:1000', '00:5', 'root', '1000', '1000:', ':1000', '1000:1000 --privileged']) {
+    assert.throws(() => sandboxUser({ user, host: owner, workspaceOwner: owner }), (e) => isRubyError(e, 'config'), user);
+  }
+  assert.equal(NOBODY, '65534:65534');
+});
+
+test('canWrite applies owner, group and other bits without supplementary groups', () => {
+  assert.equal(canWrite('1000:1000', { uid: 1000, gid: 0, mode: 0o40700 }), true);
+  assert.equal(canWrite('1000:1000', { uid: 1000, gid: 0, mode: 0o40500 }), false);
+  assert.equal(canWrite('1000:1000', { uid: 1000, gid: 1000, mode: 0o40570 }), false, 'owner bits apply to the owner');
+  assert.equal(canWrite('1000:50', { uid: 0, gid: 50, mode: 0o40770 }), true);
+  assert.equal(canWrite('1000:50', { uid: 0, gid: 50, mode: 0o40750 }), false);
+  assert.equal(canWrite('65534:65534', { uid: 0, gid: 0, mode: 0o40777 }), true);
+  assert.equal(canWrite('65534:65534', { uid: 0, gid: 0, mode: 0o40755 }), false);
+  assert.equal(canWrite('65534:65534', { uid: 0, gid: 0, mode: 0o40776 }), false, 'needs search (x) as well as write');
+});
+
+test('docker --user: host uid:gid for a regular user; never root when Ruby runs as root', async () => {
+  const workspace = tempDir();
+  const run = async (opts: Partial<ConstructorParameters<typeof DockerSandbox>[0]>) => {
+    const fake = fakeDocker();
+    const sb = new DockerSandbox({ workspace, spawn: fake.spawn, ...opts });
+    const pending = sb.run(req());
+    fake.runCall().child.close(0);
+    await pending;
+    assert.equal(userArg(fake.runCall().args), sb.containerUser);
+    return fake.runCall().args;
+  };
+  const args = await run({});
   assert.ok(args.includes('debian:stable-slim'));
+  const real = statSync(workspace);
+  const expected = process.getuid!() !== 0 ? `${process.getuid!()}:${process.getgid!()}` : real.uid !== 0 ? `${real.uid}:${real.gid}` : NOBODY;
+  assert.equal(userArg(args), expected);
+  assert.equal(userArg(await run({ hostIds: { uid: 1234, gid: 99 } })), '1234:99');
+  // Ruby as root (or no uids): never 0, whatever owns the workspace.
+  for (const hostIds of [{ uid: 0, gid: 0 }, null]) {
+    const user = userArg(await run({ hostIds }));
+    assert.notEqual(user!.split(':')[0], '0');
+    assert.equal(user, real.uid !== 0 ? `${real.uid}:${real.gid}` : NOBODY);
+  }
+  assert.throws(() => new DockerSandbox({ workspace, user: '0:0' }), (e) => isRubyError(e, 'config'));
+  // Every docker run carries exactly one --user.
+  assert.equal(args.filter((a) => a === '--user').length, 1);
+});
+
+test('docker check refuses a workspace the container user cannot write', async () => {
+  const workspace = tempDir();
+  chmodSync(workspace, 0o755);
+  const ws = statSync(workspace);
+  // A user that is neither the owner nor in the group, so only the "other" bits apply.
+  const stranger = `${ws.uid + 4242}:${ws.gid + 4242}`;
+  const sb = new DockerSandbox({ workspace, user: stranger, spawn: fakeDocker().spawn });
+  const status = await sb.check();
+  assert.equal(status.ok, false);
+  assert.match(status.detail, /cannot write the workspace/);
+  assert.match(status.detail, new RegExp(`chown -R ${stranger}`));
+  await assert.rejects(assertSandboxReady(sb), (e) => isRubyError(e, 'config'));
+  chmodSync(workspace, 0o777);
+  assert.equal((await sb.check()).ok, true);
+  chmodSync(workspace, 0o700);
 });
 
 test('cwd escapes, missing directories, bad env names and bad workspaces are rejected before docker runs', async () => {
@@ -234,7 +306,7 @@ test('abort kills the container; an already-aborted signal never starts one', as
 });
 
 test('check reports docker and image problems; isolated sandboxes never fall back', async () => {
-  const workspace = tempDir();
+  const workspace = userWorkspace();
   const down = new DockerSandbox({ workspace, spawn: fakeDocker({ version: 1 }).spawn });
   assert.equal((await down.check()).ok, false);
   await assert.rejects(assertSandboxReady(down), (e) => isRubyError(e, 'config'));

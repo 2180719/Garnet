@@ -253,26 +253,35 @@ test('send maps 429 with retry_after to a retryable failure', async () => {
   assert.ok(r.status === 'failed' && r.retryable && r.retryAfterMs === 7000);
 });
 
-test('send maps 403 and 400 to non-retryable and 5xx to retryable', async () => {
-  const cases: Array<[number, boolean]> = [[403, false], [400, false], [502, true]];
+test('send maps 403 and 400 to non-retryable, 500/503 to retryable, and gateway errors to uncertain', async () => {
+  const cases: Array<[number, boolean]> = [[403, false], [400, false], [500, true], [503, true]];
   for (const [status, retryable] of cases) {
     const api = fakeApi({ sendMessage: () => fail(status, 'Forbidden: bot was blocked by the user') });
     const { channel } = setup(api);
     const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'hi' });
     assert.ok(r.status === 'failed' && r.retryable === retryable, `status ${status}`);
   }
+  for (const status of [502, 504]) {
+    const { channel } = setup(fakeApi({ sendMessage: () => fail(status, 'Bad Gateway') }));
+    const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'hi' });
+    assert.equal(r.status, 'uncertain', `status ${status}`);
+  }
 });
 
-test('send network errors are retryable, never throw, and never leak the token', async () => {
-  const api = fakeApi({
-    sendMessage: () => {
-      throw new TypeError(`fetch failed: https://api.telegram.org/bot${TOKEN}/sendMessage`);
-    },
-  });
-  const { channel } = setup(api);
-  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'hi' });
-  assert.ok(r.status === 'failed' && r.retryable);
-  assert.ok(r.status === 'failed' && !r.error.includes(TOKEN));
+test('ambiguous send errors are uncertain, pre-connect ones retryable; never throw or leak the token', async () => {
+  const send = (error: Error) =>
+    setup(fakeApi({ sendMessage: () => { throw error; } })).channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'hi' });
+  // A timeout or reset may come after Telegram accepted the message: resending could duplicate it.
+  const timeout = await send(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+  assert.equal(timeout.status, 'uncertain');
+  const reset = await send(new TypeError(`fetch failed: https://api.telegram.org/bot${TOKEN}/sendMessage`, { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) }));
+  assert.ok(reset.status === 'uncertain' && !reset.error.includes(TOKEN));
+  // DNS failure or a refused connection happens before anything is sent: safe to retry.
+  for (const code of ['ENOTFOUND', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT']) {
+    const r = await send(new TypeError(`fetch failed: https://api.telegram.org/bot${TOKEN}/sendMessage`, { cause: Object.assign(new Error(code), { code }) }));
+    assert.ok(r.status === 'failed' && r.retryable, code);
+    assert.ok(!r.error.includes(TOKEN));
+  }
 });
 
 test('capabilities and typing', async () => {

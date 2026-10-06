@@ -5,6 +5,8 @@ import {
   textOf,
   type ChannelAdapter,
   type InboundMessage,
+  type OutboundMessage,
+  type SendResult,
   type TaskRecord,
 } from '../contracts/index.ts';
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
@@ -32,6 +34,8 @@ export type GatewayDeps = {
   maxDeliveryAttempts?: number;
   /** False in short-lived processes (CLI): replies stay queued for the running service to send. */
   deliveryEnabled?: boolean;
+  /** A send still pending after this long is treated as possibly delivered (`uncertain`). Default 60 s. */
+  sendTimeoutMs?: number;
 };
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -47,6 +51,8 @@ export class Gateway {
   private timer: NodeJS.Timeout | null = null;
   private delivering: Promise<void> | null = null;
   private stopping = false;
+  /** Set once every channel has started and the inbox backlog is queued; until then inbound messages are only persisted. */
+  private started = false;
   private readonly log: LogFn;
   private readonly now: () => Date;
 
@@ -57,13 +63,21 @@ export class Gateway {
     this.now = deps.now ?? (() => new Date());
   }
 
-  /** Recovers from a previous run, starts every channel (failing fast on bad credentials), then processes queued work. */
+  /**
+   * Recovers from a previous run, starts every channel (failing fast on bad
+   * credentials), then processes queued work. Messages that arrive while
+   * channels are starting are persisted but dispatched only afterwards, together
+   * with the backlog and in arrival order, so a new message never overtakes an
+   * older one in the same conversation.
+   */
   async start(): Promise<void> {
     this.recover();
     for (const c of this.channels.values()) {
       await c.start((m) => this.receive(m));
       this.log('info', `${c.channel}:${c.account} connected`);
     }
+    // Synchronous from here to the end of the loop: no receive() can interleave.
+    this.started = true;
     for (const row of this.deps.store.inboxByStatus('pending')) this.dispatch(row);
     this.timer = setInterval(() => void this.deliver(), this.deps.deliveryIntervalMs ?? 1000);
     this.timer.unref();
@@ -88,7 +102,7 @@ export class Gateway {
   async receive(message: InboundMessage): Promise<void> {
     const row = this.deps.store.receive(message);
     if (!row) return; // duplicate delivery
-    if (!this.stopping) this.dispatch(row);
+    if (this.started && !this.stopping) this.dispatch(row);
   }
 
   /** Approves a pairing code and greets the newly paired sender. */
@@ -111,8 +125,19 @@ export class Gateway {
       const sessionId = this.sessionFor(conversationKey, options.source);
       const before = this.deps.sessions.lastSeq(sessionId);
       const agent = this.deps.agentFor?.(conversationKey) ?? this.deps.agent;
-      const task = await agent.run(sessionId, text, options);
-      return { task, text: this.replyText(sessionId, before, task), sessionId };
+      // Registered like channel tasks, so /stop in the conversation and stop() can cancel it.
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      if (options.signal?.aborted) controller.abort();
+      else options.signal?.addEventListener('abort', onAbort, { once: true });
+      this.active.set(conversationKey, controller);
+      try {
+        const task = await agent.run(sessionId, text, { ...options, signal: controller.signal });
+        return { task, text: this.replyText(sessionId, before, task), sessionId };
+      } finally {
+        options.signal?.removeEventListener('abort', onAbort);
+        if (this.active.get(conversationKey) === controller) this.active.delete(conversationKey);
+      }
     });
   }
 
@@ -314,6 +339,32 @@ export class Gateway {
     }
   }
 
+  /**
+   * One send attempt. A send that throws or hangs (the adapter contract says
+   * it never does) may still have reached the platform, so it is `uncertain`,
+   * unless the channel dedupes resends, in which case retrying is safe.
+   */
+  private async sendOnce(channel: ChannelAdapter, out: OutboundMessage): Promise<SendResult> {
+    const timeoutMs = this.deps.sendTimeoutMs ?? 60_000;
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs); // cleared below; keeps the process alive while a send is in flight
+    });
+    try {
+      const result = await Promise.race([channel.send(out), timedOut]);
+      if (result !== 'timeout') return result;
+      return this.ambiguous(channel, `Send did not finish within ${timeoutMs}ms; it may or may not have been delivered.`);
+    } catch (e) {
+      return this.ambiguous(channel, errorMessage(e));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private ambiguous(channel: ChannelAdapter, error: string): SendResult {
+    return channel.capabilities.dedupesSends ? { status: 'failed', retryable: true, error } : { status: 'uncertain', error };
+  }
+
   /** Sends due outbox messages. Concurrent calls share one pass. */
   deliver(): Promise<void> {
     if (this.deps.deliveryEnabled === false) return Promise.resolve();
@@ -336,14 +387,13 @@ export class Gateway {
           store.markOutbox(out.deliveryId, 'failed', `Channel ${out.channel}:${out.account} is not running.`);
           continue;
         }
-        let result;
-        try {
-          result = await channel.send(out);
-        } catch (e) {
-          result = { status: 'failed' as const, retryable: true, error: errorMessage(e) };
-        }
+        const result = await this.sendOnce(channel, out);
         if (result.status === 'sent') {
           store.markSent(out.deliveryId);
+        } else if (result.status === 'uncertain') {
+          // It may have been delivered: resending could duplicate it, so leave it for the owner.
+          store.markOutbox(out.deliveryId, 'uncertain', result.error);
+          this.log('warn', `delivery ${out.deliveryId} is uncertain: ${result.error}`);
         } else if (result.retryable && out.attempts < maxAttempts) {
           const delay = result.retryAfterMs ?? Math.min(600_000, 2000 * 2 ** (out.attempts - 1));
           store.markRetry(out.deliveryId, result.error, new Date(this.now().getTime() + delay).toISOString());

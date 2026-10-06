@@ -139,3 +139,52 @@ test('approvals over chat grant exactly one operation', async () => {
   assert.match(t.channel.sent.at(-1)!.text, /already expired or was decided|No pending/);
   await t.gateway.stop(0);
 });
+
+test('/stop cancels a task started through chat() (API, dashboard)', async () => {
+  const t = setup();
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let called = false;
+  const original = t.model.stream.bind(t.model);
+  t.model.stream = async function* (request) {
+    called = true;
+    await Promise.race([gate, new Promise((r) => request.signal?.addEventListener('abort', r))]);
+    yield* original(request);
+  };
+  await t.gateway.start();
+  const running = t.gateway.chat('fake:default:chat1', 'long job', { source: 'api' });
+  for (let i = 0; i < 200 && !called; i++) await new Promise((r) => setTimeout(r, 5));
+  await t.channel.sink!(msg('/stop'));
+  await t.gateway.deliver();
+  const reply = t.channel.sent.at(-1)?.text;
+  release();
+  const result = await running;
+  assert.equal(reply, 'Stopping…');
+  assert.equal(result.task.status, 'cancelled');
+  await t.gateway.stop(0);
+});
+
+test('after a restart the inbox backlog runs before messages that arrive during channel start', async () => {
+  const file = `${tempDir()}/ruby.db`;
+  const first = setup([], { db: openDb(file) });
+  first.store.addIdentity('fake', 'u1', 'Ada');
+  first.store.receive(msg('older'));
+  first.db.close();
+
+  const second = setup([], { db: openDb(file) });
+  // The platform hands over a new message as soon as the channel connects.
+  second.channel.start = async (sink) => {
+    second.channel.sink = sink;
+    await sink(msg('newer'));
+  };
+  await second.gateway.start();
+  await settle(second);
+  const order = second.model.requests.map((r) => {
+    const last = r.messages.findLast((m) => m.role === 'user')!.content[0]!;
+    return last.type === 'text' ? last.text : '';
+  });
+  assert.deepEqual(order, ['older', 'newer']);
+  await second.gateway.stop(0);
+  second.db.close();
+});

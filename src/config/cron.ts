@@ -14,6 +14,8 @@ export type Cron = {
   weekdays: Set<number>;
   domRestricted: boolean;
   dowRestricted: boolean;
+  /** Hour field starts with `*` (e.g. `*`, `*\/2`): such jobs follow elapsed time through a repeated (fall-back) hour. */
+  hourWildcard?: boolean;
 };
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
@@ -64,6 +66,7 @@ export function parseCron(expression: string): Cron {
     weekdays,
     domRestricted: dom !== '*',
     dowRestricted: dow !== '*',
+    hourWildcard: h.startsWith('*'),
   };
 }
 
@@ -116,11 +119,16 @@ function matches(cron: Cron, p: ReturnType<typeof zonedParts>): boolean {
   return true;
 }
 
+/** Largest DST shift we guard against, in minutes (real zones shift by 30, 60 or, historically, 120). */
+const MAX_SHIFT = 120;
+
 /**
  * The first matching minute strictly after `after`, scanning UTC minutes and
  * testing local wall-clock fields. Local times skipped by a DST jump never
- * match; a repeated local hour matches each time it occurs (the scheduler
- * coalesces by local minute). Returns null if nothing matches within a year.
+ * match. A wall-clock minute that occurs twice (fall-back) fires only at its
+ * first instance, as in cron; jobs whose hour field is a wildcard keep
+ * following elapsed time instead (as cronie does), so an hourly job is not
+ * silent for the repeated hour. Returns null if nothing matches within a year.
  */
 export function nextRun(cron: Cron, after: Date, timeZone: string): Date | null {
   let t = Math.floor(after.getTime() / 60_000) * 60_000 + 60_000;
@@ -128,17 +136,33 @@ export function nextRun(cron: Cron, after: Date, timeZone: string): Date | null 
   while (t < limit) {
     const p = zonedParts(new Date(t), timeZone);
     if (!cron.months.has(p.month) || (!dayMatches(cron, p))) {
-      t += (24 * 60 - (p.hour * 60 + p.minute)) * 60_000; // jump to next local midnight (approximately)
+      // Skip towards the next local midnight without overshooting it: a day can
+      // be shorter than 24 hours, so stop short by MAX_SHIFT and finish hour by hour.
+      const toMidnight = 24 * 60 - (p.hour * 60 + p.minute);
+      t += (toMidnight > MAX_SHIFT + 60 ? toMidnight - MAX_SHIFT - 60 : 60 - p.minute) * 60_000;
       continue;
     }
     if (!cron.hours.has(p.hour)) {
       t += (60 - p.minute) * 60_000;
       continue;
     }
-    if (matches(cron, p)) return new Date(t);
+    if (matches(cron, p) && (cron.hourWildcard || !repeated(t, p, timeZone))) return new Date(t);
     t += 60_000;
   }
   return null;
+}
+
+/** Whether the wall-clock minute `p` (at instant `t`) already occurred earlier, i.e. `t` is a fall-back repeat. */
+function repeated(t: number, p: ReturnType<typeof zonedParts>, timeZone: string): boolean {
+  const offset = (at: number, z: ReturnType<typeof zonedParts>) => Date.UTC(z.year, z.month - 1, z.day, z.hour, z.minute) - at;
+  const earlier = t - MAX_SHIFT * 60_000;
+  // Only a fall-back (the UTC offset decreasing) can repeat a wall-clock minute.
+  if (offset(earlier, zonedParts(new Date(earlier), timeZone)) <= offset(t, p)) return false;
+  for (let back = 15; back <= MAX_SHIFT; back += 15) {
+    const q = zonedParts(new Date(t - back * 60_000), timeZone);
+    if (q.day === p.day && q.hour === p.hour && q.minute === p.minute && q.month === p.month && q.year === p.year) return true;
+  }
+  return false;
 }
 
 function dayMatches(cron: Cron, p: ReturnType<typeof zonedParts>): boolean {

@@ -19,6 +19,11 @@ export default async function mount(root) {
   let data;
   try { data = await api.get('/api/config'); } catch (e) { root.append(pageHead('Settings'), errorBox(e)); return; }
   const { schema } = data;
+  // Server-enforced: these cannot be saved over the API, so render them read-only. Mirrors src/config/protected.ts.
+  const protectedPats = (data.protectedPaths || []).map((p) => p.split('.'));
+  const isProtected = (path) => protectedPats.some((pat) => (pat.length === 1 && pat[0].startsWith('*') && pat[0] !== '*')
+    ? path.some((k) => k.endsWith(pat[0].slice(1)))
+    : pat.length <= path.length && pat.every((seg, i) => seg === '*' || (seg.startsWith('*') ? path[i].endsWith(seg.slice(1)) : seg === path[i])));
   let saved = clone(data.config);
   const draft = clone(data.config);
   const invalid = new Map();
@@ -49,6 +54,12 @@ export default async function mount(root) {
 
   function leaf(s, path) {
     const cur = getAt(draft, path);
+    if (isProtected(path)) {
+      const ro = h('input', { value: cur === undefined ? '' : typeof cur === 'string' ? cur : JSON.stringify(cur), readonly: true, disabled: true });
+      const n = label(path, s, ro);
+      n.append(h('span', { class: 'hint' }, 'Read-only here. Edit config.json on the host to change it.'));
+      return n;
+    }
     const t = typeOf(s);
     if (s.const !== undefined) return label(path, s, h('input', { value: String(s.const), readonly: true, disabled: true }));
     if (s.enum) {

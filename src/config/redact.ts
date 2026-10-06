@@ -1,6 +1,6 @@
 const SECRET_KEY = /(key|token|secret|password|authorization|cookie)/i;
 // Common credential shapes: provider keys, bearer tokens, Telegram bot tokens.
-const SECRET_VALUE = /\b(sk-[A-Za-z0-9_-]{16,}|ruby_[A-Za-z0-9]{20,}|\d{6,}:[A-Za-z0-9_-]{30,}|Bearer\s+[A-Za-z0-9._~+/-]{16,})/g;
+const SECRET_VALUE = /\b(sk-[A-Za-z0-9_-]{16,}|ruby_[A-Za-z0-9]{8}_[A-Za-z0-9]{32}|\d{6,}:[A-Za-z0-9_-]{30,}|Bearer\s+[A-Za-z0-9._~+/-]{16,})/g;
 
 /** Deep-copies a value with secret-looking fields and strings replaced. Use for logs and diagnostics. */
 export function redact<T>(value: T): T {

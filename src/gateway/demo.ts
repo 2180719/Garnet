@@ -61,7 +61,8 @@ export class DemoChat {
       this.day = today;
       this.spent = 0;
     }
-    if (this.spent >= this.opts.dailyTokenBudget) return reply(res, 429, { error: { message: 'The demo has used up today\'s budget. Try again tomorrow.', type: 'rate_limit_error' } });
+    const exhausted = () => reply(res, 429, { error: { message: 'The demo has used up today\'s budget. Try again tomorrow.', type: 'rate_limit_error' } });
+    if (this.spent >= this.opts.dailyTokenBudget) return exhausted();
     const wait = this.limiter.take(ip);
     if (wait > 0) {
       res.setHeader('Retry-After', String(Math.ceil(wait / 1000)));
@@ -72,8 +73,19 @@ export class DemoChat {
     try {
       messages = parse(await readJson());
     } catch (e) {
+      if (typeof (e as { status?: unknown })?.status === 'number') throw e; // HTTP errors (413, 408) from the body reader
       return reply(res, 400, { error: { message: (e as Error).message, type: 'invalid_request_error' } });
     }
+    // Reserve the worst case before awaiting anything, so concurrent requests cannot all pass
+    // the budget check. The reservation is settled to actual usage when the model reports it;
+    // on error or disconnect it is kept (the provider may have billed for it).
+    const reserved = this.opts.maxOutputTokens + estimateInputTokens(messages);
+    if (this.spent + reserved > this.opts.dailyTokenBudget) return exhausted();
+    this.spent += reserved;
+    const reservedDay = this.day;
+    const settle = (actual: number) => {
+      if (this.day === reservedDay) this.spent += actual - reserved;
+    };
     const abort = new AbortController();
     res.on('close', () => {
       if (!res.writableFinished) abort.abort();
@@ -81,7 +93,8 @@ export class DemoChat {
     let text = '';
     for await (const event of this.opts.model.stream({ system: SYSTEM, messages, tools: [], maxOutputTokens: this.opts.maxOutputTokens, signal: abort.signal })) {
       if (event.type === 'done') {
-        this.spent += billedTokens(event.usage) || this.opts.maxOutputTokens;
+        const actual = billedTokens(event.usage);
+        if (actual > 0) settle(actual);
         text = event.message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('').trim();
       } else if (event.type === 'error') {
         return reply(res, 503, { error: { message: 'The demo is unavailable right now.', type: 'api_error' } });
@@ -93,6 +106,13 @@ export class DemoChat {
       choices: [{ index: 0, message: { role: 'assistant', content: text || '…' }, finish_reason: 'stop' }],
     });
   }
+}
+
+/** A deliberately generous token estimate (about 3 characters per token) for the budget reservation. */
+function estimateInputTokens(messages: ChatMessage[]): number {
+  let chars = SYSTEM.length;
+  for (const m of messages) for (const b of m.content) if (b.type === 'text') chars += b.text.length;
+  return Math.ceil(chars / 3);
 }
 
 function parse(body: unknown): ChatMessage[] {

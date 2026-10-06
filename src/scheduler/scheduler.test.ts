@@ -117,3 +117,28 @@ test('job config is validated', () => {
   assert.throws(() => jobsFrom([heartbeat(), heartbeat()]), /Duplicate/);
   assert.equal(jobsFrom([heartbeat()])[0]!.permissions['fs.write'], 'deny', 'jobs default to read-only');
 });
+
+test('a daily job fires once on a fall-back day (no run for the repeated wall-clock minute)', async () => {
+  const daily = { id: 'n', kind: 'cron', cron: '30 1 * * *', timezone: 'America/New_York', instructions: 'Nightly.' };
+  const t = setup([daily]);
+  const jump = (iso: string) => t.advance(new Date(iso).getTime() - t.scheduler['now']().getTime());
+  jump('2026-11-01T05:00:10Z'); // 01:00 EDT, before the first 01:30
+  await t.tick();
+  jump('2026-11-01T05:30:10Z'); // 01:30 EDT
+  await t.tick();
+  jump('2026-11-01T06:30:10Z'); // 01:30 EST, the same wall-clock minute again
+  await t.tick();
+  assert.equal(t.runs.length, 1, 'the repeated 01:30 does not run again');
+  jump('2026-11-02T06:30:10Z');
+  await t.tick();
+  assert.equal(t.runs.length, 2);
+});
+
+test('running a job that is already running is a conflict, not an internal error', async () => {
+  const { isRubyError } = await import('../contracts/index.ts');
+  const t = setup([heartbeat()]);
+  const first = t.scheduler.runNow('hb');
+  await assert.rejects(t.scheduler.runNow('hb'), (e) => isRubyError(e, 'conflict'));
+  await assert.rejects(t.scheduler.runNow('nope'), (e) => isRubyError(e, 'invalid_input'));
+  await first;
+});

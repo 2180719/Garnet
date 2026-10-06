@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
-import { billedTokens, errorMessage, type TaskRecord } from '../contracts/index.ts';
+import { billedTokens, errorMessage, RubyError, type TaskRecord } from '../contracts/index.ts';
 import { resolveInWorkspace } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
 
@@ -89,8 +89,8 @@ export class Scheduler {
   /** Runs a job now, outside its schedule (CLI, dashboard). */
   runNow(jobId: string): Promise<void> {
     const job = this.deps.jobs.find((j) => j.id === jobId);
-    if (!job) return Promise.reject(new Error(`No job "${jobId}"`));
-    if (this.running.has(job.id)) return Promise.reject(new Error(`Job "${jobId}" is already running`));
+    if (!job) return Promise.reject(new RubyError('invalid_input', `No job "${jobId}"`));
+    if (this.running.has(job.id)) return Promise.reject(new RubyError('conflict', `Job "${jobId}" is already running`));
     return this.launch(job, this.now(), 'manual');
   }
 
@@ -191,7 +191,10 @@ export class Scheduler {
       finish('failed', { note: errorMessage(e) });
       const fresh = store.state(job.id);
       fresh.consecutiveFailures += 1;
-      if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) fresh.paused = true;
+      if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) {
+        fresh.paused = true;
+        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${errorMessage(e)}. Resume with: ruby jobs resume ${job.id}`);
+      }
       store.saveState(fresh);
       this.log('error', `job ${job.id}: ${errorMessage(e)}`);
     } finally {

@@ -5,7 +5,7 @@ import { gem, h, icon, loading, moon, errorBox, sun } from './ui.js';
 
 const NAV = [
   ['overview', 'Overview'], ['chat', 'Chat'], ['approvals', 'Approvals'], ['memory', 'Memory'], ['skills', 'Skills'],
-  ['schedules', 'Schedules'], ['channels', 'Channels'], ['keys', 'API keys'], ['usage', 'Usage'],
+  ['sessions', 'Sessions'], ['schedules', 'Schedules'], ['channels', 'Channels'], ['routing', 'Routing'], ['logs', 'Logs'], ['keys', 'API keys'], ['usage', 'Usage'],
   ['settings', 'Settings'], ['achievements', 'Achievements'],
 ];
 const root = document.getElementById('root');

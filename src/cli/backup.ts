@@ -19,12 +19,15 @@ export function backup(args: string[], io: Io): number {
     mkdirSync(target, { recursive: true, mode: 0o700 });
     backupDb(ruby.db, join(target, 'ruby.db'));
     if (existsSync(ruby.paths.configFile)) cpSync(ruby.paths.configFile, join(target, 'config.json'));
+    // The encrypted store is safe to copy; its passphrase or key file is not included.
+    if (ruby.secrets.exists()) cpSync(ruby.secrets.file, join(target, 'secrets'));
     for (const dir of DIRS) {
       const from = dir === 'workspace' ? ruby.paths.workspace : join(ruby.paths.home, dir);
       if (existsSync(from)) cpSync(from, join(target, dir), { recursive: true, verbatimSymlinks: true });
     }
     writeFileSync(join(target, 'BACKUP.json'), JSON.stringify({ version: VERSION, createdAt: new Date().toISOString() }, null, 2));
-    io.out(`Backed up to ${target}\nNot included: the env file with your secrets (${ruby.paths.home}/env). Keep a copy somewhere safe.\n`);
+    const encrypted = ruby.secrets.exists() ? ' The encrypted secret store is included; its passphrase or key file is not.' : '';
+    io.out(`Backed up to ${target}\nNot included: the env file with your secrets (${ruby.paths.home}/env). Keep a copy somewhere safe.${encrypted}\n`);
     return 0;
   } finally {
     ruby.close();
@@ -43,7 +46,7 @@ export function restore(args: string[], io: Io): number {
   ruby.close();
   const aside = join(home, `pre-restore-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   mkdirSync(aside, { recursive: true, mode: 0o700 });
-  for (const name of ['ruby.db', 'ruby.db-wal', 'ruby.db-shm', 'config.json', 'memory', 'skills']) {
+  for (const name of ['ruby.db', 'ruby.db-wal', 'ruby.db-shm', 'config.json', 'secrets', 'memory', 'skills']) {
     if (existsSync(join(home, name))) renameSync(join(home, name), join(aside, name));
   }
   if (existsSync(workspace)) renameSync(workspace, join(aside, 'workspace'));

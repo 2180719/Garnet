@@ -2,7 +2,7 @@
 // when Docker or the test image is unavailable, so the suite stays offline-safe.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { chownSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { before, test, type TestContext } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
@@ -28,6 +28,8 @@ function setup(t: TestContext): { sb: DockerSandbox; workspace: string } | null 
     return null;
   }
   const workspace = tempDir('ruby-docker-');
+  // As root, hand the workspace to a regular user the way an owner would; the sandbox then runs as that user.
+  if (process.getuid!() === 0) chownSync(workspace, 1000, 1000);
   return { sb: new DockerSandbox({ workspace, image: IMAGE }), workspace };
 }
 
@@ -58,15 +60,19 @@ test('docker: output, exit code, stdin and a clean environment', async (t) => {
   assert.deepEqual(envNames, ['HOME', 'HOSTNAME', 'PATH', 'PWD', 'SHLVL']);
 });
 
-test('docker: files written in /workspace appear on the host owned by the host user', async (t) => {
+test('docker: never root; files written in /workspace belong to the workspace owner', async (t) => {
   const s = setup(t);
   if (!s) return;
-  const r = await s.sb.run(req('mkdir -p sub && echo data > sub/out.txt && id -u'));
+  const r = await s.sb.run(req('mkdir -p sub && echo data > sub/out.txt && id -u && id -g'));
   assert.equal(r.exitCode, 0, r.stderr);
   const file = join(s.workspace, 'sub', 'out.txt');
   assert.equal(readFileSync(file, 'utf8'), 'data\n');
-  assert.equal(statSync(file).uid, process.getuid!());
-  assert.equal(r.stdout.trim(), String(process.getuid!()));
+  // Ruby as a regular user: its own uid. Ruby as root: the (non-root) workspace owner, never 0.
+  const owner = process.getuid!() === 0 ? statSync(s.workspace).uid : process.getuid!();
+  assert.notEqual(owner, 0);
+  assert.equal(statSync(file).uid, owner);
+  assert.deepEqual(r.stdout.trim().split('\n'), s.sb.containerUser.split(':'));
+  assert.equal(r.stdout.trim().split('\n')[0], String(owner));
   const inSub = await s.sb.run(req('pwd; cat out.txt', { cwd: 'sub' }));
   assert.equal(inSub.stdout, '/workspace/sub\ndata\n');
 });
@@ -115,4 +121,15 @@ test('docker: abort kills the container, including during startup', async (t) =>
   const e = await s.sb.run(req('sleep 30', { signal: early.signal }));
   assert.equal(e.cancelled, true);
   assert.deepEqual(leftovers(), []);
+});
+
+test('docker: as root with a root-owned workspace, check refuses rather than running as root', async (t) => {
+  if (unavailable) return t.skip(unavailable);
+  if (process.getuid!() !== 0) return t.skip('only meaningful when the tests run as root');
+  const workspace = tempDir('ruby-docker-root-');
+  const sb = new DockerSandbox({ workspace, image: IMAGE });
+  assert.equal(sb.containerUser, '65534:65534');
+  const status = await sb.check();
+  assert.equal(status.ok, false);
+  assert.match(status.detail, /cannot write the workspace/);
 });

@@ -12,10 +12,11 @@ import {
   type TaskStatus,
   type ToolCallBlock,
   type ToolResult,
+  type ToolSchema,
   type Usage,
   textOf,
 } from '../contracts/index.ts';
-import { extractSummary, frozenSystem, messagesFromEvents, planCompaction, systemPrompt } from '../context/index.ts';
+import { extractSummary, frozenContext, messagesFromEvents, planCompaction, systemPrompt, type FrozenContext } from '../context/index.ts';
 import type { SessionStore } from '../store/index.ts';
 import type { ToolExecutor, ToolRegistry } from '../tools/index.ts';
 
@@ -74,11 +75,15 @@ export class Agent {
     const { store } = this.deps;
     const signal = options.signal ?? new AbortController().signal;
     const emit = options.onEvent ?? (() => {});
-    store.append(sessionId, {
-      type: 'user_message',
-      message: { role: 'user', content: [{ type: 'text', text: userText }] },
-      source: options.source ?? 'cli',
-    });
+    // A request cancelled while queued must not leave its message in history.
+    const cancelledEarly = signal.aborted;
+    if (!cancelledEarly) {
+      store.append(sessionId, {
+        type: 'user_message',
+        message: { role: 'user', content: [{ type: 'text', text: userText }] },
+        source: options.source ?? 'cli',
+      });
+    }
     const task = store.createTask(sessionId, unknownUsage());
     const started = Date.now();
 
@@ -92,11 +97,13 @@ export class Agent {
       return task;
     };
 
-    // The tool set and system prompt stay fixed for a session so the provider
-    // cache and prefix-bound blocks (signed thinking) remain valid.
-    const tools = this.deps.registry.schemas();
-    await this.maybeCompact(sessionId, task, tools, signal, emit);
-    const system = this.systemFor(sessionId);
+    if (cancelledEarly) return finish('cancelled', 'Cancelled by the owner.');
+
+    // The system prompt and tool set are frozen per session (context_frozen)
+    // so the provider cache and prefix-bound blocks (signed thinking) remain
+    // valid. Both are refreshed only by compaction.
+    await this.maybeCompact(sessionId, task, signal, emit);
+    const { system, tools } = this.frozenFor(sessionId);
 
     for (;;) {
       if (signal.aborted) return finish('cancelled', 'Cancelled by the owner.');
@@ -148,7 +155,7 @@ export class Agent {
           store.append(sessionId, { type: 'tool_started', call, operationId });
           emit({ type: 'tool_start', call });
           task.toolCalls += 1;
-          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal });
+          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name) });
           emit({ type: 'tool_end', call, result });
           if (result.status === 'error' && result.category === 'needs_approval') waiting = `Approval needed for ${call.name}.`;
         }
@@ -159,28 +166,36 @@ export class Agent {
     }
   }
 
-  private systemFor(sessionId: string): string {
-    const frozen = frozenSystem(this.deps.store.events(sessionId));
-    if (frozen !== undefined) return frozen;
+  /**
+   * The frozen system prompt and tool set, freezing them on first use. A
+   * session frozen before tool sets were recorded keeps its prompt and has the
+   * current tools frozen alongside it from now on.
+   */
+  private frozenFor(sessionId: string): { system: string; tools: ToolSchema[] } {
+    const frozen: FrozenContext | undefined = frozenContext(this.deps.store.events(sessionId));
+    if (frozen?.tools) return { system: frozen.system, tools: frozen.tools };
+    return this.freeze(sessionId, frozen?.system ?? this.freshSystem());
+  }
+
+  private freeze(sessionId: string, system: string): { system: string; tools: ToolSchema[] } {
+    const tools = this.deps.registry.schemas();
+    this.deps.store.append(sessionId, { type: 'context_frozen', system, tools });
+    return { system, tools };
+  }
+
+  private freshSystem(): string {
     const ns = this.deps.memoryNamespace ?? 'default';
-    const system = systemPrompt({
-      persona: this.deps.persona,
-      workspace: this.deps.workspace,
-      sections: this.deps.promptSections?.(ns) ?? [],
-    });
-    this.deps.store.append(sessionId, { type: 'context_frozen', system });
-    return system;
+    return systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [] });
   }
 
   /**
    * Keep-tail compaction between tasks (never mid tool round): folds older
-   * turns into a summary, then re-freezes the system prompt so memory changes
-   * take effect. Failures are logged as events and never block the task.
+   * turns into a summary, then re-freezes the system prompt and tool set so
+   * memory and tool changes take effect. Failures are logged as events and never block the task.
    */
   private async maybeCompact(
     sessionId: string,
     task: TaskRecord,
-    tools: ReturnType<ToolRegistry['schemas']>,
     signal: AbortSignal,
     emit: (e: RuntimeEvent) => void,
   ): Promise<void> {
@@ -195,7 +210,8 @@ export class Agent {
     const plan = planCompaction(events, this.deps.keepTurns ?? 2);
     if (!plan) return;
     emit({ type: 'compacting' });
-    const system = frozenSystem(events) ?? this.systemFor(sessionId);
+    // Summarize with the current frozen prefix so the request can hit the cache.
+    const { system, tools } = this.frozenFor(sessionId);
     const turn = await this.callModel({ system, messages: plan.messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, () => {});
     task.modelCalls += 1;
     if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
@@ -205,11 +221,7 @@ export class Agent {
       return;
     }
     this.deps.store.append(sessionId, { type: 'checkpoint', summary, throughSeq: plan.throughSeq, usage: turn.usage });
-    const ns = this.deps.memoryNamespace ?? 'default';
-    this.deps.store.append(sessionId, {
-      type: 'context_frozen',
-      system: systemPrompt({ persona: this.deps.persona, workspace: this.deps.workspace, sections: this.deps.promptSections?.(ns) ?? [] }),
-    });
+    this.freeze(sessionId, this.freshSystem());
   }
 
   private budgetProblem(task: TaskRecord, started: number): string | null {

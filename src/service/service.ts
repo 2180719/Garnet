@@ -113,7 +113,7 @@ WantedBy=default.target
       status: [['systemctl', '--user', 'status', SYSTEMD_UNIT, '--no-pager']],
     },
     notes: [
-      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600).`,
+      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`ruby secrets set\` and put only RUBY_SECRETS_KEY_FILE=<path> there.`,
       'To keep Ruby running without an active login, run: loginctl enable-linger $USER',
       `Logs: journalctl --user -u ${SYSTEMD_UNIT} -f`,
     ],
@@ -171,7 +171,7 @@ ${args}
       status: [['launchctl', 'print', target]],
     },
     notes: [
-      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600).`,
+      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`ruby secrets set\` and put only RUBY_SECRETS_KEY_FILE=<path> there.`,
       `Logs: ${join(o.home, 'logs')}`,
     ],
   };

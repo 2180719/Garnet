@@ -37,6 +37,14 @@ test('config without a version is migrated and backed up', () => {
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
 });
 
+test('sandbox.user is optional uid:gid and never root', () => {
+  assert.equal(defaultConfig().sandbox.user, undefined);
+  assert.equal(parseConfig({ version: CONFIG_VERSION, sandbox: { user: '1000:1000' } }).sandbox.user, '1000:1000');
+  for (const user of ['0:0', '0:1000', 'root', '1000']) {
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, sandbox: { user } }), (e) => isRubyError(e, 'config'), user);
+  }
+});
+
 test('config from a newer Ruby is rejected', () => {
   assert.throws(() => parseConfig({ version: CONFIG_VERSION + 1 }), /newer than this Ruby/);
 });
@@ -46,6 +54,21 @@ test('redact hides secrets but keeps env var names', () => {
   assert.equal(out.apiKeyEnv, 'ANTHROPIC_API_KEY');
   assert.equal(out.token, '[redacted]');
   assert.equal(out.note, 'key [redacted] here');
+});
+
+test('redact hides Ruby API keys in strings', () => {
+  const key = `ruby_${'a1B2c3D4'}_${'x'.repeat(32)}`;
+  assert.equal(redact(`using ${key} now`), 'using [redacted] now');
+});
+
+test('protected config paths', async () => {
+  const { isProtectedConfigPath, changedProtectedPaths } = await import('./index.ts');
+  assert.ok(isProtectedConfigPath('permissions.exec'));
+  assert.ok(isProtectedConfigPath('channels.telegram.tokenEnv'));
+  assert.ok(isProtectedConfigPath('model.apiKeyEnv'));
+  assert.ok(!isProtectedConfigPath('persona'));
+  assert.ok(!isProtectedConfigPath('api.rateLimitPerMinute'));
+  assert.deepEqual(changedProtectedPaths({ a: 1, model: { baseUrl: 'x' } }, { a: 2, model: { baseUrl: 'y' } }), ['model.baseUrl']);
 });
 
 test('env file loads without overriding existing variables', async () => {

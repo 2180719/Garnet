@@ -13,6 +13,8 @@ import { api, dashboard, jobs, pair, service, start } from './admin.ts';
 import { memory, skills } from './knowledge.ts';
 import { backup, restore } from './backup.ts';
 import { runImport } from '../migrate/index.ts';
+import { unlockWarnings } from '../secrets/index.ts';
+import { secrets } from './secrets.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
 
@@ -40,6 +42,8 @@ Usage:
                             Review skills Ruby has learned
   ruby import <openclaw|hermes> [--from <dir>] [--apply]
                             Bring memory, persona and skills over (dry run unless --apply)
+  ruby secrets list|set <NAME>|rm <NAME>|import-env [NAME...] [--keep]|keygen <path>
+                            Encrypted secret store (values from stdin, never argv)
   ruby backup [dir]         Copy the database, config, memory, skills and workspace
   ruby restore <dir>        Restore a backup (stop Ruby first)
   ruby service install|uninstall|status|show
@@ -50,12 +54,18 @@ Environment:
   RUBY_HOME                 Data directory (default ~/.ruby)
   ANTHROPIC_API_KEY         Provider key (name configurable via model.apiKeyEnv)
   TELEGRAM_BOT_TOKEN        Telegram bot token (when channels.telegram.enabled)
-  Service installs read secrets from <RUBY_HOME>/env (KEY=value lines, mode 0600).
+  RUBY_SECRETS_KEY_FILE     Key file (mode 0600, outside RUBY_HOME) that unlocks the secret store
+  RUBY_SECRETS_PASSPHRASE   Or a passphrase that unlocks it
+  Secrets are looked up in the environment first, then in the encrypted store
+  (<RUBY_HOME>/secrets). Service installs also read <RUBY_HOME>/env (KEY=value
+  lines, mode 0600); \`ruby secrets import-env\` moves secrets from it into the store.
 `;
 
 export type Io = {
   out: (text: string) => void;
   err: (text: string) => void;
+  /** Reads one secret value (tests). Defaults to hidden terminal input or piped stdin. */
+  readSecret?: (prompt: string, io: Io) => Promise<string>;
 };
 
 const stdio: Io = {
@@ -66,8 +76,9 @@ const stdio: Io = {
 export async function main(argv: string[], io: Io = stdio): Promise<number> {
   const [command = 'help', ...rest] = argv;
   try {
-    const { warning } = loadEnvFile(rubyHome());
+    const { warning, loaded } = loadEnvFile(rubyHome());
     if (warning) io.err(`Warning: ${warning}\n`);
+    for (const w of unlockWarnings(rubyHome(), process.env, loaded)) io.err(`Warning: ${w}\n`);
     switch (command) {
       case 'init':
         return init(io);
@@ -106,6 +117,8 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
           ruby.close();
         }
       }
+      case 'secrets':
+        return await secrets(rest, io);
       case 'backup':
         return backup(rest, io);
       case 'restore':

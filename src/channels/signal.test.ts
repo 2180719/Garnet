@@ -277,16 +277,28 @@ test('send splits long text at paragraph then line boundaries and reports partia
   }
 });
 
-test('send maps errors: network and 5xx retryable; rpc and unregistered not; never throws or leaks text', async () => {
+test('send maps errors: refused and 5xx retryable; ambiguous ones uncertain; rpc and unregistered not; never throws or leaks text', async () => {
   const secret = 'TOP-SECRET-BODY';
   const mk = (rpc: (c: RpcCall) => Response | Promise<Response>) => setup(fakeDaemon({ rpc })).channel;
   const msg = { deliveryId: 'd', channel: 'signal', account: ACCOUNT, chatId: '+15559998888', text: secret };
 
+  // A reset after the request was written may have sent the message: never resend it.
   const net = await mk(() => { throw new TypeError('socket hang up'); }).send(msg);
-  assert.deepEqual([net.status, (net as any).retryable], ['failed', true]);
+  assert.equal(net.status, 'uncertain');
 
-  const s5 = await mk(() => new Response('bad gateway', { status: 502 })).send(msg);
+  const refused = await mk(() => {
+    throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+  }).send(msg);
+  assert.deepEqual([refused.status, (refused as any).retryable], ['failed', true]);
+
+  const s5 = await mk(() => new Response('unavailable', { status: 503 })).send(msg);
   assert.equal((s5 as any).retryable, true);
+
+  const gateway = await mk(() => new Response('bad gateway', { status: 502 })).send(msg);
+  assert.equal(gateway.status, 'uncertain');
+
+  const garbled = await mk(() => new Response('not json', { status: 200 })).send(msg);
+  assert.equal(garbled.status, 'uncertain');
 
   const rpcErr = await mk((c) => Response.json({ error: { code: -32602, message: 'Invalid params' }, id: c.id }, { status: 200 })).send(msg);
   assert.deepEqual([rpcErr.status, (rpcErr as any).retryable], ['failed', false]);
@@ -301,7 +313,7 @@ test('send maps errors: network and 5xx retryable; rpc and unregistered not; nev
   const netFail = await mk((c) => Response.json({ result: { timestamp: 1, results: [{ type: 'NETWORK_FAILURE' }] }, id: c.id })).send(msg);
   assert.equal((netFail as any).retryable, true);
 
-  for (const r of [net, s5, rpcErr, unreg, perRecipient]) assert.ok(!JSON.stringify(r).includes(secret));
+  for (const r of [net, refused, s5, gateway, garbled, rpcErr, unreg, perRecipient]) assert.ok(!JSON.stringify(r).includes(secret));
   const empty = await mk(() => new Response('{}')).send({ ...msg, text: '  \n' });
   assert.equal((empty as any).retryable, false);
 });

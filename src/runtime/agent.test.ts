@@ -29,7 +29,7 @@ function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: 
   const session = store.createSession();
   const events: RuntimeEvent[] = [];
   const run = (text: string, signal?: AbortSignal) => agent.run(session.id, text, { onEvent: (e) => events.push(e), ...(signal ? { signal } : {}) });
-  return { workspace, store, model, session, events, run };
+  return { workspace, store, model, registry, session, events, run };
 }
 
 test('a tool-backed task completes and records usage', async () => {
@@ -177,4 +177,35 @@ test('malformed but unambiguous tool calls are repaired and noted', async () => 
   assert.equal((await t.run('list')).status, 'completed');
   const finished = t.store.events(t.session.id).find((e) => e.type === 'tool_finished');
   assert.ok(finished?.type === 'tool_finished' && finished.result.repairs?.length === 2);
+});
+
+test('a request cancelled before it starts adds nothing to the conversation', async () => {
+  const t = setup([{ text: 'never' }]);
+  const ac = new AbortController();
+  ac.abort();
+  const task = await t.run('queued then cancelled', ac.signal);
+  assert.equal(task.status, 'cancelled');
+  assert.equal(t.model.requests.length, 0);
+  assert.equal(t.store.events(t.session.id).filter((e) => e.type === 'user_message').length, 0);
+});
+
+test('the tool set is frozen per session and refreshed only by compaction', async () => {
+  const t = setup(
+    [
+      { text: 'one', usage: { inputTokens: 10 } },
+      { text: 'two', usage: { inputTokens: 5000 } },
+      { text: '<summary>Discussed one and two.</summary>' },
+      { text: 'three' },
+    ],
+    { compactAtTokens: 1000 },
+  );
+  const names = (i: number) => t.model.requests[i]!.tools.map((s) => s.name);
+  await t.run('first');
+  t.registry.register({ ...fileTools[0]!, name: 'late_tool' } as (typeof fileTools)[number]);
+  await t.run('second');
+  assert.deepEqual(names(1), names(0), 'a tool registered mid-session is not sent until compaction');
+  assert.ok(!names(1).includes('late_tool'));
+  await t.run('third'); // compacts first
+  assert.deepEqual(names(2), names(0), 'the summarization call reuses the frozen tools');
+  assert.ok(names(3).includes('late_tool'), 'compaction re-freezes the tool set');
 });

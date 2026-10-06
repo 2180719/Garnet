@@ -73,8 +73,10 @@ from the running service.</span></code></pre>
       <div><dt>Skills</dt><dd>Folders with a <code>SKILL.md</code>, in the agentskills.io format. Only each skill's name and a one-line summary go into the prompt. If you edit a skill by hand it becomes locked, and Ruby can only propose a diff for you to accept. It never downloads skills from anywhere.</dd></div>
       <div><dt>Schedules</dt><dd>Cron jobs and heartbeats, each with its own token budget and timeout. A heartbeat can watch a file or a URL and only wake the model when it changes, so an hour in which nothing happened costs no tokens.</dd></div>
       <div><dt>Long chats</dt><dd>When a conversation gets large, older turns are summarized and the last two are kept word for word. The system prompt stays fixed for the session so the provider's prompt cache keeps working.</dd></div>
-      <div><dt>Commands</dt><dd><code>run_command</code> runs each command in a fresh Docker container: <code>debian:stable-slim</code>, no network, 512&nbsp;MB of memory. There is also a <code>local</code> backend, and the config says plainly that it is not a security boundary.</dd></div>
+      <div><dt>Commands</dt><dd><code>run_command</code> runs each command in a fresh Docker container: <code>debian:stable-slim</code>, no network, 512&nbsp;MB of memory, and never as root. There is also a <code>local</code> backend, and the config says plainly that it is not a security boundary.</dd></div>
       <div><dt>API</dt><dd>Off until you run <code>ruby api enable</code>. Then it serves an OpenAI-compatible <code>/v1/chat/completions</code> on <code>127.0.0.1:7311</code>, so existing chat apps can connect with a scoped key. Keys are stored hashed and every request is rate-limited.</dd></div>
+      <div><dt>Dashboard</dt><dd>Optional, served by the same process once you turn it on. It shows pending approvals, memory, skills, schedules, pairing and routing, a read-only log of sessions and API requests, usage, and a settings form. Settings that decide where secrets go or what runs on the host, such as permissions and the sandbox, are read-only there and change only from the command line.</dd></div>
+      <div><dt>Secrets</dt><dd>Bot tokens and API keys can live in an encrypted file, <code>ruby secrets</code>, unlocked by a key file or passphrase. An environment variable of the same name wins over the stored value.</dd></div>
       <div><dt>Models</dt><dd>Anthropic, or anything that speaks the OpenAI API: OpenRouter, Ollama, llama.cpp, vLLM, LM Studio.</dd></div>
       <div><dt>Housekeeping</dt><dd><code>ruby service install</code> writes a systemd unit or a launchd plist. <code>ruby backup</code> copies the database, config, memory, skills and workspace. <code>ruby import openclaw</code> (or <code>hermes</code>) brings over memory, persona and skills, as a dry run unless you add <code>--apply</code>. It never copies secrets.</dd></div>
     </dl>
@@ -153,7 +155,7 @@ from the running service.</span></code></pre>
   <div class="body">
     <div class="note">
       <p><strong>Pre-release, version 0.1.0.</strong> Everything described above is in the repository, with tests. The tests run offline against a fake model and fake channels; Ruby has not yet been run against live Telegram, Signal or Discord servers or real provider APIs as part of testing. Expect rough edges the first time it meets a real bot.</p>
-      <p>The dashboard's API is done and its interface is being built. Still to come before a 1.0: an encrypted secret store (today secrets live in an env file with mode 600), failure-injection tests, a docs site, and the live tests above. The <a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">plan</a> tracks each phase.</p>
+      <p>The dashboard and the encrypted secret store are built and tested; failure-injection tests exist too. Still to come before a 1.0: a docs site and the live tests above. Secrets can stay in an env file with mode 600 or move into the store with <code>ruby secrets</code>. The <a href="https://github.com/2180719/Ruby/blob/main/PLAN.md">plan</a> tracks each phase.</p>
     </div>
   </div>
 </section>

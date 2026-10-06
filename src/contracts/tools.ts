@@ -19,6 +19,8 @@ export type ToolContext = {
   /** Memory namespace this session may read and write (from its routing profile). */
   memoryNamespace: string;
   signal: AbortSignal;
+  /** Names of the tools in the session's frozen schemas. When set, any other tool is refused. */
+  allowedTools?: readonly string[];
 };
 
 export type ToolOutput = {

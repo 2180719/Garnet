@@ -1,7 +1,7 @@
 import type { ChatMessage, ToolCallBlock } from './messages.ts';
 import type { Usage } from './usage.ts';
 import type { ToolResult } from './tools.ts';
-import type { StopReason } from './model.ts';
+import type { StopReason, ToolSchema } from './model.ts';
 
 export type TaskStatus =
   | 'running'
@@ -27,8 +27,13 @@ export type SessionEventPayload =
   | { type: 'tool_finished'; callId: string; operationId: string; result: ToolResult }
   | { type: 'task_status'; taskId: string; status: TaskStatus; reason?: string }
   | { type: 'model_error'; category: string; message: string }
-  /** The system prompt frozen for this session (memory snapshot, skills index). Kept stable for prompt caching. */
-  | { type: 'context_frozen'; system: string }
+  /**
+   * The system prompt (memory snapshot, skills index) and tool schemas frozen
+   * for this session. Kept stable for prompt caching and prefix-bound blocks;
+   * refreshed only at compaction. `tools` is absent in sessions frozen before
+   * tool sets were frozen.
+   */
+  | { type: 'context_frozen'; system: string; tools?: ToolSchema[] }
   /** Compaction: events up to and including `throughSeq` are represented by `summary`. */
   | { type: 'checkpoint'; summary: string; throughSeq: number; usage: Usage };
 

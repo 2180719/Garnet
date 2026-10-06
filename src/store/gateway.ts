@@ -182,6 +182,11 @@ export class GatewayStore {
     return (this.db.prepare('SELECT * FROM pairing_codes WHERE expires_at > ? ORDER BY created_at').all(now) as Row[]).map(pairingFrom);
   }
 
+  /** Deletes a pending pairing request (deny). Returns false when it does not exist. */
+  removePairing(code: string): boolean {
+    return this.db.prepare('DELETE FROM pairing_codes WHERE code = ?').run(code.toUpperCase()).changes > 0;
+  }
+
   /** Consumes a pairing code: the sender becomes an owner identity. */
   approvePairing(code: string, now: string): PairingCode | null {
     return transaction(this.db, () => {
@@ -209,6 +214,27 @@ export class GatewayStore {
     this.db
       .prepare('INSERT INTO conversations (key, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at')
       .run(key, sessionId, nowIso());
+  }
+  /** Conversation bindings, most recently active first, with the session's title and event count. */
+  conversationPage(limit: number, offset: number): { items: { key: string; sessionId: string; updatedAt: string; title: string | null; events: number }[]; total: number } {
+    const total = (this.db.prepare('SELECT COUNT(*) AS n FROM conversations').get() as { n: number }).n;
+    const rows = this.db
+      .prepare(
+        `SELECT c.key, c.session_id, c.updated_at, s.title,
+                (SELECT COUNT(*) FROM events e WHERE e.session_id = c.session_id) AS events
+         FROM conversations c JOIN sessions s ON s.id = c.session_id
+         ORDER BY c.updated_at DESC, c.key LIMIT ? OFFSET ?`,
+      )
+      .all(limit, offset) as Row[];
+    return {
+      total,
+      items: rows.map((r) => ({ key: r.key as string, sessionId: r.session_id as string, updatedAt: r.updated_at as string, title: (r.title as string | null) ?? null, events: r.events as number })),
+    };
+  }
+
+  /** Forgets a conversation binding. The session and its events stay; the next message starts a fresh session. */
+  removeConversation(key: string): boolean {
+    return this.db.prepare('DELETE FROM conversations WHERE key = ?').run(key).changes > 0;
   }
 }
 

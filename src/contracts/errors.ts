@@ -12,6 +12,7 @@ export type ErrorCategory =
   | 'provider_transient' // retryable provider failure (rate limit, overload, network)
   | 'provider_fatal' // non-retryable provider failure (auth, bad request)
   | 'config' // invalid configuration
+  | 'conflict' // the operation clashes with current state (e.g. already running)
   | 'internal'; // a bug in Ruby
 
 export class RubyError extends Error {
