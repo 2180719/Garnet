@@ -21,8 +21,12 @@ function feed(signal?: AbortSignal | null): Feed {
   };
 }
 
+/** What signal-cli's /api/v1/events actually sends: `event:receive` with `{ account, envelope }` as data. */
+let eventSeq = 0;
 const notification = (envelope: object, extra: object = {}) =>
-  `data: ${JSON.stringify({ jsonrpc: '2.0', method: 'receive', params: { envelope, ...extra } })}\n\n`;
+  `id:1700000000000-${++eventSeq}\nevent:receive\ndata:${JSON.stringify({ account: ACCOUNT, envelope, ...extra })}\n\n`;
+/** The JSON-RPC notification shape (also accepted). */
+const rpcNotification = (envelope: object) => `data: ${JSON.stringify({ jsonrpc: '2.0', method: 'receive', params: { envelope } })}\n\n`;
 const direct = (text: string, ts = 1700000000000) =>
   notification({ source: '+15559998888', sourceNumber: '+15559998888', sourceUuid: 'uuid-1', sourceName: 'Alice', timestamp: ts, dataMessage: { message: text, timestamp: ts } });
 
@@ -32,11 +36,13 @@ function fakeDaemon(opts: { check?: () => Response | Promise<Response>; rpc?: (c
   const rpcs: RpcCall[] = [];
   let eventRequests = 0;
   const headersSeen: Array<Record<string, string>> = [];
+  const eventUrls: string[] = [];
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const path = new URL(String(url)).pathname;
     if (path === '/api/v1/check') return opts.check ? opts.check() : new Response('', { status: 200 });
     if (path === '/api/v1/events') {
       eventRequests++;
+      eventUrls.push(String(url));
       headersSeen.push((init?.headers ?? {}) as Record<string, string>);
       const f = queue.shift() ?? feed(init?.signal);
       if (!feeds.includes(f)) feeds.push(f);
@@ -51,7 +57,7 @@ function fakeDaemon(opts: { check?: () => Response | Promise<Response>; rpc?: (c
     }
     return new Response('nope', { status: 404 });
   }) as typeof fetch;
-  return { fetch: fetchImpl, feeds, queue, rpcs, headersSeen, eventRequests: () => eventRequests };
+  return { fetch: fetchImpl, feeds, queue, rpcs, headersSeen, eventUrls, eventRequests: () => eventRequests };
 }
 
 const tick = () => new Promise<void>((r) => setImmediate(r));
@@ -122,8 +128,8 @@ test('parses direct and group messages, keepalives, and events split across chun
   assert.equal(got.length, 1);
   feedA.push(group.slice(cut));
   // Multi-line data: JSON split over two data: lines, CRLF endings.
-  const json = JSON.stringify({ method: 'receive', params: { envelope: { sourceNumber: '+15551112222', timestamp: 5, dataMessage: { message: 'multi' } } } });
-  const mid = json.indexOf('"params"');
+  const json = JSON.stringify({ account: ACCOUNT, envelope: { sourceNumber: '+15551112222', timestamp: 5, dataMessage: { message: 'multi' } } });
+  const mid = json.indexOf('"envelope"');
   feedA.push(`data: ${json.slice(0, mid)}\r\ndata: ${json.slice(mid)}\r\n\r\n`);
   await until(() => got.length === 3, 'three messages');
 
@@ -151,10 +157,11 @@ test('ignores receipts, typing, sync and own-account messages', async () => {
   f.push(notification({ sourceNumber: '+15559998888', timestamp: 5, dataMessage: { message: '' } }));
   f.push('data: {not json\n\n');
   f.push(`data: ${JSON.stringify({ method: 'other', params: {} })}\n\n`);
+  f.push(notification({ sourceNumber: '+15559998888', timestamp: 7, dataMessage: { message: 'other account' } }, { account: '+15550002222' }));
   f.push(direct('real', 6));
-  await until(() => got.length === 1, 'real message');
-  assert.equal(got[0]!.text, 'real');
-  assert.equal(got.length, 1);
+  f.push(rpcNotification({ sourceNumber: '+15559998888', timestamp: 8, dataMessage: { message: 'rpc shape' } }));
+  await until(() => got.length === 2, 'real messages');
+  assert.deepEqual(got.map((m) => m.text), ['real', 'rpc shape']);
   await channel.stop();
 });
 
@@ -206,7 +213,7 @@ test('reconnects with backoff after the stream ends or fails, resending Last-Eve
   const got: string[] = [];
   await channel.start(async (m) => void got.push(m.text));
   await until(() => d.eventRequests() === 1);
-  first.push(`id: 41\n${direct('one').trimEnd()}\n\n`);
+  first.push(direct('one').replace(/^id:[^\n]*\n/, 'id: 41\n'));
   await until(() => got.length === 1);
   first.close();
   await until(() => d.eventRequests() === 2, 'reconnect');
@@ -267,14 +274,46 @@ test('send splits long text at paragraph then line boundaries and reports partia
   assert.ok(d.rpcs.every((c) => c.params.message.length <= 4000));
   assert.equal(d.rpcs.map((c) => c.params.message).join('\n'), lines);
 
+  // Once the first chunk is out, a later chunk's transient failure is retried here, not by
+  // the gateway (which would resend the first chunk too).
   let n = 0;
   const d2 = fakeDaemon({ rpc: (c) => (++n === 2 ? new Response('down', { status: 503 }) : Response.json({ result: { timestamp: 1, results: [] }, id: c.id })) });
-  const r2 = await setup(d2).channel.send({ deliveryId: 'd', channel: 'signal', account: ACCOUNT, chatId: '+1', text: `${p1}\n\n${p2}` });
-  assert.equal(r2.status, 'failed');
-  if (r2.status === 'failed') {
-    assert.equal(r2.retryable, true);
-    assert.match(r2.error, /after sending 1 of 2 chunks/);
+  const s2 = setup(d2);
+  const r2 = await s2.channel.send({ deliveryId: 'd', channel: 'signal', account: ACCOUNT, chatId: '+1', text: `${p1}\n\n${p2}` });
+  assert.equal(r2.status, 'sent');
+  assert.deepEqual(d2.rpcs.map((c) => c.params.message), [p1, p2, p2]);
+  assert.deepEqual(s2.sleeps, [1000]);
+
+  // If the rest keeps failing, the result is final (not retryable) and says what was delivered.
+  let m = 0;
+  const d3 = fakeDaemon({ rpc: (c) => (++m >= 2 ? new Response('down', { status: 503 }) : Response.json({ result: { timestamp: 1, results: [] }, id: c.id })) });
+  const r3 = await setup(d3).channel.send({ deliveryId: 'd', channel: 'signal', account: ACCOUNT, chatId: '+1', text: `${p1}\n\n${p2}` });
+  assert.equal(r3.status, 'failed');
+  if (r3.status === 'failed') {
+    assert.equal(r3.retryable, false);
+    assert.match(r3.error, /after sending 1 of 2 chunks\); the rest was not sent/);
   }
+  assert.equal(d3.rpcs.filter((c) => c.params.message === p1).length, 1, 'the first chunk is never resent');
+});
+
+test('a group send that reached some members counts as sent', async () => {
+  const d = fakeDaemon({ rpc: (c) => Response.json({ result: { timestamp: 9, results: [{ type: 'SUCCESS' }, { type: 'NETWORK_FAILURE' }, { type: 'UNREGISTERED_FAILURE' }] }, id: c.id }) });
+  const r = await setup(d).channel.send({ deliveryId: 'g', channel: 'signal', account: ACCOUNT, chatId: 'group:abc', text: 'hello all' });
+  assert.equal(r.status, 'sent');
+  assert.equal(d.rpcs.length, 1, 'not resent to members who already have it');
+  const rate = await setup(fakeDaemon({ rpc: (c) => Response.json({ result: { timestamp: 9, results: [{ type: 'RATE_LIMIT_FAILURE' }] }, id: c.id }) })).channel.send({ deliveryId: 'r', channel: 'signal', account: ACCOUNT, chatId: '+1', text: 'x' });
+  assert.ok(rate.status === 'failed' && rate.retryable);
+});
+
+test('the event stream asks for our account and reconnects when it goes silent', async () => {
+  const d = fakeDaemon();
+  const errors: (string | null)[] = [];
+  const channel: SignalChannel = new SignalChannel({ account: ACCOUNT, fetch: d.fetch, idleTimeoutMs: 20, sleep: async () => { errors.push(channel.health().lastError); await tick(); } });
+  await channel.start(async () => {});
+  await until(() => d.eventRequests() >= 2, 'reconnect after silence');
+  assert.match(errors[0] ?? '', /silent for 20 ms/);
+  assert.equal(new URL(d.eventUrls[0]!).searchParams.get('account'), ACCOUNT);
+  await channel.stop();
 });
 
 test('send maps errors: refused and 5xx retryable; ambiguous ones uncertain; rpc and unregistered not; never throws or leaks text', async () => {

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import { isRubyError } from '../contracts/index.ts';
-import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, redact } from './index.ts';
+import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, parseEnv, redact, setInEnvFile } from './index.ts';
 
 test('defaults are secure', () => {
   const c = defaultConfig();
@@ -35,6 +35,17 @@ test('config without a version is migrated and backed up', () => {
   assert.equal(config.persona, 'Be brief.');
   assert.ok(existsSync(join(home, 'config.json.bak-v0')));
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
+});
+
+test('a second migration keeps the earlier backup', () => {
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json.bak-v0'), 'earlier backup');
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ persona: 'Second.' }));
+  assert.equal(loadConfig(home).migrated, true);
+  assert.equal(readFileSync(join(home, 'config.json.bak-v0'), 'utf8'), 'earlier backup');
+  const backups = readdirSync(home).filter((n) => n.startsWith('config.json.bak-v0-'));
+  assert.equal(backups.length, 1);
+  assert.match(readFileSync(join(home, backups[0]!), 'utf8'), /Second/);
 });
 
 test('sandbox.user is optional uid:gid and never root', () => {
@@ -81,4 +92,18 @@ test('env file loads without overriding existing variables', async () => {
   assert.equal(env.A_KEY, 'one');
   assert.equal(env.C_KEY, 'kept');
   assert.equal(warning, null);
+});
+
+test('setInEnvFile replaces, de-duplicates and appends, keeps other lines, quotes when needed, mode 0600', () => {
+  const home = tempDir();
+  setInEnvFile(home, { A: 'one' });
+  assert.equal(readFileSync(join(home, 'env'), 'utf8'), 'A=one\n');
+  assert.equal(statSync(join(home, 'env')).mode & 0o777, 0o600);
+  writeFileSync(join(home, 'env'), '# keep me\nexport A=old\nB=2\nA=dup\n');
+  setInEnvFile(home, { A: 'new', C: '/path with space/key' });
+  const text = readFileSync(join(home, 'env'), 'utf8');
+  assert.equal(text, "# keep me\nA=new\nB=2\nC='/path with space/key'\n");
+  assert.deepEqual([...parseEnv(text)], [['A', 'new'], ['B', '2'], ['C', '/path with space/key']]);
+  assert.throws(() => setInEnvFile(home, { 'BAD-NAME': 'x' }), /Invalid variable name/);
+  assert.throws(() => setInEnvFile(home, { A: 'two\nlines' }), /single line/);
 });

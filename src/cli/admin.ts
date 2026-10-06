@@ -190,6 +190,14 @@ export async function jobs(args: string[], io: Io): Promise<number> {
   }
 }
 
+export const LOGIN_LINK_MINUTES = 15;
+
+/** The dashboard's address as a browser should open it (wildcard binds become loopback; IPv6 gets brackets). */
+export function dashboardUrl(host: string, port: number): string {
+  const h = host === '0.0.0.0' || host === '::' || host === '' ? '127.0.0.1' : host;
+  return `http://${h.includes(':') && !h.startsWith('[') ? `[${h}]` : h}:${port}/`;
+}
+
 export function dashboard(io: Io): number {
   const ruby = createRuby({ noModel: true });
   try {
@@ -198,10 +206,11 @@ export function dashboard(io: Io): number {
       writeConfig(paths.home, { ...config, api: { ...config.api, enabled: true }, dashboard: { enabled: true } });
       io.out('Enabled the API and dashboard in config.json (loopback only). Restart Ruby to apply.\n');
     }
-    const created = keys.create(`dashboard ${new Date().toISOString().slice(0, 10)}`, ['admin'], 30);
-    const host = config.api.host === '0.0.0.0' || config.api.host === '::' ? '127.0.0.1' : config.api.host;
-    // The key travels in the URL fragment, which browsers never send to the server.
-    io.out(`\nOpen this link (valid 30 days, revoke with \`ruby api key revoke ${created.id}\`):\n\n  http://${host}:${config.api.port}/#key=${created.key}\n\n`);
+    // A one-time login link: the dashboard trades this short-lived key for a session key on first
+    // use and revokes it (dashboard/login.js). It travels in the URL fragment, which browsers never
+    // send to the server or in a Referer; the exchange keeps it from staying useful in browser history.
+    const created = keys.create(`dashboard login ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, ['admin'], LOGIN_LINK_MINUTES / 1440);
+    io.out(`\nOpen this link within ${LOGIN_LINK_MINUTES} minutes. It works once; run \`ruby dashboard\` again for another:\n\n  ${dashboardUrl(config.api.host, config.api.port)}#login=${created.key}\n\n`);
     return 0;
   } finally {
     ruby.close();

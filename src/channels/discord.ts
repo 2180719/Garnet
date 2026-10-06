@@ -15,7 +15,7 @@ import {
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, mayHaveReachedServer } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
 
 export type DiscordOptions = {
   token: string;
@@ -81,38 +81,6 @@ class DiscordApiError extends Error {
   }
 }
 
-const defaultSleep = (ms: number, signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal.addEventListener('abort', done, { once: true });
-  });
-
-/** Split into chunks of at most `max` chars, preferring paragraph, then line, boundaries. */
-function splitText(text: string, max: number): string[] {
-  const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > max) {
-    const window = rest.slice(0, max);
-    let cut = window.lastIndexOf('\n\n');
-    if (cut <= 0) cut = window.lastIndexOf('\n');
-    if (cut <= 0) {
-      cut = max;
-      const last = window.charCodeAt(max - 1);
-      if (last >= 0xd800 && last <= 0xdbff) cut -= 1; // do not split a surrogate pair
-    }
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\n+/, '');
-  }
-  chunks.push(rest);
-  return chunks.map((c) => c.trimEnd()).filter((c) => c.length > 0);
-}
-
 export class DiscordChannel implements ChannelAdapter {
   readonly channel = 'discord';
   readonly account: string;
@@ -150,7 +118,7 @@ export class DiscordChannel implements ChannelAdapter {
     this.#base = (options.apiBase ?? 'https://discord.com/api/v10').replace(/\/+$/, '');
     this.#fetch = options.fetch ?? fetch;
     this.#WS = options.WebSocketImpl ?? WebSocket;
-    this.#sleep = options.sleep ?? defaultSleep;
+    this.#sleep = options.sleep ?? abortableSleep;
   }
 
   async start(sink: InboundSink): Promise<void> {
@@ -209,40 +177,36 @@ export class DiscordChannel implements ChannelAdapter {
 
   async send(message: OutboundMessage): Promise<SendResult> {
     if (!/^\d+$/.test(message.chatId)) return { status: 'failed', retryable: false, error: 'Invalid Discord channel id' };
-    const chunks = splitText(message.text, MAX_CHARS);
-    if (chunks.length === 0) return { status: 'failed', retryable: false, error: 'Cannot send an empty message' };
-    const externalIds: string[] = [];
-    for (const [i, content] of chunks.entries()) {
-      const body: Record<string, unknown> = {
-        content,
-        // Never let model output ping @everyone, roles or users.
-        allowed_mentions: { parse: [] },
-        nonce: createHash('sha256').update(`${message.deliveryId}:${i}`).digest('base64url').slice(0, 25),
-        enforce_nonce: true,
-      };
-      if (i === 0 && message.replyToExternalId !== undefined && /^\d+$/.test(message.replyToExternalId)) {
-        body.message_reference = { message_id: message.replyToExternalId, fail_if_not_exists: false };
-      }
-      try {
+    const replyTo = message.replyToExternalId !== undefined && /^\d+$/.test(message.replyToExternalId) ? message.replyToExternalId : undefined;
+    return sendChunks(
+      splitText(message.text, MAX_CHARS),
+      async (content, i) => {
+        const body: Record<string, unknown> = {
+          content,
+          // Never let model output ping @everyone, roles or users.
+          allowed_mentions: { parse: [] },
+          nonce: createHash('sha256').update(`${message.deliveryId}:${i}`).digest('base64url').slice(0, 25),
+          enforce_nonce: true,
+        };
+        if (i === 0 && replyTo) body.message_reference = { message_id: replyTo, fail_if_not_exists: false };
         const sent = (await this.#api('POST', `/channels/${message.chatId}/messages`, body, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { id?: string } | null;
         if (typeof sent?.id !== 'string') throw new DiscordApiError(502, 'Discord returned no message id', undefined, true);
-        externalIds.push(sent.id);
         this.#lastSuccessAt = Date.now();
-      } catch (e) {
-        const err = e instanceof DiscordApiError ? e : new DiscordApiError(0, this.#redact(errorMessage(e)), undefined, true);
-        const partial = externalIds.length ? ` (after sending ${externalIds.length} of ${chunks.length} chunks)` : '';
-        // Resending after an ambiguous failure could duplicate the message; the gateway leaves it for the owner.
-        if (err.maybeDelivered) return { status: 'uncertain', error: `${err.message}${partial}` };
-        const retryable = err.status === 0 || err.status === 429 || err.status >= 500;
-        return {
-          status: 'failed',
-          retryable,
-          error: `${err.message}${partial}`,
-          ...(err.status === 429 && err.retryAfterSec !== undefined ? { retryAfterMs: Math.ceil(err.retryAfterSec * 1000) } : {}),
-        };
-      }
-    }
-    return { status: 'sent', externalIds };
+        return sent.id;
+      },
+      (e) => this.#classify(e),
+      (ms) => this.#sleep(ms, new AbortController().signal),
+    );
+  }
+
+  #classify(e: unknown): ChunkFailure {
+    const err = e instanceof DiscordApiError ? e : new DiscordApiError(0, this.#redact(errorMessage(e)), undefined, true);
+    return {
+      message: err.message,
+      maybeDelivered: err.maybeDelivered,
+      retryable: err.status === 0 || err.status === 429 || err.status >= 500,
+      retryAfterMs: err.status === 429 && err.retryAfterSec !== undefined ? Math.ceil(err.retryAfterSec * 1000) : undefined,
+    };
   }
 
   async #gatewayLoop(sink: InboundSink, signal: AbortSignal): Promise<void> {

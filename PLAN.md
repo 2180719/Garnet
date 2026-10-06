@@ -25,7 +25,7 @@ Ruby is a persistent personal agent you run on your own VPS or computer and reac
 5. **Token efficient.** Stable prompt prefix, bounded memory snapshot, a small fixed tool set per session (changing tools mid-session would break prompt caching and signed thinking), artifact handles for large outputs, recoverable compaction, and per-task usage accounting.
 6. **Premium, lightweight surfaces.** A no-tracking public website and an opt-in dashboard that ships in the repo, both fast and polished.
 
-Non-goals for v1: multi-agent orchestration inside Ruby, a public skill marketplace, vector search, voice.
+Non-goals: a public skill marketplace, vector search, realtime voice, and WhatsApp (for now: only unofficial bridges work for personal accounts). Delegation is in scope: the agent may spawn subagents up to two levels deep, each bounded by the parent's budget, permissions and untrusted-content state.
 
 ## Decisions
 
@@ -119,7 +119,7 @@ Disabled by default. Enable it with `ruby api enable`.
 
 1. Load the session and task; check cancellation, budget and permissions.
 2. Build context: stable prefix (instructions, persona, tool index) → memory snapshot → task state/checkpoint → recent turns → selected results.
-3. Stream the model call; forward text to channels that support streaming.
+3. Stream the model call; forward text to channels that support streaming (not built yet: channels receive the finished reply; the terminal chat streams).
 4. Validate tool calls; apply only unambiguous repairs; authorize via policy; persist intent; execute with deadline and cancellation; store large output as artifacts.
 5. Repeat until completion, waiting for the user, cancellation, or budget exhaustion.
 6. Persist the final state and enqueue the reply. Completion reports state what was done, what was verified, and what remains.
@@ -131,15 +131,15 @@ Task states: `running`, `waiting_for_user`, `waiting_for_approval`, `completed`,
 ## Memory and skills
 
 - **Memory files** per namespace: `MEMORY.md` (agent notes) and `USER.md` (owner profile), each with a hard character cap (defaults 2,200 and 1,400). They are injected as a frozen snapshot at session start, so mid-session writes go to disk without breaking the cache. When full, the agent must consolidate or replace entries. Every change is versioned and can be inspected, edited and rolled back from the CLI or dashboard.
-- **Session search:** FTS5 over past sessions, retrieved on demand through a tool rather than injected.
+- **Session search (not built yet):** FTS5 over past sessions, retrieved on demand through a tool rather than injected.
 - **Skills:** `SKILL.md` folders in the agentskills.io format. Only the index (name plus one line) is in the prompt; bodies load on demand. The agent may create skills; each records provenance (`agent`/`user`), usage count and last-used date. A user-edited skill is locked: the agent can only propose a diff for approval. Stale or unused agent skills are surfaced for archival, never silently deleted. Third-party skills are never fetched automatically.
 
 ## Policy and sandboxes
 
 - Permission profiles grant capabilities: `fs.read`, `fs.write`, `net.fetch`, `exec`, `message.send`, `schedule.edit`, `memory.write`, and so on. Each is `allow`, `ask` or `deny`, plus path and host scopes.
-- Approvals are persisted, bound to one pending operation, accepted only from an authorized identity, and expire (default 24h). In chat they use inline buttons where available, otherwise a short code.
-- Sandbox backends: `local` (workspace roots only; not an isolation boundary), `docker`, then `ssh`. A profile marked isolated must use a real boundary; an unavailable backend is an error, never a silent downgrade.
-- Credentials are injected into tools by name, never placed in prompts, and redacted from logs and tool output.
+- Approvals are persisted, bound to one pending operation, accepted only from an authorized identity, and expire (default 24h). In chat they use inline buttons where available, otherwise a short code (today: short code only).
+- Sandbox backends: `local` (workspace roots only; not an isolation boundary), `docker`, then `ssh` (not built yet). A profile marked isolated must use a real boundary; an unavailable backend is an error, never a silent downgrade.
+- Credentials are injected into tools by name, never placed in prompts, and redacted from logs and tool output (redaction is built; injecting named secrets into commands is not yet).
 
 ## Scheduler
 
@@ -173,7 +173,8 @@ Static, no tracking, no cookies, no third-party requests, no frameworks; fast on
 | 3. Memory, skills, context, repair, artifacts | Done (tool schemas stay fixed per session instead of loading on demand; see Product goals) |
 | 4. Scheduler, chat approvals, Signal, OpenAI-compatible models, Docker sandbox | Done |
 | 5. Dashboard and website | Done: website, demo endpoint, dashboard (all pages including sessions, logs and routing, achievements, easter eggs). Keyboard navigation not yet checked by hand |
-| 6. Release hardening | Discord, importer, backup/restore, encrypted secret store and failure-injection tests done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)), v1.0 tag |
+| 6. Release hardening | Discord, importer, backup/restore, encrypted secret store, failure-injection tests, one-line installer, `ruby setup` and `ruby doctor` done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)) |
+| Next | Missing features ranked from research into OpenClaw, Hermes and the wider field: [docs/FEATURE-GAPS.md](docs/FEATURE-GAPS.md) |
 
 ## Build phases
 
@@ -184,7 +185,7 @@ Each phase ends with passing `npm test` and a short entry in `CHANGELOG.md`.
 3. **Memory, skills, context:** bounded memory snapshot, session search, skills with locks, artifact store, compaction, tool-call repair and clean history, usage accounting. Exit: important constraints survive compaction; a locked skill cannot be overwritten; a fixed task suite shows lower input tokens than the full-history baseline with no loss in success.
 4. **Scheduler and Signal:** cron, heartbeats with pre-checks, approvals over chat, `signal-cli` adapter, OpenAI-compatible model adapter, Docker sandbox. Exit: a disabled heartbeat never calls the model; an ungranted write is denied; a restart does not duplicate an occurrence; the cross-channel demo (Telegram → restart → linked Signal chat) passes.
 5. **Dashboard and website:** dashboard with all config, achievements and easter eggs; public site; optional demo endpoint. Exit: every config key is editable and validated in the dashboard; the site scores ≥ 95 on Lighthouse in every category, with zero third-party requests.
-6. **Release hardening:** Discord, an OpenClaw/Hermes migration importer (workspace files, memory, skills), docs, failure-injection tests, an encrypted secret store, a backup/restore command, and the v1.0 tag.
+6. **Release hardening:** Discord, an OpenClaw/Hermes migration importer (workspace files, memory, skills), docs, failure-injection tests, an encrypted secret store, and a backup/restore command.
 
 ## Working agreements for contributors and agents
 

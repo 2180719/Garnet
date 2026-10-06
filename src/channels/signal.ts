@@ -10,7 +10,7 @@ import {
   type OutboundMessage,
   type SendResult,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, mayHaveReachedServer } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
 
 export type SignalOptions = {
   /** signal-cli daemon base URL. Plain http is only allowed for loopback hosts. */
@@ -20,6 +20,8 @@ export type SignalOptions = {
   fetch?: typeof fetch;
   /** Backoff sleep; must resolve early when the signal aborts. Injectable for tests. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Reconnect when the event stream is silent this long (signal-cli sends a keepalive every 15 s). Default 60 s. */
+  idleTimeoutMs?: number;
 };
 
 const NUMBER_SHAPE = /^\+[1-9]\d{6,14}$/;
@@ -30,6 +32,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const SINK_ATTEMPTS = 4;
 /** An SSE stream may be idle for long stretches; a connected stream counts as healthy, otherwise traffic must be recent. */
 const HEALTH_WINDOW_MS = 120_000;
+const IDLE_TIMEOUT_MS = 60_000;
 
 type Envelope = {
   source?: string;
@@ -39,38 +42,6 @@ type Envelope = {
   timestamp?: number;
   dataMessage?: { message?: string | null; groupInfo?: { groupId?: string } | null } | null;
 };
-
-const defaultSleep = (ms: number, signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const done = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal.addEventListener('abort', done, { once: true });
-  });
-
-/** Split into chunks of at most `max` chars, preferring paragraph, then line, boundaries. */
-function splitText(text: string, max: number): string[] {
-  const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > max) {
-    const window = rest.slice(0, max);
-    let cut = window.lastIndexOf('\n\n');
-    if (cut <= 0) cut = window.lastIndexOf('\n');
-    if (cut <= 0) {
-      cut = max;
-      const last = window.charCodeAt(max - 1);
-      if (last >= 0xd800 && last <= 0xdbff) cut -= 1; // do not split a surrogate pair
-    }
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\n+/, '');
-  }
-  chunks.push(rest);
-  return chunks.map((c) => c.trimEnd()).filter((c) => c.length > 0);
-}
 
 function isLoopbackHost(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
@@ -103,6 +74,7 @@ export class SignalChannel implements ChannelAdapter {
   #fetch: typeof fetch;
   #base: string;
   #sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+  #idleTimeoutMs: number;
   #rpcId = 0;
   #controller: AbortController | null = null;
   #loop: Promise<void> | null = null;
@@ -134,7 +106,8 @@ export class SignalChannel implements ChannelAdapter {
     }
     this.#base = raw.replace(/\/+$/, '');
     this.#fetch = options.fetch ?? fetch;
-    this.#sleep = options.sleep ?? defaultSleep;
+    this.#sleep = options.sleep ?? abortableSleep;
+    this.#idleTimeoutMs = options.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
   }
 
   async start(sink: InboundSink): Promise<void> {
@@ -184,33 +157,33 @@ export class SignalChannel implements ChannelAdapter {
   }
 
   async send(message: OutboundMessage): Promise<SendResult> {
-    const chunks = splitText(message.text, MAX_CHARS);
-    if (chunks.length === 0) return { status: 'failed', retryable: false, error: 'Cannot send an empty message' };
-    const externalIds: string[] = [];
-    for (const [i, text] of chunks.entries()) {
-      try {
+    return sendChunks(
+      splitText(message.text, MAX_CHARS),
+      async (text) => {
         const result = (await this.#rpc('send', { ...this.#target(message.chatId), message: text }, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as
           | { timestamp?: number; results?: { type?: string }[] }
           | null;
-        const bad = (result?.results ?? []).find((r) => typeof r.type === 'string' && r.type !== 'SUCCESS');
-        if (bad) {
-          const type = String(bad.type);
-          throw new SignalApiError(type === 'NETWORK_FAILURE' ? 0 : 400, `Signal send failed for recipient: ${type}`);
+        // One result per recipient (a group has many). It counts as sent if anyone got it: resending
+        // because one member failed would duplicate it for everyone else.
+        const results = (result?.results ?? []).filter((r) => typeof r?.type === 'string');
+        if (results.length > 0 && !results.some((r) => r.type === 'SUCCESS')) {
+          const type = String(results[0]!.type);
+          throw new SignalApiError(type === 'NETWORK_FAILURE' || type === 'RATE_LIMIT_FAILURE' ? 0 : 400, `Signal send failed for recipient: ${type}`);
         }
-        externalIds.push(`${this.account}:${result?.timestamp ?? this.#rpcId}`);
         this.#lastSuccessAt = Date.now();
-      } catch (e) {
-        const err = e instanceof SignalApiError ? e : new SignalApiError(0, errorMessage(e), undefined, true);
-        const partial = externalIds.length ? ` (after sending ${externalIds.length} of ${chunks.length} chunks)` : '';
-        // Resending after an ambiguous failure could duplicate the message; the gateway leaves it for the owner.
-        if (err.maybeDelivered) return { status: 'uncertain', error: `${err.message}${partial}` };
-        let retryable = err.status === 0 || err.status === 429 || err.status >= 500;
-        if (err.rpcCode !== undefined) retryable = /network|timed? ?out|connection|unavailable/i.test(err.message);
-        if (/unregistered|not registered|invalid (number|recipient|group)|unknown group|not a member/i.test(err.message)) retryable = false;
-        return { status: 'failed', retryable, error: `${err.message}${partial}` };
-      }
-    }
-    return { status: 'sent', externalIds };
+        return `${this.account}:${result?.timestamp ?? this.#rpcId}`;
+      },
+      (e) => this.#classify(e),
+      (ms) => this.#sleep(ms, new AbortController().signal),
+    );
+  }
+
+  #classify(e: unknown): ChunkFailure {
+    const err = e instanceof SignalApiError ? e : new SignalApiError(0, errorMessage(e), undefined, true);
+    let retryable = err.status === 0 || err.status === 429 || err.status >= 500;
+    if (err.rpcCode !== undefined) retryable = /network|timed? ?out|connection|unavailable/i.test(err.message);
+    if (/unregistered|not registered|invalid (number|recipient|group)|unknown group|not a member/i.test(err.message)) retryable = false;
+    return { message: err.message, maybeDelivered: err.maybeDelivered, retryable };
   }
 
   #target(chatId: string): Record<string, unknown> {
@@ -222,10 +195,17 @@ export class SignalChannel implements ChannelAdapter {
     const wait = (ms: number) => this.#sleep(ms, signal);
     while (!signal.aborted) {
       let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      // Aborted by stop() or by the idle watchdog (a half-open connection would otherwise hang forever).
+      const conn = new AbortController();
+      const onStop = () => conn.abort();
+      signal.addEventListener('abort', onStop, { once: true });
+      let idle = false;
       try {
         const headers: Record<string, string> = { accept: 'text/event-stream' };
         if (this.#lastEventId !== null) headers['last-event-id'] = this.#lastEventId;
-        const res = await this.#fetch(`${this.#base}/api/v1/events`, { headers, signal });
+        // `account` selects our account on a multi-account daemon; a single-account daemon ignores it.
+        const url = `${this.#base}/api/v1/events?account=${encodeURIComponent(this.account)}`;
+        const res = await this.#fetch(url, { headers, signal: conn.signal });
         if (!res.ok || !res.body) {
           await res.body?.cancel().catch(() => {});
           throw new SignalApiError(res.status, `Signal events stream failed with ${res.status}`);
@@ -247,8 +227,16 @@ export class SignalChannel implements ChannelAdapter {
           if (data !== '') await this.#handleEvent(data, sink, signal);
           if (id !== null) this.#lastEventId = id;
         };
+        const read = (r: ReadableStreamDefaultReader<Uint8Array>) => {
+          const timer = setTimeout(() => {
+            idle = true;
+            conn.abort();
+          }, this.#idleTimeoutMs);
+          timer.unref();
+          return r.read().finally(() => clearTimeout(timer));
+        };
         for (;;) {
-          const { done, value } = await reader.read();
+          const { done, value } = await read(reader);
           if (done) break;
           this.#lastSuccessAt = Date.now();
           buffer += decoder.decode(value, { stream: true });
@@ -274,8 +262,9 @@ export class SignalChannel implements ChannelAdapter {
         if (!signal.aborted) this.#lastError = 'events stream ended; reconnecting';
       } catch (e) {
         if (signal.aborted) break;
-        this.#lastError = `events stream failed: ${errorMessage(e)}`;
+        this.#lastError = idle ? `events stream was silent for ${this.#idleTimeoutMs} ms; reconnecting` : `events stream failed: ${errorMessage(e)}`;
       } finally {
+        signal.removeEventListener('abort', onStop);
         this.#connected = false;
         await reader?.cancel().catch(() => {});
       }
@@ -310,10 +299,14 @@ export class SignalChannel implements ChannelAdapter {
   }
 
   #toInbound(event: unknown): InboundMessage | null {
-    const note = event as { method?: string; params?: { envelope?: Envelope; account?: string } } | null;
-    if (!note || note.method !== 'receive') return null;
-    if (note.params?.account !== undefined && note.params.account !== this.account) return null;
-    const env = note.params?.envelope;
+    // signal-cli's SSE `receive` events carry `{ account, envelope }`; a JSON-RPC
+    // notification (`{ method: 'receive', params: { account, envelope } }`) is accepted too.
+    const raw = event as { method?: unknown; params?: unknown; envelope?: unknown } | null;
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.method !== undefined && raw.method !== 'receive') return null;
+    const note = (raw.method === 'receive' ? raw.params : raw) as { envelope?: Envelope; account?: string } | null | undefined;
+    if (note?.account !== undefined && note.account !== this.account) return null;
+    const env = note?.envelope;
     if (!env) return null;
     const text = env.dataMessage?.message;
     if (typeof text !== 'string' || text === '') return null;

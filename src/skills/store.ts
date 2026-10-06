@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { RubyError } from '../contracts/index.ts';
+import { injectionReason } from '../memory/index.ts';
 import { parseSkillFile, serializeSkillFile, type Entry } from './frontmatter.ts';
 
 export const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -59,6 +60,9 @@ function checkFields(description: string, body: string): void {
   if (description.trim() === '') bad('Skill description must not be empty.');
   if (description.length > MAX_DESCRIPTION || /[\r\n]/.test(description))
     bad(`Skill description must be one line of at most ${MAX_DESCRIPTION} characters.`);
+  // The description is replayed into every session's prompt (the skills index), like memory.
+  const why = injectionReason(description);
+  if (why) bad(`Skill description rejected: it ${why}. Describe what the skill does and when to use it.`);
   if (body.trim() === '') bad('Skill body must not be empty.');
   if (body.length > MAX_BODY) bad(`Skill body is too long (${body.length} characters; maximum ${MAX_BODY}). Make it more concise.`);
 }
@@ -307,6 +311,12 @@ export class SkillStore {
     if (text === null) bad(`Skill "${name}" has no proposal.`);
     const parsed = parseSkillFile(text);
     if (typeof parsed === 'string') bad(`The proposal is malformed: ${parsed}.`);
+    // Accepting must leave a loadable skill: same name, a valid description and body.
+    const get = (k: string) => parsed.entries.find((e) => e.key === k)?.value;
+    if (get('name') !== name) bad(`The proposal names the skill "${get('name') ?? ''}", not "${name}"; reject it or fix PROPOSED.md.`);
+    const description = get('description');
+    if (!description || description.length > MAX_DESCRIPTION) bad(`The proposal needs a description of at most ${MAX_DESCRIPTION} characters.`);
+    if (parsed.body.length > MAX_BODY) bad(`The proposal body is longer than ${MAX_BODY} characters.`);
     writeAtomic(this.skillPath(name), text);
     // Owner-approved content: an agent-provenance skill becomes agent-writable again;
     // a user-provenance skill stays locked because provenance is unchanged.

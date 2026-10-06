@@ -14,6 +14,7 @@ import {
   type KdfParams,
 } from '../secrets/index.ts';
 import type { Io } from './main.ts';
+import { stripKeySequences } from './setup/prompt.ts';
 
 const USAGE = `Usage:
   ruby secrets list                     Names in the encrypted store (never values)
@@ -183,11 +184,11 @@ export async function readSecretFromStdin(prompt: string, io: Io): Promise<strin
       else resolvePromise(value);
     };
     const onData = (text: string) => {
-      for (const ch of text) {
+      for (const ch of stripKeySequences(text)) {
         if (ch === '\r' || ch === '\n' || ch === '\u0004') return done();
         if (ch === '\u0003') return done(new RubyError('cancelled', 'Cancelled.'));
         if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1);
-        else value += ch;
+        else if (ch >= ' ') value += ch;
       }
     };
     stdin.on('data', onData);

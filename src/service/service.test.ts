@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { defaultEntry, installService, planService, serviceStatus, shellQuote, uninstallService } from './index.ts';
+import { defaultEntry, installService, planService, restartService, serviceStatus, shellQuote, uninstallService } from './index.ts';
 import type { CommandResult, ServicePlan } from './index.ts';
 
 const base = {
@@ -35,7 +35,7 @@ test('systemd unit has the expected lines and absolute paths', () => {
     'EnvironmentFile=-/home/me/.ruby/env',
     'Restart=on-failure',
     'RestartSec=5',
-    'TimeoutStopSec=30',
+    'TimeoutStopSec=60',
     'KillSignal=SIGTERM',
     'NoNewPrivileges=true',
     'PrivateTmp=true',
@@ -43,9 +43,11 @@ test('systemd unit has the expected lines and absolute paths', () => {
   ]) {
     assert.ok(lines.includes(line), `missing line: ${line}`);
   }
+  assert.deepEqual(p.commands.prepare, []);
   assert.deepEqual(p.commands.install, [
     ['systemctl', '--user', 'daemon-reload'],
-    ['systemctl', '--user', 'enable', '--now', 'ruby.service'],
+    ['systemctl', '--user', 'enable', 'ruby.service'],
+    ['systemctl', '--user', 'restart', 'ruby.service'],
   ]);
   assert.ok(p.notes.some((n) => n.includes('loginctl enable-linger $USER')));
 });
@@ -69,7 +71,10 @@ test('launchd plist has the expected keys and escapes XML', () => {
   assert.match(p.contents, /<string>\/bin\/sh<\/string>\s*<string>-c<\/string>/);
   assert.ok(unescapeXml(p.contents).includes('exec /usr/bin/node --disable-warning=ExperimentalWarning /opt/ruby/src/cli/bin.ts start'));
   assert.ok(unescapeXml(p.contents).includes('. "$RUBY_HOME/env"'));
+  assert.deepEqual(p.commands.prepare, [['launchctl', 'bootout', 'gui/501/dev.ruby.agent']]);
   assert.deepEqual(p.commands.install, [['launchctl', 'bootstrap', 'gui/501', p.path]]);
+  assert.match(p.contents, /<key>ExitTimeOut<\/key>\s*<integer>60<\/integer>/);
+  assert.match(p.contents, /<key>PATH<\/key>\s*<string>\/usr\/bin:\/opt\/homebrew\/bin:\/usr\/local\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
   assert.deepEqual(p.commands.uninstall, [['launchctl', 'bootout', 'gui/501/dev.ruby.agent']]);
 });
 
@@ -138,7 +143,8 @@ test('install writes files with correct modes and runs commands in order', async
     assert.equal(statSync(envFile).mode & 0o777, 0o600);
     assert.match(readFileSync(envFile, 'utf8'), /^# .*KEY=value/);
     assert.ok(statSync(join(p.home, 'logs')).isDirectory());
-    assert.deepEqual(calls, ['systemctl --user daemon-reload', 'systemctl --user enable --now ruby.service']);
+    assert.deepEqual(calls, ['systemctl --user daemon-reload', 'systemctl --user enable ruby.service', 'systemctl --user restart ruby.service']);
+    assert.equal(statSync(p.home).mode & 0o777, 0o700, 'RUBY_HOME holds secrets');
     assert.deepEqual(r.files, [p.path, envFile]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -168,7 +174,7 @@ test('a failing command is reported, not thrown', async () => {
     assert.equal(r.ok, false);
     assert.equal(r.commands[0]?.code, 5);
     assert.equal(r.commands[0]?.stderr, 'Failed to connect to bus');
-    assert.equal(calls.length, 2, 'later commands still run');
+    assert.equal(calls.length, 3, 'later commands still run');
     const throwing = await installService(p, {
       run: async () => {
         throw new Error('spawn failed');
@@ -176,6 +182,20 @@ test('a failing command is reported, not thrown', async () => {
     });
     assert.equal(throwing.ok, false);
     assert.equal(throwing.commands[0]?.stderr, 'spawn failed');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('launchd reinstall unloads the old agent first; that step may fail when it is not loaded', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ruby-service-'));
+  try {
+    const p = plan({ ...base, platform: 'darwin', uid: 501, home: join(root, 'home'), userHome: join(root, 'user') });
+    const calls: Calls = [];
+    const notLoaded: CommandResult = { code: 3, stdout: '', stderr: 'Boot-out failed: 3: No such process' };
+    const r = await installService(p, { run: fakeRun(calls, { 'launchctl bootout gui/501/dev.ruby.agent': notLoaded }) });
+    assert.equal(r.ok, true);
+    assert.deepEqual(calls, ['launchctl bootout gui/501/dev.ruby.agent', `launchctl bootstrap gui/501 ${p.path}`]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -205,4 +225,14 @@ test('status runs the status command and reports its output', async () => {
   assert.equal(r.ok, false);
   assert.equal(r.commands[0]?.stdout, 'inactive');
   assert.deepEqual(calls, ['systemctl --user status ruby.service --no-pager']);
+});
+
+test('restart uses systemctl restart or launchctl kickstart -k', async () => {
+  const { p } = tempPlan();
+  const calls: Calls = [];
+  const r = await restartService(p, { run: fakeRun(calls, {}) });
+  assert.equal(r.ok, true);
+  assert.deepEqual(calls, ['systemctl --user restart ruby.service']);
+  const mac = plan({ ...base, platform: 'darwin', uid: 501 });
+  assert.deepEqual(mac.commands.restart, [['launchctl', 'kickstart', '-k', 'gui/501/dev.ruby.agent']]);
 });

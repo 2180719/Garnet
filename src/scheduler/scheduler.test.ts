@@ -110,6 +110,29 @@ test('repeated failures pause the job and tell the owner', async () => {
   assert.ok(!t.store.state('hb').paused);
 });
 
+test('a run cancelled by shutdown is recorded as interrupted, not as a failure', async () => {
+  const store = new JobStore(openDb(':memory:'));
+  const notes: string[] = [];
+  let started!: () => void;
+  const running = new Promise<void>((r) => (started = r));
+  const scheduler = new Scheduler({
+    jobs: jobsFrom([heartbeat()]), store, workspace: tempDir(), notify: (_j, text) => notes.push(text),
+    run: (_job, _text, signal) => {
+      started();
+      return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ task: task('cancelled'), text: 'Stopped.' }), { once: true }));
+    },
+  });
+  store.saveState({ ...store.state('hb'), consecutiveFailures: 2 });
+  const run = scheduler.runNow('hb');
+  await running;
+  await scheduler.stop();
+  await run;
+  assert.equal(store.runs('hb')[0]?.status, 'interrupted');
+  assert.equal(store.state('hb').consecutiveFailures, 2, 'a restart does not count towards pausing');
+  assert.ok(!store.state('hb').paused);
+  assert.deepEqual(notes, [], 'the owner is not messaged about a shutdown');
+});
+
 test('job config is validated', () => {
   assert.throws(() => jobsFrom([{ id: 'x', kind: 'cron', instructions: 'i' }]), /cron jobs need/);
   assert.throws(() => jobsFrom([{ id: 'x', kind: 'cron', cron: '99 * * * *', instructions: 'i' }]), /out of range/);

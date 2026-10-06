@@ -10,7 +10,7 @@ export type SystemPromptInput = {
 /**
  * The stable instruction prefix. Keep it deterministic: anything that changes
  * per turn (time, task state) belongs in messages, not here, so provider
- * prompt caching keeps working. It is frozen per session (see `frozenSystem`).
+ * prompt caching keeps working. It is frozen per session (see `frozenContext`).
  */
 export function systemPrompt(input: SystemPromptInput): string {
   const parts = [
@@ -30,16 +30,8 @@ export type FrozenContext = { system: string; tools: ToolSchema[] | undefined };
 
 /** The system prompt and tool schemas most recently frozen for this session, if any. */
 export function frozenContext(events: SessionEvent[]): FrozenContext | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i]!;
-    if (e.type === 'context_frozen') return { system: e.system, tools: e.tools };
-  }
-  return undefined;
-}
-
-/** The system prompt most recently frozen for this session, if any. */
-export function frozenSystem(events: SessionEvent[]): string | undefined {
-  return frozenContext(events)?.system;
+  const e = events.findLast((e) => e.type === 'context_frozen');
+  return e?.type === 'context_frozen' ? { system: e.system, tools: e.tools } : undefined;
 }
 
 /**
@@ -55,9 +47,13 @@ export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
   for (const e of events) if (e.type === 'checkpoint') checkpoint = e;
 
   const messages: ChatMessage[] = [];
+  // Keyed by the assistant turn as well as the call id: call ids are not
+  // guaranteed unique across turns (some servers send none, so they are generated).
   const results = new Map<string, { content: string; isError: boolean }>();
+  let turnSeq = 0;
   for (const e of events) {
-    if (e.type === 'tool_finished') results.set(e.callId, { content: e.result.content, isError: e.result.status === 'error' });
+    if (e.type === 'assistant_message') turnSeq = e.seq;
+    else if (e.type === 'tool_finished') results.set(`${turnSeq}:${e.callId}`, { content: e.result.content, isError: e.result.status === 'error' });
   }
 
   if (checkpoint) {
@@ -86,7 +82,7 @@ export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
         appendUser(
           messages,
           calls.map((c) => {
-            const r = results.get(c.id) ?? { content: 'No result: the task was interrupted before this tool finished.', isError: true };
+            const r = results.get(`${e.seq}:${c.id}`) ?? { content: 'No result: the task was interrupted before this tool finished.', isError: true };
             return { type: 'tool_result', callId: c.id, content: r.content, isError: r.isError };
           }),
         );
@@ -114,16 +110,20 @@ export function planCompaction(events: SessionEvent[], keepTurns = 2): Compactio
   const userSeqs = events.filter((e) => e.type === 'user_message').map((e) => e.seq);
   if (userSeqs.length <= keepTurns) return null;
   const cutBefore = userSeqs[userSeqs.length - keepTurns]!;
-  const previous = events.filter((e) => e.type === 'checkpoint').at(-1);
-  if (previous?.type === 'checkpoint' && cutBefore - 1 <= previous.throughSeq) return null;
-  const head = events.filter((e) => e.seq < cutBefore);
+  const previous = events.findLast((e) => e.type === 'checkpoint');
+  if (previous && cutBefore - 1 <= previous.throughSeq) return null;
+  // The previous checkpoint is usually recorded after the cut (compaction runs
+  // once the task's user message is stored), but it still covers the turns
+  // before its throughSeq; without it they would be replayed in full.
+  const head = events.filter((e) => e.seq < cutBefore || e === previous);
   const messages = messagesFromEvents(head);
   appendUser(messages, [{ type: 'text', text: SUMMARY_PROMPT }]);
   return { throughSeq: cutBefore - 1, messages };
 }
 
+/** The text inside `<summary>` tags (or after an unclosed opening tag), else the whole text. */
 export function extractSummary(text: string): string {
-  const m = /<summary>([\s\S]*?)<\/summary>/.exec(text);
+  const m = /<summary>([\s\S]*?)(?:<\/summary>|$)/.exec(text);
   return (m ? m[1]! : text).trim();
 }
 

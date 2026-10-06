@@ -1,12 +1,17 @@
 import {
   addUsage,
   billedTokens,
+  errorMessage,
   nowIso,
+  textOf,
+  toolCallsOf,
   unknownUsage,
   type Budget,
   type ChatMessage,
+  type ErrorCategory,
   type ModelAdapter,
   type ModelEvent,
+  type ModelRequest,
   type StopReason,
   type TaskRecord,
   type TaskStatus,
@@ -14,7 +19,6 @@ import {
   type ToolResult,
   type ToolSchema,
   type Usage,
-  textOf,
 } from '../contracts/index.ts';
 import { extractSummary, frozenContext, messagesFromEvents, planCompaction, systemPrompt, type FrozenContext } from '../context/index.ts';
 import type { SessionStore } from '../store/index.ts';
@@ -52,6 +56,13 @@ export type AgentDeps = {
   /** Transient provider failures retried per model call. */
   maxRetries?: number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+};
+
+export type CompactionOutcome = {
+  status: 'compacted' | 'nothing_to_compact' | 'failed';
+  /** Usage of the summarizing call; null when no call was made or the provider did not report it. */
+  usage: Usage | null;
+  modelCalls: number;
 };
 
 export type RunOptions = {
@@ -98,11 +109,34 @@ export class Agent {
     };
 
     if (cancelledEarly) return finish('cancelled', 'Cancelled by the owner.');
+    try {
+      return await this.loop(sessionId, task, started, signal, emit, finish);
+    } catch (e) {
+      // A bug or a store failure must not leave the task `running` forever.
+      // Record what we can, then let the caller see the original error.
+      try {
+        finish('failed', `Internal error: ${errorMessage(e)}`);
+      } catch {
+        // the store itself is failing; the original error matters more
+      }
+      throw e;
+    }
+  }
 
+  private async loop(
+    sessionId: string,
+    task: TaskRecord,
+    started: number,
+    signal: AbortSignal,
+    emit: (e: RuntimeEvent) => void,
+    finish: (status: TaskStatus, reason?: string | null) => TaskRecord,
+  ): Promise<TaskRecord> {
+    const { store } = this.deps;
+    const deadline = started + this.deps.budget.maxWallMs;
     // The system prompt and tool set are frozen per session (context_frozen)
     // so the provider cache and prefix-bound blocks (signed thinking) remain
     // valid. Both are refreshed only by compaction.
-    await this.maybeCompact(sessionId, task, signal, emit);
+    await this.maybeCompact(sessionId, task, signal, emit, deadline);
     const { system, tools } = this.frozenFor(sessionId);
 
     for (;;) {
@@ -111,7 +145,7 @@ export class Agent {
       if (exhausted) return finish('budget_exhausted', exhausted);
 
       const messages = messagesFromEvents(store.events(sessionId));
-      const turn = await this.callModel({ system, messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, emit);
+      const turn = await this.callModel({ system, messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, emit, deadline);
       task.modelCalls += 1;
       if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
 
@@ -131,7 +165,7 @@ export class Agent {
       });
       store.updateTask(task);
 
-      const calls = turn.message.content.filter((b): b is ToolCallBlock => b.type === 'tool_call');
+      const calls = toolCallsOf(turn.message);
       if (calls.length === 0) {
         return finish('completed', turn.stopReason === 'max_tokens' ? 'Stopped at the output token limit.' : null);
       }
@@ -189,15 +223,16 @@ export class Agent {
   }
 
   /**
-   * Keep-tail compaction between tasks (never mid tool round): folds older
-   * turns into a summary, then re-freezes the system prompt and tool set so
-   * memory and tool changes take effect. Failures are logged as events and never block the task.
+   * Keep-tail compaction between tasks (never mid tool round), run when the
+   * previous request crossed `compactAtTokens`. Failures are logged as events
+   * and never block the task.
    */
   private async maybeCompact(
     sessionId: string,
     task: TaskRecord,
     signal: AbortSignal,
     emit: (e: RuntimeEvent) => void,
+    deadline: number,
   ): Promise<void> {
     const threshold = this.deps.compactAtTokens;
     if (!threshold) return;
@@ -207,21 +242,41 @@ export class Agent {
     const u = lastUsage.usage;
     const contextTokens = (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
     if (contextTokens < threshold) return;
-    const plan = planCompaction(events, this.deps.keepTurns ?? 2);
-    if (!plan) return;
+    const outcome = await this.compactNow(sessionId, signal, emit, deadline);
+    if (outcome.modelCalls) task.modelCalls += outcome.modelCalls;
+    if (outcome.usage) task.usage = addUsage(task.usage, outcome.usage);
+  }
+
+  /**
+   * Compacts a session now, regardless of `compactAtTokens` (the owner asked,
+   * for example with `/compact`). Must not run while a task is running on the
+   * same session. `nothing_to_compact` means there are no turns older than the
+   * kept tail that a checkpoint does not already cover.
+   */
+  async compact(sessionId: string, options: { signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void } = {}): Promise<CompactionOutcome> {
+    return this.compactNow(sessionId, options.signal ?? new AbortController().signal, options.onEvent ?? (() => {}));
+  }
+
+  /**
+   * Folds older turns into a summary (keep-tail), records a checkpoint, then
+   * re-freezes the system prompt and tool set so memory and tool changes take effect.
+   */
+  private async compactNow(sessionId: string, signal: AbortSignal, emit: (e: RuntimeEvent) => void, deadline = Infinity): Promise<CompactionOutcome> {
+    const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2);
+    if (!plan) return { status: 'nothing_to_compact', usage: null, modelCalls: 0 };
     emit({ type: 'compacting' });
     // Summarize with the current frozen prefix so the request can hit the cache.
     const { system, tools } = this.frozenFor(sessionId);
-    const turn = await this.callModel({ system, messages: plan.messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, () => {});
-    task.modelCalls += 1;
-    if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
-    const summary = turn.kind === 'done' ? extractSummary(textOf(turn.message)) : '';
+    const turn = await this.callModel({ system, messages: plan.messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, () => {}, deadline);
+    // A summary cut off at the output limit would silently drop whatever it did not reach.
+    const summary = turn.kind === 'done' && turn.stopReason !== 'max_tokens' ? extractSummary(textOf(turn.message)) : '';
     if (turn.kind === 'error' || !summary) {
       this.deps.store.append(sessionId, { type: 'model_error', category: turn.kind === 'error' ? turn.category : 'invalid_input', message: 'Compaction failed; continuing with full history.' });
-      return;
+      return { status: 'failed', usage: turn.usage, modelCalls: 1 };
     }
     this.deps.store.append(sessionId, { type: 'checkpoint', summary, throughSeq: plan.throughSeq, usage: turn.usage });
     this.freeze(sessionId, this.freshSystem());
+    return { status: 'compacted', usage: turn.usage, modelCalls: 1 };
   }
 
   private budgetProblem(task: TaskRecord, started: number): string | null {
@@ -232,18 +287,25 @@ export class Agent {
     return null;
   }
 
+  /**
+   * One model turn with retries. Only `provider_transient` errors are retried,
+   * only before any text was streamed (a retry would repeat it), and never past
+   * `deadline` (the task's wall-clock limit): a long `retry-after` fails now
+   * instead of holding the conversation's lane.
+   */
   private async callModel(
-    request: Parameters<ModelAdapter['stream']>[0] & { signal: AbortSignal },
+    request: ModelRequest & { signal: AbortSignal },
     emit: (e: RuntimeEvent) => void,
+    deadline: number,
   ): Promise<
     | { kind: 'done'; message: ChatMessage; stopReason: StopReason; usage: Usage }
-    | { kind: 'error'; category: Extract<ModelEvent, { type: 'error' }>['category']; message: string; usage: Usage | null }
+    | { kind: 'error'; category: ErrorCategory; message: string; usage: Usage | null }
   > {
     const maxRetries = this.deps.maxRetries ?? 3;
     const sleep = this.deps.sleep ?? abortableSleep;
     for (let attempt = 0; ; attempt++) {
       let streamedText = false;
-      let lastError: Extract<ModelEvent, { type: 'error' }> | null = null;
+      let err: ModelError | null = null;
       try {
         for await (const event of this.deps.model.stream(request)) {
           if (event.type === 'text_delta') {
@@ -252,18 +314,20 @@ export class Agent {
           } else if (event.type === 'done') {
             return { kind: 'done', message: event.message, stopReason: event.stopReason, usage: event.usage };
           } else if (event.type === 'error') {
-            lastError = event;
+            err = event;
             break;
           }
         }
       } catch (e) {
-        lastError = { type: 'error', category: 'internal', message: e instanceof Error ? e.message : String(e) };
+        err = { type: 'error', category: 'internal', message: errorMessage(e) };
       }
-      const err = lastError ?? { type: 'error' as const, category: 'internal' as const, message: 'Model stream ended without a result.' };
-      // Retrying after visible output would duplicate it for the user.
-      const retryable = err.category === 'provider_transient' && !streamedText && attempt < maxRetries;
-      if (!retryable || request.signal.aborted) return { kind: 'error', category: err.category, message: err.message, usage: null };
+      err ??= { type: 'error', category: 'internal', message: 'Model stream ended without a result.' };
+      const fail = (message = err.message) => ({ kind: 'error' as const, category: err.category, message, usage: null });
+      if (err.category !== 'provider_transient' || streamedText || attempt >= maxRetries || request.signal.aborted) return fail();
       const delayMs = err.retryAfterMs ?? Math.min(30_000, 1000 * 2 ** attempt) * (0.5 + Math.random() / 2);
+      if (Date.now() + delayMs >= deadline) {
+        return fail(`${err.message} (not retried: waiting ${Math.ceil(delayMs / 1000)}s would pass the task's time limit)`);
+      }
       emit({ type: 'retry', attempt: attempt + 1, delayMs, message: err.message });
       try {
         await sleep(delayMs, request.signal);
@@ -273,6 +337,8 @@ export class Agent {
     }
   }
 }
+
+type ModelError = Extract<ModelEvent, { type: 'error' }>;
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

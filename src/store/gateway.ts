@@ -109,11 +109,21 @@ export class GatewayStore {
     return r && outboxFrom(r);
   }
 
-  /** Atomically claims due deliveries by moving them to `sending`. */
+  /**
+   * Atomically claims due deliveries by moving them to `sending`. Delivery is
+   * in order per chat: a message is claimed only when no older message to the
+   * same chat is still pending or sending (e.g. waiting out a rate limit), so a
+   * later reply can never overtake an earlier one. At most one per chat per call.
+   */
   claimDue(now: string, limit = 20): OutboxRow[] {
     return transaction(this.db, () => {
       const rows = (this.db
-        .prepare("SELECT * FROM outbox WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY created_at LIMIT ?")
+        .prepare(
+          `SELECT * FROM outbox o WHERE o.status = 'pending' AND o.next_attempt_at <= ?
+             AND NOT EXISTS (SELECT 1 FROM outbox e WHERE e.channel = o.channel AND e.account = o.account AND e.chat_id = o.chat_id
+                             AND e.status IN ('pending', 'sending') AND e.rowid < o.rowid)
+           ORDER BY o.rowid LIMIT ?`,
+        )
         .all(now, limit) as Row[]).map(outboxFrom);
       const claim = this.db.prepare("UPDATE outbox SET status = 'sending', attempts = attempts + 1 WHERE delivery_id = ?");
       for (const r of rows) claim.run(r.deliveryId);
@@ -136,7 +146,14 @@ export class GatewayStore {
   }
 
   outboxByStatus(status: OutboxStatus): OutboxRow[] {
-    return (this.db.prepare('SELECT * FROM outbox WHERE status = ? ORDER BY created_at').all(status) as Row[]).map(outboxFrom);
+    return (this.db.prepare('SELECT * FROM outbox WHERE status = ? ORDER BY rowid').all(status) as Row[]).map(outboxFrom);
+  }
+
+  /** Number of outbox rows per status (for health checks, without loading the rows). */
+  outboxCounts(): Record<OutboxStatus, number> {
+    const counts: Record<OutboxStatus, number> = { pending: 0, sending: 0, sent: 0, failed: 0, uncertain: 0 };
+    for (const r of this.db.prepare('SELECT status, COUNT(*) AS n FROM outbox GROUP BY status').all() as { status: OutboxStatus; n: number }[]) counts[r.status] = r.n;
+    return counts;
   }
 
   identity(channel: string, senderId: string): Identity | undefined {
@@ -170,6 +187,16 @@ export class GatewayStore {
       .prepare('SELECT * FROM pairing_codes WHERE channel = ? AND sender_id = ? AND expires_at > ? ORDER BY created_at DESC')
       .get(channel, senderId, now) as Row | undefined;
     return r && pairingFrom(r);
+  }
+
+  /** Whether a pairing code exists, expired or not (codes are primary keys, so a new one must be unused). */
+  hasPairingCode(code: string): boolean {
+    return this.db.prepare('SELECT 1 FROM pairing_codes WHERE code = ?').get(code.toUpperCase()) !== undefined;
+  }
+
+  /** Deletes expired pairing codes (they can no longer be approved). Returns how many. */
+  pruneExpiredPairings(now: string): number {
+    return Number(this.db.prepare('DELETE FROM pairing_codes WHERE expires_at <= ?').run(now).changes);
   }
 
   addPairing(p: PairingCode): void {

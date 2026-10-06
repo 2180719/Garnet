@@ -119,6 +119,24 @@ test('restart recovery never replays interrupted work', async () => {
   second.db.close();
 });
 
+test('replies to one chat are delivered in order, even when the first waits out a rate limit', async () => {
+  const t = setup();
+  let now = Date.now() + 60_000;
+  (t.gateway as unknown as { now: () => Date }).now = () => new Date(now);
+  await t.gateway.start();
+  t.channel.failures.push({ status: 'failed', retryable: true, error: 'Too Many Requests', retryAfterMs: 5000 });
+  t.store.enqueue({ channel: 'fake', account: 'default', chatId: 'chat1', text: 'first' });
+  t.store.enqueue({ channel: 'fake', account: 'default', chatId: 'chat1', text: 'second' });
+  t.store.enqueue({ channel: 'fake', account: 'default', chatId: 'chat2', text: 'other chat' });
+  await t.gateway.deliver();
+  assert.deepEqual(t.channel.sent.map((m) => m.text), ['other chat'], 'chat1 waits behind its rate-limited first message');
+  now += 6000;
+  await t.gateway.deliver();
+  assert.deepEqual(t.channel.sent.map((m) => m.text), ['other chat', 'first', 'second']);
+  assert.deepEqual(t.gateway.health().outbox, { pending: 0, failed: 0, uncertain: 0 });
+  await t.gateway.stop(0);
+});
+
 test('approvals over chat grant exactly one operation', async () => {
   const write = { name: 'write_file', input: { path: 'note.txt', content: 'hi' } };
   const t = setup([{ toolCalls: [write] }, { toolCalls: [write] }, { text: 'Saved note.txt.' }], { withApprovals: true });

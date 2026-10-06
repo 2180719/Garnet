@@ -27,7 +27,10 @@ export function persistentApprover(store: ApprovalStore, ttlMinutes = 24 * 60): 
   return async (req) => {
     const hash = operationHash(req.tool, req.input);
     if (store.consumeGrant(req.sessionId, req.tool, hash)) return 'approved';
-    const code = Array.from({ length: 5 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+    // Codes are kept forever (they are the audit trail), so skip any already used.
+    let code: string;
+    do code = Array.from({ length: 5 }, () => ALPHABET[randomInt(ALPHABET.length)]).join('');
+    while (store.get(code));
     store.create({
       code,
       sessionId: req.sessionId,

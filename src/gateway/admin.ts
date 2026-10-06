@@ -114,7 +114,7 @@ export function adminRoutes(b: AdminBackend): AdminRoute[] {
     r('GET', /^\/api\/pairing$/, 'read', () => b.pairing()),
     r('POST', new RegExp(`^/api/pairing/${NAME}/approve$`), 'admin', ({ params }) => b.approvePairing(params[0]!)),
     r('DELETE', new RegExp(`^/api/identities/${NAME}/${NAME}$`), 'admin', ({ params }) => ({ revoked: b.revokeIdentity(params[0]!, params[1]!) })),
-    r('GET', /^\/api\/usage$/, 'read', ({ query }) => b.usage(Math.min(365, Number(query.get('days') ?? 30) || 30))),
+    r('GET', /^\/api\/usage$/, 'read', ({ query }) => b.usage(Math.max(1, Math.min(365, Math.floor(Number(query.get('days') ?? 30)) || 30)))),
     r('GET', /^\/api\/log\/sessions$/, 'read', ({ query }) => b.sessions({ ...page(query), ...(opt(query, 'q') ? { q: opt(query, 'q')! } : {}) })),
     r('GET', new RegExp(`^/api/log/sessions/${NAME}/events$`), 'read', ({ params, query }) => {
       const after = Number(query.get('after') ?? 0);

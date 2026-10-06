@@ -1,5 +1,6 @@
-import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { lstat, mkdir, open, readdir, realpath, stat } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import { basename, dirname, join, relative } from 'node:path';
 import { z } from 'zod';
 import { RubyError, type ToolDefinition } from '../../contracts/index.ts';
@@ -44,7 +45,11 @@ export const listFiles: ToolDefinition<{ path: string; depth: number }> = {
   maxOutputChars: 10_000,
   async run({ path, depth }, ctx) {
     const root = resolveInWorkspace(ctx.workspace, path);
-    await realInWorkspace(ctx.workspace, path);
+    const info = await stat(await realInWorkspace(ctx.workspace, path)).catch(() => null);
+    if (!info) throw new RubyError('invalid_input', `"${path}" does not exist. List its parent directory to see what is there.`);
+    if (!info.isDirectory()) throw new RubyError('invalid_input', `"${path}" is a file, not a directory. Use read_file to read it.`);
+    // `root` is under the real workspace root, so paths are shown relative to that.
+    const base = resolveInWorkspace(ctx.workspace, '.');
     const lines: string[] = [];
     const LIMIT = 500;
     const walk = async (dir: string, level: number): Promise<void> => {
@@ -52,7 +57,7 @@ export const listFiles: ToolDefinition<{ path: string; depth: number }> = {
       for (const e of entries) {
         if (lines.length >= LIMIT) return;
         if (e.name === '.git' || e.name === 'node_modules') continue;
-        const rel = relative(ctx.workspace, join(dir, e.name));
+        const rel = relative(base, join(dir, e.name));
         lines.push(e.isDirectory() ? `${rel}/` : rel);
         if (e.isDirectory() && level < depth) await walk(join(dir, e.name), level + 1);
       }
@@ -82,13 +87,24 @@ export const readFileTool: ToolDefinition<{ path: string; offset: number; limit:
     const info = await stat(file).catch(() => null);
     if (!info) throw new RubyError('invalid_input', `File "${path}" does not exist. Use list_files to find it.`);
     if (info.isDirectory()) throw new RubyError('invalid_input', `"${path}" is a directory. Use list_files instead.`);
-    const text = await readFile(file, 'utf8');
-    if (text.includes('\u0000')) throw new RubyError('invalid_input', `"${path}" looks like a binary file.`);
-    const all = text.split('\n');
-    const slice = all.slice(offset - 1, offset - 1 + limit);
+    // Streamed line by line, so a large log costs only the lines returned.
+    const slice: string[] = [];
+    let total = 0;
+    const input = createReadStream(file, { encoding: 'utf8', signal: ctx.signal });
+    try {
+      for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+        if (line.includes('\u0000')) throw new RubyError('invalid_input', `"${path}" looks like a binary file.`);
+        total += 1;
+        if (total >= offset && slice.length < limit) slice.push(line);
+      }
+    } finally {
+      input.destroy();
+    }
+    if (total === 0) return { content: '(empty file)' };
+    if (slice.length === 0) throw new RubyError('invalid_input', `"${path}" has only ${total} lines; use an offset of at most ${total}.`);
     const body = slice.map((l, i) => `${String(offset + i).padStart(5)}  ${l}`).join('\n');
     const end = offset - 1 + slice.length;
-    const footer = end < all.length ? `\n[lines ${offset}-${end} of ${all.length}; use offset=${end + 1} for more]` : '';
+    const footer = end < total ? `\n[lines ${offset}-${end} of ${total}; use offset=${end + 1} for more]` : '';
     return { content: body + footer };
   },
 };

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { RubyError } from '../contracts/index.ts';
@@ -59,7 +59,9 @@ export function loadConfig(home: string = rubyHome()): Loaded {
   const config = parseConfig(raw);
   const migrated = (raw as { version?: unknown })?.version !== CONFIG_VERSION;
   if (migrated) {
-    renameSync(file, `${file}.bak-v${String((raw as { version?: unknown }).version ?? 0)}`);
+    // Copy, then replace atomically: the original stays in place if the write fails, and an older backup is never overwritten.
+    const base = `${file}.bak-v${String((raw as { version?: unknown }).version ?? 0)}`;
+    copyFileSync(file, existsSync(base) ? `${base}-${Date.now()}` : base, constants.COPYFILE_EXCL);
     writeConfig(home, config);
   }
   return { config, paths: pathsFor(home, config), migrated };
@@ -68,7 +70,8 @@ export function loadConfig(home: string = rubyHome()): Loaded {
 export function writeConfig(home: string, config: RubyConfig): void {
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const file = join(home, 'config.json');
-  const tmp = `${file}.tmp`;
+  // A unique temp name, so two writers never interleave in one temp file.
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmp, file);
 }

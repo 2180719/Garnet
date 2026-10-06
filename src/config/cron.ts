@@ -31,18 +31,22 @@ function field(text: string, min: number, max: number, names: string[] = [], nam
   const out = new Set<number>();
   const value = (v: string) => {
     const i = names.indexOf(v.toLowerCase());
-    const n = i >= 0 ? i + nameBase : Number(v);
-    if (!Number.isInteger(n)) throw new RubyError('invalid_input', `Invalid cron value "${v}"`);
-    return n;
+    // Plain decimal digits only: Number() would also read "", "0x1" and "1e1".
+    if (i < 0 && !/^\d+$/.test(v)) throw new RubyError('invalid_input', `Invalid cron value "${v}" in "${text}"`);
+    return i >= 0 ? i + nameBase : Number(v);
   };
   for (const part of text.split(',')) {
     const [range, stepText] = part.split('/');
-    const step = stepText === undefined ? 1 : Number(stepText);
-    if (!Number.isInteger(step) || step < 1) throw new RubyError('invalid_input', `Invalid cron step in "${part}"`);
+    const step = stepText === undefined ? 1 : /^\d+$/.test(stepText) ? Number(stepText) : 0;
+    if (step < 1 || part.split('/').length > 2) throw new RubyError('invalid_input', `Invalid cron step in "${part}"`);
     let lo: number;
     let hi: number;
     if (range === '*') [lo, hi] = [min, max];
-    else if (range!.includes('-')) [lo, hi] = range!.split('-').map(value) as [number, number];
+    else if (range!.includes('-')) {
+      const ends = range!.split('-');
+      if (ends.length !== 2) throw new RubyError('invalid_input', `Invalid cron range "${range}"`);
+      [lo, hi] = ends.map(value) as [number, number];
+    }
     else [lo, hi] = [value(range!), stepText === undefined ? value(range!) : max];
     if (lo < min || hi > max || lo > hi) throw new RubyError('invalid_input', `Cron value out of range in "${part}" (${min}-${max})`);
     for (let n = lo; n <= hi; n += step) out.add(n);
@@ -64,8 +68,9 @@ export function parseCron(expression: string): Cron {
     days: field(dom, 1, 31),
     months: field(mon, 1, 12, MONTHS, 1),
     weekdays,
-    domRestricted: dom !== '*',
-    dowRestricted: dow !== '*',
+    // As in Vixie cron, a field starting with "*" (including "*/2") is not "restricted" for the OR rule below.
+    domRestricted: !dom.startsWith('*'),
+    dowRestricted: !dow.startsWith('*'),
     hourWildcard: h.startsWith('*'),
   };
 }
@@ -110,13 +115,7 @@ export function validTimeZone(timeZone: string): boolean {
 }
 
 function matches(cron: Cron, p: ReturnType<typeof zonedParts>): boolean {
-  if (!cron.minutes.has(p.minute) || !cron.hours.has(p.hour) || !cron.months.has(p.month)) return false;
-  const dom = cron.days.has(p.day);
-  const dow = cron.weekdays.has(p.weekday);
-  if (cron.domRestricted && cron.dowRestricted) return dom || dow;
-  if (cron.domRestricted) return dom;
-  if (cron.dowRestricted) return dow;
-  return true;
+  return cron.minutes.has(p.minute) && cron.hours.has(p.hour) && cron.months.has(p.month) && dayMatches(cron, p);
 }
 
 /** Largest DST shift we guard against, in minutes (real zones shift by 30, 60 or, historically, 120). */
@@ -168,8 +167,6 @@ function repeated(t: number, p: ReturnType<typeof zonedParts>, timeZone: string)
 function dayMatches(cron: Cron, p: ReturnType<typeof zonedParts>): boolean {
   const dom = cron.days.has(p.day);
   const dow = cron.weekdays.has(p.weekday);
-  if (cron.domRestricted && cron.dowRestricted) return dom || dow;
-  if (cron.domRestricted) return dom;
-  if (cron.dowRestricted) return dow;
-  return true;
+  // Both restricted: either may match (Vixie cron). Otherwise both must (a "*" field matches every day, "*/2" filters).
+  return cron.domRestricted && cron.dowRestricted ? dom || dow : dom && dow;
 }

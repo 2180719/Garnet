@@ -104,6 +104,31 @@ test('an unavailable sandbox is a config error, rechecked on the next call', asy
   assert.equal(fake.checks, 2);
 });
 
+test('a command that timed out is an error result that keeps its output', async () => {
+  const { call, sandbox } = setup({ exec: 'allow' });
+  (sandbox as FakeSandbox).result = { exitCode: null, stdout: 'partial\n', timedOut: true };
+  const r = await call({ command: 'sleep 99', timeout_seconds: 1 });
+  assert.equal(r.status === 'error' && r.category, 'timeout');
+  assert.match(r.content, /timed out after 1s/);
+  assert.match(r.content, /partial/);
+  (sandbox as FakeSandbox).result = { exitCode: 1, stdout: '', stderr: 'no match\n' };
+  assert.equal((await call({ command: 'grep x y' })).status, 'ok', 'a non-zero exit is a normal result; the exit code comes first');
+});
+
+test('a sandbox check that throws is retried on the next call', async () => {
+  const { call, sandbox } = setup({ exec: 'allow' });
+  const fake = sandbox as FakeSandbox;
+  let throws = true;
+  const check = fake.check.bind(fake);
+  fake.check = async () => {
+    if (throws) throw new Error('docker socket vanished');
+    return check();
+  };
+  assert.equal((await call({ command: 'ls' })).status, 'error');
+  throws = false;
+  assert.equal((await call({ command: 'ls' })).status, 'ok');
+});
+
 test('timeouts, cancellation, truncation and non-isolation are stated in the output', () => {
   const base = { exitCode: 137, stdout: '', stderr: 'boom\n', timedOut: true, cancelled: false, truncated: true };
   const text = formatResult(base, 3, false);
