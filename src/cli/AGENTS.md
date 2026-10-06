@@ -5,6 +5,9 @@ The `ruby` command (`bin.ts` → `main.ts`). Commands: `setup`, `doctor`, `init`
 - `main(argv, io)` returns an exit code and writes through `io`, so it is testable.
 - The CLI is a surface, not logic: it calls `createRuby()` from `src/main.ts` and renders runtime events.
 - Secret values are read from stdin (`Io.readSecret`; hidden on a terminal), never from argv, and never printed. `ruby secrets set NAME VALUE` is refused without echoing VALUE.
+- `import.ts` wires `ruby import` (and the wizard's import step) to a Ruby instance: memory with raisable caps (`config.memory.*Chars`, the store is swapped for one with the new limits), jobs validated with `configSchema` before they are stored, pairings through the gateway store, and the registered tool names / secret names for skill checks. `ruby import` writes config immediately; the wizard stores changes in its draft (saved with the rest of setup) and passes its prompter as `ask` (`--import-raise-caps`, `--import-pairings`, `--import-persona`).
+- `ruby pair add <channel> <id> [--name]` (admin.ts) pairs a known sender without a code; IDs are validated per channel (`validSenderId` from migrate). Paired identities are owners.
+- `ruby service ... [--name <n>] [--force]` resolves the instance for this RUBY_HOME (`resolveService`); `install` refuses to take over a unit that runs another home unless `--force`. Doctor and setup use the same resolution.
 
 ## setup and doctor
 

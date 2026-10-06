@@ -270,6 +270,21 @@ test('import: preview first, apply on consent; the imported persona survives the
   assert.match(h.config().persona!, /Your name is Juno\.\n<!-- \/ruby setup -->\n\nYou are a careful assistant imported from elsewhere\.$/);
 });
 
+test('import: config changes land in the draft and questions go to the setup prompter', async () => {
+  const h = harness({ sources: () => [{ source: 'hermes', dir: '/home/x/.hermes' }] });
+  const asked: boolean[] = [];
+  h.deps.runImport = async (args, draft) => {
+    if (!args.includes('--apply')) return 0;
+    asked.push(await draft.ask.confirm({ id: 'import-raise-caps', message: 'Raise?', default: true, auto: false }));
+    const c = draft.config();
+    draft.setConfig({ ...c, memory: { ...c.memory, memoryChars: 5000 } });
+    return 0;
+  };
+  assert.equal(await h.run({ import: true, 'import-apply': true, 'import-raise-caps': true, provider: 'fake', telegram: false, discord: false, signal: false }).done, 0);
+  assert.deepEqual(asked, [true]);
+  assert.equal(h.config().memory.memoryChars, 5000);
+});
+
 test('`ruby setup` command: refuses a non-terminal without -y; -y with flags and --key-stdin works', async () => {
   const home = tempDir();
   const keyDir = tempDir();

@@ -12,6 +12,7 @@ import { Agent, LaneQueue } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
 import { Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
+import { importedArchiveSection } from './migrate/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
@@ -97,7 +98,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
       budget,
       workspace: paths.workspace,
       persona: config.persona,
-      promptSections: (ns) => [memory.snapshot(ns), skills.index()],
+      promptSections: (ns) => [memory.snapshot(ns), skills.index(), importedArchiveSection(paths.workspace)],
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       maxOutputTokens: config.model.maxOutputTokens,

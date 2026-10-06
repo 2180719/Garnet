@@ -8,6 +8,7 @@ import { api, dashboard, jobs, pair, service, start } from './admin.ts';
 import { memory, skills } from './knowledge.ts';
 import { backup, restore } from './backup.ts';
 import { runImport } from '../migrate/index.ts';
+import { importDeps } from './import.ts';
 import { unlockWarnings } from '../secrets/index.ts';
 import { secrets } from './secrets.ts';
 import { doctor } from './doctor.ts';
@@ -30,7 +31,8 @@ Usage:
   ruby sessions             List recent sessions
   ruby start                Run the service (channels, gateway, API) in the foreground
   ruby pair list|approve <code>|revoke <channel> <id>
-                            Manage who may talk to Ruby
+  ruby pair add <telegram|discord|signal> <id> [--name <name>]
+                            Manage who may talk to Ruby (add: without a code)
   ruby api status|enable|disable
   ruby api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
   ruby api key list|revoke <id>
@@ -42,15 +44,18 @@ Usage:
                             Inspect and correct what Ruby remembers
   ruby skills list|show|proposal|accept|reject|archive|stale
                             Review skills Ruby has learned
-  ruby import <openclaw|hermes> [--from <dir>] [--apply]
-                            Bring memory, persona and skills over (dry run unless --apply)
+  ruby import <openclaw|hermes> [--from <dir>] [--apply] [--raise-caps] [--pairings]
+              [--persona keep|merge|replace] [--no-jobs]
+                            Bring memory, persona, skills, jobs (disabled) and
+                            allowlists over (dry run unless --apply)
   ruby secrets list|set <NAME>|rm <NAME>|import-env [NAME...] [--keep]|keygen <path>
                             Encrypted secret store (values from stdin, never argv)
   ruby backup [dir]         Copy the database, config, memory, skills, artifacts
                             and workspace
   ruby restore <dir>        Restore a backup (stop Ruby first)
-  ruby service install|uninstall|status|show
-                            Run Ruby as a background service (systemd/launchd)
+  ruby service install|uninstall|status|restart|show|list [--name <name>]
+                            Run Ruby as a background service (systemd/launchd);
+                            --name lets several RUBY_HOMEs run side by side
   ruby help                 Show this help
 
 Environment:
@@ -113,14 +118,16 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
       case 'import': {
         const ruby = createRuby({ noModel: true });
         try {
-          const { config, paths } = ruby;
-          return runImport(rest, io, {
-            memory: ruby.memory,
-            skills: ruby.skills,
-            workspace: paths.workspace,
-            getPersona: () => config.persona,
-            setPersona: (persona) => writeConfig(paths.home, { ...config, persona }),
-          });
+          let config = ruby.config;
+          const save = (c: typeof config) => {
+            config = c;
+            writeConfig(ruby.paths.home, c);
+          };
+          return await runImport(
+            rest,
+            io,
+            importDeps(ruby, { getConfig: () => config, setConfig: save, getPersona: () => config.persona, setPersona: (persona) => save({ ...config, persona }) }),
+          );
         } finally {
           ruby.close();
         }

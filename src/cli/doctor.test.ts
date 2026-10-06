@@ -92,6 +92,30 @@ test('a healthy setup: key from the env file, channels, service running', async 
   assert.equal(JSON.stringify(fs).includes(KEY), false);
 });
 
+test('a named instance (`service install --name`) is found by its RUBY_HOME; another home on the default name is not ours', async () => {
+  const d = deps();
+  configure(d.home);
+  const unit = (name: string | undefined, home: string) => {
+    const p = planService({ platform: 'linux', home, userHome: d.userHome, nodePath: process.execPath, entry: d.entry, name });
+    assert.ok(!('unsupported' in p));
+    mkdirSync(join(p.path, '..'), { recursive: true });
+    writeFileSync(p.path, p.contents);
+  };
+  unit(undefined, '/somewhere/else');
+  let fs = await diagnose(d);
+  assert.equal(find(fs, 'service')[0]!.status, 'info');
+  assert.match(find(fs, 'service')[0]!.message, /not installed for this RUBY_HOME \(1 other Ruby instance installed/);
+  assert.match(find(fs, 'service')[0]!.fix!, /--name <name>/);
+  unit('work', d.home);
+  fs = await diagnose(d);
+  assert.equal(find(fs, 'service')[0]!.status, 'ok');
+  assert.match(find(fs, 'service')[0]!.message, /ruby-work\.service/);
+  assert.deepEqual(d.commands.at(-1), ['systemctl', '--user', 'status', 'ruby-work.service', '--no-pager']);
+  d.run = async () => ({ code: 3, stdout: '', stderr: 'inactive' });
+  fs = await diagnose(d);
+  assert.match(find(fs, 'service')[0]!.fix!, /journalctl --user -u ruby-work\.service -e.*ruby service restart --name work/);
+});
+
 test('problems: invalid config, missing key, open env file, locked store, stale service, sandbox down', async () => {
   const d = deps();
   mkdirSync(d.home, { recursive: true, mode: 0o755 });

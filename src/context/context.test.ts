@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent, SessionEventPayload } from '../contracts/index.ts';
-import { extractSummary, messagesFromEvents, planCompaction, systemPrompt, turnTime } from './index.ts';
+import { assistantName, extractSummary, messagesFromEvents, planCompaction, systemPrompt, turnTime } from './index.ts';
 
 const ev = (seq: number, p: SessionEventPayload): SessionEvent => ({ ...p, sessionId: 's', seq, at: '' });
 const usage = { inputTokens: 1, outputTokens: 1, cacheReadTokens: null, cacheWriteTokens: null };
@@ -25,6 +25,16 @@ test('the system prompt is deterministic', () => {
   const a = systemPrompt({ workspace: '/w' });
   assert.equal(a, systemPrompt({ workspace: '/w' }));
   assert.match(systemPrompt({ workspace: '/w', persona: 'Be terse.' }), /Be terse\./);
+});
+
+test('the system prompt uses the configured assistant name, defaulting to Ruby', () => {
+  assert.match(systemPrompt({ workspace: '/w' }), /^You are Ruby, /);
+  const persona = '<!-- ruby setup -->\nYour name is Molty.\n<!-- /ruby setup -->\n\nBe terse.';
+  assert.match(systemPrompt({ workspace: '/w', persona }), /^You are Molty, /);
+  assert.match(systemPrompt({ workspace: '/w', persona, name: 'Nova' }), /^You are Nova, /);
+  assert.equal(assistantName('Your name is  .'), 'Ruby');
+  assert.equal(assistantName('Your name is Juniper.\nYour name is Other.'), 'Juniper');
+  assert.equal(assistantName('My friend said your name is Bob.'), 'Ruby');
 });
 
 test('bound blocks are dropped only from turns that precede a checkpoint', () => {

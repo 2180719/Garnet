@@ -8,7 +8,8 @@ import { RubyError } from '../../contracts/index.ts';
 import { approvePairing } from '../../gateway/index.ts';
 import { createRuby } from '../../main.ts';
 import { defaultSourceDir, runImport } from '../../migrate/index.ts';
-import { defaultEntry, installService, planService, restartService } from '../../service/index.ts';
+import { defaultEntry, installService, resolveService, restartService } from '../../service/index.ts';
+import { importDeps } from '../import.ts';
 import type { Io } from '../main.ts';
 import { AnswerPrompter, TerminalPrompter, makeStyle, wantsColor, type Answer, type Prompter } from './prompt.ts';
 import { runSetup, type SetupDeps } from './wizard.ts';
@@ -35,6 +36,9 @@ from the options below, the current config, or safe defaults; nothing optional
   --check                   Check keys and connections with live requests
   --service                 Install (or restart) the background service
   --import                  Import from OpenClaw/Hermes when found (applies it)
+  --import-raise-caps       Raise memory caps so all imported memory fits
+  --import-pairings         Pair the senders on the old assistant's allowlists
+  --import-persona <mode>   keep | merge | replace, when you already have a persona
   --reset                   Replace an invalid config.json (a backup is kept)
   -y, --non-interactive     Do not prompt
 `;
@@ -60,6 +64,9 @@ const FLAGS = {
   check: { type: 'boolean' },
   service: { type: 'boolean' },
   import: { type: 'boolean' },
+  'import-raise-caps': { type: 'boolean' },
+  'import-pairings': { type: 'boolean' },
+  'import-persona': { type: 'string' },
   reset: { type: 'boolean' },
   'non-interactive': { type: 'boolean', short: 'y' },
   help: { type: 'boolean', short: 'h' },
@@ -132,9 +139,14 @@ async function readAll(): Promise<string> {
 function defaultDeps(io: Io): SetupDeps {
   const home = rubyHome();
   const userHome = homedir();
-  const plan = planService({ platform: process.platform, home, userHome, nodePath: process.execPath, entry: defaultEntry() });
+  // The instance already installed for this RUBY_HOME (ruby service install --name), else the default.
+  const resolved = resolveService({ platform: process.platform, home, userHome, nodePath: process.execPath, entry: defaultEntry() });
+  const plan = 'unsupported' in resolved ? resolved : resolved.plan;
+  const conflict = 'unsupported' in resolved ? null : resolved.conflict;
+  // Never take over another instance's service; say how to give this one its own.
+  if (conflict) io.err(`Note: setup will not install the background service. ${conflict}\n`);
   const service: SetupDeps['service'] =
-    'unsupported' in plan
+    'unsupported' in plan || conflict
       ? null
       : {
           label: plan.platform === 'systemd' ? 'systemd user service' : 'launchd agent',
@@ -150,16 +162,10 @@ function defaultDeps(io: Io): SetupDeps {
     service,
     importSources: () =>
       (['openclaw', 'hermes'] as const).map((source) => ({ source, dir: defaultSourceDir(source) })).filter((s) => existsSync(s.dir)),
-    runImport: (args, persona) => {
+    runImport: async (args, draft) => {
       const ruby = createRuby({ noModel: true, home });
       try {
-        return runImport(args, io, {
-          memory: ruby.memory,
-          skills: ruby.skills,
-          workspace: ruby.paths.workspace,
-          getPersona: persona.get,
-          setPersona: persona.set,
-        });
+        return await runImport(args, io, importDeps(ruby, { getConfig: draft.config, setConfig: draft.setConfig, getPersona: draft.get, setPersona: draft.set, ask: draft.ask }));
       } finally {
         ruby.close();
       }

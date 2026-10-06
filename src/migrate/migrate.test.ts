@@ -205,15 +205,15 @@ test('symlinked source root contents and skill dir escaping are not followed', (
   assert.ok(!plan.skills.some((s) => s.name === 'evil'));
 });
 
-test('runImport is a dry run unless --apply; usage and missing dir errors', () => {
+test('runImport is a dry run unless --apply; usage and missing dir errors', async () => {
   const root = hermesTree();
   const r = ruby();
   const io = { o: '', e: '', out(t: string) { this.o += t; }, err(t: string) { this.e += t; } };
-  assert.equal(runImport(['hermes', '--from', root], io, r.deps), 0);
+  assert.equal(await runImport(['hermes', '--from', root], io, r.deps), 0);
   assert.match(io.o, /Dry run/);
   assert.equal(r.memory.read('default', 'user'), '');
-  assert.equal(runImport(['hermes', '--from', root, '--apply'], io, r.deps), 0);
+  assert.equal(await runImport(['hermes', '--from', root, '--apply'], io, r.deps), 0);
   assert.equal(r.memory.read('default', 'user'), '- Prefers concise answers\n- Timezone CET');
-  assert.equal(runImport(['nope'], io, r.deps), 2);
-  assert.equal(runImport(['hermes', '--from', join(root, 'missing')], io, r.deps), 1);
+  assert.equal(await runImport(['nope'], io, r.deps), 2);
+  assert.equal(await runImport(['hermes', '--from', join(root, 'missing')], io, r.deps), 1);
 });

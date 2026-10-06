@@ -43,7 +43,7 @@ ruby chat      # talk to Ruby in the terminal (`ruby chat --fake` needs no key)
 - **Persona:** the assistant's name, what to call you, and a line about how you like answers.
 - **Channels:** Telegram, Discord and Signal, with the steps for each.
 - **Service and pairing:** installs the background service (systemd or launchd), then helps you approve your own account when you message the bot.
-- **Import:** if it finds OpenClaw or Hermes, it previews what it can bring over before importing.
+- **Import:** if it finds OpenClaw or Hermes, it previews what it can bring over before importing: memory (it offers bigger caps when yours is larger), persona and name, skills (flagging the tools and programs they need), scheduled jobs (added disabled for you to review), and the people on your allowlists (paired only if you say so). `ruby import openclaw|hermes` does the same outside setup.
 
 Run it again to change one part: it shows what is set and offers a menu. For scripts and CI, `ruby setup -y` takes every answer from flags (`ruby setup --help`), for example:
 
@@ -53,7 +53,7 @@ printf '%s' "$KEY" | ruby setup -y --provider anthropic --key-stdin --name Juno 
 
 ### Telegram by hand
 
-`ruby setup` covers this. Without it: create a bot with [@BotFather](https://t.me/BotFather), store the token (`ruby secrets set TELEGRAM_BOT_TOKEN`, or a `TELEGRAM_BOT_TOKEN=...` line in `~/.ruby/env`), set `"channels": { "telegram": { "enabled": true } }` in `~/.ruby/config.json` (`ruby config explain` lists every setting), run `ruby start`, message your bot, and approve the pairing code it sends with `ruby pair approve <code>`. `ruby service install` keeps it running.
+`ruby setup` covers this. Without it: create a bot with [@BotFather](https://t.me/BotFather), store the token (`ruby secrets set TELEGRAM_BOT_TOKEN`, or a `TELEGRAM_BOT_TOKEN=...` line in `~/.ruby/env`), set `"channels": { "telegram": { "enabled": true } }` in `~/.ruby/config.json` (`ruby config explain` lists every setting), run `ruby start`, message your bot, and approve the pairing code it sends with `ruby pair approve <code>` (or pair someone whose ID you know with `ruby pair add telegram <user-id>`). `ruby service install` keeps it running; give each extra Ruby home its own instance with `RUBY_HOME=~/.ruby-work ruby service install --name work`.
 
 ### Encrypted secrets
 

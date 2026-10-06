@@ -1,5 +1,7 @@
 export {
   systemPrompt,
+  assistantName,
+  DEFAULT_ASSISTANT_NAME,
   frozenContext,
   messagesFromEvents,
   planCompaction,
