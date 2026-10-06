@@ -14,7 +14,7 @@ import { KeyParser, type Key } from './keys.ts';
 import { MarkdownStream } from './markdown.ts';
 import {
   approvalChoices, approvalOutcome, approvalRows, assistantRows, banner, footer, hangingRows, sessionTotals, SPINNER,
-  suggestionRows, toolDoneRows, toolRunningRow, transcriptRows, turnSummary, userBlock, type SessionTotals,
+  suggestionRows, taintedRows, toolDoneRows, toolRunningRow, transcriptRows, turnSummary, userBlock, type SessionTotals,
 } from './render.ts';
 import { Screen, type TerminalOut } from './screen.ts';
 import { displayWidth, formatDuration, sanitize, truncate, wrapText } from './text.ts';
@@ -99,7 +99,8 @@ export class InteractiveChat {
   /** The approver handed to the runtime: asks inline and remembers "always" answers for this chat. */
   readonly approve = (req: ApprovalRequest): Promise<ApprovalDecision> => {
     const key = alwaysKey(req);
-    if (this.alwaysAllowed.has(key)) {
+    // An operation escalated by untrusted content is never covered by an earlier "always".
+    if (!req.taint?.length && this.alwaysAllowed.has(key)) {
       this.commit(() => [`    ${this.theme.ok('✓')} ${this.theme.muted(`${req.tool} allowed (always, this chat)`)}`]);
       return Promise.resolve('approved');
     }
@@ -255,7 +256,7 @@ export class InteractiveChat {
     };
     const ch = k.name === 'text' ? (k.text ?? '').toLowerCase() : '';
     if (ch === 'y') decide('once');
-    else if (ch === 'a') decide('always');
+    else if (ch === 'a' && !a.req.taint?.length) decide('always');
     else if (ch === 'n' || k.name === 'escape') decide('denied');
     else if (k.ctrl && k.name === 'c') {
       decide('denied');
@@ -358,6 +359,11 @@ export class InteractiveChat {
     } else if (e.type === 'retry') {
       this.finishStream();
       this.commit([this.theme.warn(`  ↻ retrying in ${formatDuration(e.delayMs)} (attempt ${e.attempt}): ${sanitize(e.message)}`)]);
+    } else if (e.type === 'tainted') {
+      this.finishStream();
+      const first = this.totals.untrusted.length === 0;
+      this.totals = { ...this.totals, untrusted: [...e.sources] };
+      this.commit((w) => taintedRows(e.source, first, this.theme, w));
     } else if (e.type === 'compacting') {
       r.label = 'compacting older turns';
       this.commit([this.theme.muted('  ⋯ compacting older turns to free context')]);

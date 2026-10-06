@@ -52,13 +52,32 @@ test('session totals add known usage and keep unknown as unknown', () => {
 });
 
 test('the footer keeps the most useful parts when narrow', () => {
-  const totals = { usage: usage(1000, 200), contextTokens: 1200, turns: 1 };
+  const totals = { usage: usage(1000, 200), contextTokens: 1200, turns: 1, untrusted: [] };
   const info = { model: 'anthropic:claude-x', sessionId: 'ses_0123456789abcdef', totals, contextWindow: 200_000 };
   assert.equal(footer(info, plain, 200), '  anthropic:claude-x · ses_0123456789abcdef · context 1.2k/200k (1%) · 1.2k tokens · /help');
   assert.equal(footer(info, plain, 64), '  ses_0123456789abcdef · context 1.2k/200k (1%) · 1.2k tokens');
   assert.equal(footer(info, plain, 60), '  anthropic:claude-x · context 1.2k/200k (1%) · 1.2k tokens');
   assert.equal(footer(info, plain, 40), '  context 1.2k/200k (1%) · 1.2k tokens');
   assert.equal(footer({ ...info, notice: 'Press Ctrl+C again to exit' }, plain, 80), '  Press Ctrl+C again to exit');
+});
+
+test('untrusted content is shown in words in the footer, rows and approval choices', () => {
+  const events = [
+    ev(1, { type: 'user_message', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] }, source: 'cli' }),
+    ev(2, { type: 'tainted', source: 'web_fetch https://example.com/', callId: 'c1' }),
+    ev(3, { type: 'tainted', source: 'web_fetch https://example.com/', callId: 'c2' }),
+  ];
+  const totals = sessionTotals(events);
+  assert.deepEqual(totals.untrusted, ['web_fetch https://example.com/']);
+  const info = { model: 'm', sessionId: 's', totals, contextWindow: 200_000 };
+  assert.match(footer(info, plain, 200), /⚠ untrusted content read/);
+  assert.match(footer(info, plain, 30), /untrusted/, 'kept when narrow');
+  assert.match(transcriptRows(events, plain, 100).join('\n'), /Read untrusted content: web_fetch https:\/\/example\.com\//);
+  const req = { sessionId: 's', callId: 'c', tool: 'write_file', capability: 'fs.write' as const, targets: [], input: {}, summary: 'x' };
+  assert.match(approvalChoices(req, plain, 100).join(' '), /always allow/);
+  const tainted = approvalChoices({ ...req, taint: ['web_fetch https://example.com/'] }, plain, 100).join(' ');
+  assert.doesNotMatch(tainted, /always/, 'no standing approval after untrusted content');
+  assert.match(tainted, /allow once/);
 });
 
 test('turn summaries spell out the status and show unknown usage as ?', () => {

@@ -4,3 +4,8 @@ export { fileTools, listFiles, readFileTool, writeFileTool } from './builtin/fil
 export { ArtifactStore, readArtifactTool } from './artifacts.ts';
 export { repairCall, type Repaired } from './repair.ts';
 export { execTool } from './builtin/exec.ts';
+export { WebFetcher, parseTarget, type WebFetcherOptions, type FetchRequest, type FetchResponse, type Resolver } from './web/fetcher.ts';
+export { isPublicAddress } from './web/address.ts';
+export { htmlToText, stripInvisible } from './web/html.ts';
+export { webFetchTool } from './web/fetch-tool.ts';
+export { webSearchTool, searchBackend, parseDuckDuckGo, type SearchBackend, type SearchResult, type SearchConfig } from './web/search.ts';

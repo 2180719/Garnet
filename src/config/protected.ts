@@ -21,6 +21,10 @@ export const PROTECTED_CONFIG_PATHS: readonly string[] = [
   'channels.*.tokenEnv',
   'channels.signal.baseUrl',
   'workspace',
+  'containment.*',
+  'web.allowHosts',
+  'web.search.searxngUrl',
+  'web.search.backend',
   '*Env', // any environment-variable / stored-secret name, at any depth
 ];
 
