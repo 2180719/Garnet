@@ -83,7 +83,7 @@ main() {
 
   # 3. Dependencies (runtime only: zod and the Anthropic SDK)
   step "Installing dependencies"
-  (cd "$dir" && npm ci --omit=dev --no-audit --no-fund --loglevel=error) || die "npm ci failed in $dir; see the output above."
+  (cd "$dir" && npm ci --omit=dev --no-audit --no-fund --no-update-notifier --loglevel=error >/dev/null) || die "npm ci failed in $dir; see the output above."
   ok "Dependencies installed"
 
   # 4. The command
