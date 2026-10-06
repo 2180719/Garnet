@@ -208,6 +208,21 @@ migrate_legacy_checkout() {
     */2180719/Ruby|*/2180719/Ruby.git) git -C "$dir" remote set-url origin "$repo" ;;
   esac
   ok "Moved"
+  # An old service file may still run code from the old path: keep that path working until the
+  # service is reinstalled.
+  if [ ! -e "$old" ] && ln -s "$dir" "$old" 2>/dev/null; then
+    ok "Left a symlink $old → $dir for the old background service"
+  fi
+  legacy_service=
+  for f in "$HOME/.config/systemd/user/ruby.service" "$HOME/Library/LaunchAgents/dev.ruby.agent.plist"; do
+    [ -f "$f" ] && legacy_service=$f
+  done
+  for f in "$HOME"/.config/systemd/user/ruby-*.service "$HOME"/Library/LaunchAgents/dev.ruby.agent.*.plist; do
+    [ -f "$f" ] && legacy_service=$f
+  done
+  if [ -n "$legacy_service" ]; then
+    warn "An old background service ($legacy_service) still points at the old install path. Replace it with: $name service install   (run it after this installer finishes)"
+  fi
 }
 
 # Removes the old `ruby` shim, but only when it is ours (it carries our marker line).
@@ -224,7 +239,8 @@ quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 write_shim() {
   shim="$bin_dir/$name"
   marker='# garnet-agent shim'
-  if [ -e "$shim" ] && ! grep -q "$marker" "$shim" 2>/dev/null; then
+  # A shim written before the rename carries the old marker; it is ours to overwrite too.
+  if [ -e "$shim" ] && ! grep -q "$marker" "$shim" 2>/dev/null && ! grep -q '^# ruby-agent shim' "$shim" 2>/dev/null; then
     die "$shim already exists and is not Garnet's. Pick another command name with --name, e.g. --name garnet-agent."
   fi
   mkdir -p "$bin_dir"
@@ -238,7 +254,7 @@ write_shim() {
     printf '[ -x "$node" ] || node=node\n'
     printf '# Lets `doctor` recognise this command when it is not called garnet.\n'
     printf 'GARNET_COMMAND_NAME=%s; export GARNET_COMMAND_NAME\n' "$(quote "$name")"
-    printf 'exec "${GARNET_NODE:-$node}" --disable-warning=ExperimentalWarning %s "$@"\n' "$(quote "$dir/src/cli/bin.ts")"
+    printf 'exec "${GARNET_NODE:-${RUBY_NODE:-$node}}" --disable-warning=ExperimentalWarning %s "$@"\n' "$(quote "$dir/src/cli/bin.ts")"
   } >"$tmp"
   chmod 755 "$tmp"
   mv -f "$tmp" "$shim"
