@@ -26,7 +26,9 @@ export type OutboundMessage = {
 export type SendResult =
   | { status: 'sent'; externalIds: string[] }
   /** `retryable: false` means sending again cannot succeed (blocked bot, bad chat). */
-  | { status: 'failed'; retryable: boolean; error: string; retryAfterMs?: number };
+  | { status: 'failed'; retryable: boolean; error: string; retryAfterMs?: number }
+  /** The request may have reached the platform (e.g. it timed out after sending). The gateway never resends it blindly. */
+  | { status: 'uncertain'; error: string };
 
 export type ChannelCapabilities = {
   maxMessageChars: number;

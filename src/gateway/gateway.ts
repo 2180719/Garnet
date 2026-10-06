@@ -5,6 +5,8 @@ import {
   textOf,
   type ChannelAdapter,
   type InboundMessage,
+  type OutboundMessage,
+  type SendResult,
   type TaskRecord,
 } from '../contracts/index.ts';
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
@@ -32,6 +34,8 @@ export type GatewayDeps = {
   maxDeliveryAttempts?: number;
   /** False in short-lived processes (CLI): replies stay queued for the running service to send. */
   deliveryEnabled?: boolean;
+  /** A send still pending after this long is treated as possibly delivered (`uncertain`). Default 60 s. */
+  sendTimeoutMs?: number;
 };
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -314,6 +318,32 @@ export class Gateway {
     }
   }
 
+  /**
+   * One send attempt. A send that throws or hangs (the adapter contract says
+   * it never does) may still have reached the platform, so it is `uncertain`,
+   * unless the channel dedupes resends, in which case retrying is safe.
+   */
+  private async sendOnce(channel: ChannelAdapter, out: OutboundMessage): Promise<SendResult> {
+    const timeoutMs = this.deps.sendTimeoutMs ?? 60_000;
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs); // cleared below; keeps the process alive while a send is in flight
+    });
+    try {
+      const result = await Promise.race([channel.send(out), timedOut]);
+      if (result !== 'timeout') return result;
+      return this.ambiguous(channel, `Send did not finish within ${timeoutMs}ms; it may or may not have been delivered.`);
+    } catch (e) {
+      return this.ambiguous(channel, errorMessage(e));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private ambiguous(channel: ChannelAdapter, error: string): SendResult {
+    return channel.capabilities.dedupesSends ? { status: 'failed', retryable: true, error } : { status: 'uncertain', error };
+  }
+
   /** Sends due outbox messages. Concurrent calls share one pass. */
   deliver(): Promise<void> {
     if (this.deps.deliveryEnabled === false) return Promise.resolve();
@@ -336,14 +366,13 @@ export class Gateway {
           store.markOutbox(out.deliveryId, 'failed', `Channel ${out.channel}:${out.account} is not running.`);
           continue;
         }
-        let result;
-        try {
-          result = await channel.send(out);
-        } catch (e) {
-          result = { status: 'failed' as const, retryable: true, error: errorMessage(e) };
-        }
+        const result = await this.sendOnce(channel, out);
         if (result.status === 'sent') {
           store.markSent(out.deliveryId);
+        } else if (result.status === 'uncertain') {
+          // It may have been delivered: resending could duplicate it, so leave it for the owner.
+          store.markOutbox(out.deliveryId, 'uncertain', result.error);
+          this.log('warn', `delivery ${out.deliveryId} is uncertain: ${result.error}`);
         } else if (result.retryable && out.attempts < maxAttempts) {
           const delay = result.retryAfterMs ?? Math.min(600_000, 2000 * 2 ** (out.attempts - 1));
           store.markRetry(out.deliveryId, result.error, new Date(this.now().getTime() + delay).toISOString());
