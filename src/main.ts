@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
 import { loadConfig, redact, garnetHome, type Paths, type GarnetConfig } from './config/index.ts';
+import { assistantName, projectInstructionsSection } from './context/index.ts';
 import { errorMessage, GarnetError, type Budget, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
@@ -14,7 +15,6 @@ import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
-import { projectInstructionsSection } from './context/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
@@ -381,6 +381,7 @@ export function buildService(garnet: Garnet, rawLog: LogFn, channels: ChannelAda
     pairingTtlMinutes: config.gateway.pairingTtlMinutes,
     deliveryEnabled: deliver,
     model: { id: garnet.model.id, contextWindow: garnet.model.capabilities.contextWindow },
+    assistantName: assistantName(config.persona),
     log,
     ...(garnet.media ? { media: garnet.media } : {}),
   });

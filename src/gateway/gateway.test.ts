@@ -437,3 +437,25 @@ test('a forwarded image or document taints the session; a voice note does not', 
   assert.ok(tainted[0]!.type === 'tainted' && tainted[0]!.source === 'file "scan.png" sent in chat');
   await t.gateway.stop(0);
 });
+
+test('/start uses the configured assistant name', async () => {
+  const t = setup([{ text: 'Hello!' }], {
+    gateway: { assistantName: 'Iris' },
+  });
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('/start'));
+  await settle(t);
+  assert.match(t.channel.sent[0]!.text, /Hi! I'm Iris\./);
+  await t.gateway.stop(0);
+});
+
+test('/start defaults to Garnet when no assistant name is configured', async () => {
+  const t = setup([{ text: 'Hello!' }]);
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('/start'));
+  await settle(t);
+  assert.match(t.channel.sent[0]!.text, /Hi! I'm Garnet\./);
+  await t.gateway.stop(0);
+});
