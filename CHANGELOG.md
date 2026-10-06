@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Built-in skills and connectors
+- Optional built-in skills (`daily-briefing`, `web-research`, `github-triage`) and connectors (`calendar` from an ICS feed, read-only; `github`; `weather` from Open-Meteo). All off by default; enable them globally or per channel, chat, API key, job or route with `garnet skills|connectors enable|disable|reset [--channel <scope>]`, and see what a conversation gets with `effective`. See [docs/CONNECTORS.md](docs/CONNECTORS.md).
+- Each conversation's set is chosen when it starts and kept for its life (compaction included), so the tool set and prompt stay fixed; `/new` picks up changes.
+- Connectors need `net.fetch` (host scopes and containment apply), a GitHub comment also needs `message.send`, their output is untrusted, and credentials are secret names (`connectors.github.tokenEnv`, `connectors.calendar.urlEnv`). Doctor and `config explain` cover the new settings.
+- Config version 2 (migrated automatically, with a backup).
+
 ### Review fixes
 - Security: results of jobs and agent-sent messages that read untrusted content now carry that state into the chat they land in; forwarded voice notes and audio files count as untrusted (only a live voice note from the paired owner in a private chat does not); links in approval text are no longer treated as the owner's; "message the owner" and relative times are resolved before approval, so the action that runs is exactly the one approved; the agent cannot pause or resume `config.json` jobs, granting a job `exec` needs exec approval, and agent messages never go to group chats.
 - `web_fetch` no longer leaks a connection when a compressed response stalls.
