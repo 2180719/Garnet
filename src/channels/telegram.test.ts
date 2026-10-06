@@ -161,16 +161,27 @@ test('a failing sink stops the batch and the same update is redelivered', async 
   await channel.stop();
 });
 
-test('non-text updates are skipped but acknowledged', async () => {
-  const photo = { update_id: 5, message: { message_id: 50, date: 1, photo: [{}], from: { id: 1 }, chat: { id: 1, type: 'private' } } };
-  const api = fakeApi({}, [() => ok([photo]), () => ok([photo, textUpdate(6, 'after')])]);
+test('voice, photo, file and sticker messages are passed on as unsupported; service messages are skipped', async () => {
+  const msg = (id: number, extra: object) => ({ update_id: id, message: { message_id: id * 10, date: 1, from: { id: 1 }, chat: { id: 1, type: 'private' }, ...extra } });
+  const updates = [
+    msg(1, { voice: { file_id: 'v' } }),
+    msg(2, { photo: [{}], caption: 'look at this' }),
+    msg(3, { document: {} }),
+    msg(4, { sticker: {} }),
+    msg(5, { video_note: {} }),
+    msg(6, { new_chat_members: [{}] }),
+    textUpdate(7, 'after'),
+  ];
+  const api = fakeApi({}, [() => ok(updates)]);
   const { channel } = setup(api);
-  const got: string[] = [];
-  await channel.start(async (m) => void got.push(m.text));
-  await until(() => api.of('getUpdates').length === 3);
-  assert.deepEqual(got, ['after']);
-  assert.equal(api.of('getUpdates')[1]!.body.offset, 6);
-  assert.equal(api.of('getUpdates')[2]!.body.offset, 7);
+  const got: InboundMessage[] = [];
+  await channel.start(async (m) => void got.push(m));
+  await until(() => api.of('getUpdates').length === 2);
+  assert.deepEqual(
+    got.map((m) => [m.unsupported ?? null, m.text]),
+    [['voice', ''], ['photo', 'look at this'], ['file', ''], ['sticker', ''], ['video', ''], [null, 'after']],
+  );
+  assert.equal(api.of('getUpdates')[1]!.body.offset, 8, 'everything acknowledged');
   await channel.stop();
 });
 
@@ -232,8 +243,39 @@ test('send splits long text at paragraph boundaries within 4096 chars, replying 
   assert.equal(sends[1]!.body.text, para);
   assert.deepEqual(sends[0]!.body.reply_parameters, { message_id: 9, allow_sending_without_reply: true });
   assert.equal(sends[1]!.body.reply_parameters, undefined);
-  assert.equal(sends[0]!.body.parse_mode, undefined);
+  assert.equal(sends[0]!.body.parse_mode, 'HTML');
   assert.equal(sends[0]!.body.chat_id, '42');
+});
+
+test('send renders markdown as Telegram HTML with model text escaped', async () => {
+  const api = fakeApi({ sendMessage: () => ok({ message_id: 1 }) });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: '**Done**: wrote `a<b>.txt` & checked <script>.' });
+  assert.equal(r.status, 'sent');
+  const body = api.of('sendMessage')[0]!.body;
+  assert.equal(body.parse_mode, 'HTML');
+  assert.equal(body.text, '<b>Done</b>: wrote <code>a&lt;b&gt;.txt</code> &amp; checked &lt;script&gt;.');
+});
+
+test('send falls back to plain text when Telegram cannot parse the entities', async () => {
+  let n = 0;
+  const api = fakeApi({ sendMessage: (body) => (++n === 1 && body.parse_mode ? fail(400, "Bad Request: can't parse entities: unexpected end tag") : ok({ message_id: 7 })) });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'A **bold** [link](https://example.com)', replyToExternalId: '3' });
+  assert.deepEqual(r, { status: 'sent', externalIds: ['7'] });
+  const [first, second] = api.of('sendMessage');
+  assert.equal(first!.body.parse_mode, 'HTML');
+  assert.equal(second!.body.parse_mode, undefined);
+  assert.equal(second!.body.text, 'A bold link (https://example.com)');
+  assert.deepEqual(second!.body.reply_parameters, { message_id: 3, allow_sending_without_reply: true });
+});
+
+test('a 400 that is not a parse error is not retried as plain text', async () => {
+  const api = fakeApi({ sendMessage: () => fail(400, 'Bad Request: chat not found') });
+  const { channel } = setup(api);
+  const r = await channel.send({ deliveryId: 'd', channel: 'telegram', account: 'default', chatId: '1', text: 'hi' });
+  assert.equal(r.status, 'failed');
+  assert.equal(api.of('sendMessage').length, 1);
 });
 
 test('send hard-splits text without natural boundaries', async () => {

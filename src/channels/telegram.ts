@@ -1,4 +1,4 @@
-// Telegram Bot API adapter: long-polling receive with durable offset acks, chunked plain-text send.
+// Telegram Bot API adapter: long-polling receive with durable offset acks, chunked send (markdown as Telegram HTML, plain-text fallback).
 import {
   RubyError,
   errorMessage,
@@ -9,8 +9,10 @@ import {
   type InboundSink,
   type OutboundMessage,
   type SendResult,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
+import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, type ChunkFailure } from './delivery.ts';
+import { markdownToPlain, markdownToTelegramHtml, splitMarkdown } from './markdown.ts';
 
 export type TelegramOptions = {
   token: string;
@@ -30,8 +32,38 @@ const CONFLICT_BACKOFF_MS = 5000;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 type TgUser = { id: number; first_name?: string; last_name?: string; username?: string };
-type TgMessage = { message_id: number; date: number; text?: string; from?: TgUser; chat: { id: number; type: string } };
+type TgMessage = {
+  message_id: number;
+  date: number;
+  text?: string;
+  caption?: string;
+  from?: TgUser;
+  chat: { id: number; type: string };
+  voice?: unknown;
+  audio?: unknown;
+  photo?: unknown;
+  video?: unknown;
+  video_note?: unknown;
+  animation?: unknown;
+  document?: unknown;
+  sticker?: unknown;
+  location?: unknown;
+  contact?: unknown;
+  poll?: unknown;
+};
 type TgUpdate = { update_id: number; message?: TgMessage };
+
+/** What kind of content a non-text message carries, or undefined for service messages. */
+function unsupportedKind(m: TgMessage): UnsupportedContent | undefined {
+  if (m.voice) return 'voice';
+  if (m.audio) return 'audio';
+  if (m.photo) return 'photo';
+  if (m.video || m.video_note || m.animation) return 'video';
+  if (m.document) return 'file';
+  if (m.sticker) return 'sticker';
+  if (m.location || m.contact || m.poll) return 'other';
+  return undefined;
+}
 
 /** A Bot API call that did not produce `ok: true`. `status` is 0 for network failures. */
 class TelegramApiError extends Error {
@@ -133,11 +165,19 @@ export class TelegramChannel implements ChannelAdapter {
     const replyTo = Number(message.replyToExternalId);
     const replyParameters = message.replyToExternalId !== undefined && Number.isInteger(replyTo) ? { message_id: replyTo, allow_sending_without_reply: true } : undefined;
     return sendChunks(
-      splitText(message.text, MAX_CHARS),
-      async (text, i) => {
-        const body: Record<string, unknown> = { chat_id: message.chatId, text };
-        if (i === 0 && replyParameters) body.reply_parameters = replyParameters;
-        const sent = (await this.#call('sendMessage', body, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { message_id: number };
+      splitMarkdown(message.text, MAX_CHARS),
+      async (markdown, i) => {
+        const base: Record<string, unknown> = { chat_id: message.chatId };
+        if (i === 0 && replyParameters) base.reply_parameters = replyParameters;
+        let sent: { message_id: number };
+        try {
+          // Replies are markdown; Telegram renders its HTML subset.
+          sent = (await this.#call('sendMessage', { ...base, text: markdownToTelegramHtml(markdown), parse_mode: 'HTML' }, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { message_id: number };
+        } catch (e) {
+          // A rejected entity is a definite 400 (nothing was sent): fall back to clean plain text.
+          if (!(e instanceof TelegramApiError && e.status === 400 && /parse entities|start tag|end tag|entity/i.test(e.message))) throw e;
+          sent = (await this.#call('sendMessage', { ...base, text: markdownToPlain(markdown) }, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as { message_id: number };
+        }
         this.#lastSuccessAt = Date.now();
         return String(sent.message_id);
       },
@@ -211,7 +251,9 @@ export class TelegramChannel implements ChannelAdapter {
 
   #toInbound(update: TgUpdate): InboundMessage | null {
     const m = update.message;
-    if (!m || typeof m.text !== 'string' || !m.from) return null;
+    if (!m || !m.from) return null;
+    const unsupported = typeof m.text === 'string' ? undefined : unsupportedKind(m);
+    if (typeof m.text !== 'string' && !unsupported) return null; // service messages (joins, pins...)
     const name = [m.from.first_name, m.from.last_name].filter(Boolean).join(' ') || m.from.username;
     return {
       channel: this.channel,
@@ -219,9 +261,10 @@ export class TelegramChannel implements ChannelAdapter {
       chatId: String(m.chat.id),
       externalId: String(m.message_id),
       sender: { id: String(m.from.id), ...(name ? { displayName: name } : {}) },
-      text: m.text,
+      text: m.text ?? m.caption ?? '',
       isPrivate: m.chat.type === 'private',
       receivedAt: new Date(m.date * 1000).toISOString(),
+      ...(unsupported ? { unsupported } : {}),
     };
   }
 
