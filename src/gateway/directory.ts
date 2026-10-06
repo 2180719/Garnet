@@ -113,10 +113,10 @@ export class ChatDirectory {
    * (creating it if needed), so a reply ("tell me more") has context. A new
    * event, marked as not written by the owner; the log stays append-only.
    * Callers that may race a running turn go through the conversation's lane
-   * (`Gateway.notify`). Skipped when the target is `skipSession` (the sender's
+   * (`Gateway.notify`). With `taint`, the sender's untrusted sources follow the note as inherited `tainted` events. Skipped when the target is `skipSession` (the sender's
    * own conversation already has the tool call).
    */
-  record(target: { channel: string; account: string; chatId: string }, text: string, note: { from: string; skipSession?: string }): void {
+  record(target: { channel: string; account: string; chatId: string }, text: string, note: { from: string; skipSession?: string; taint?: readonly string[] }): void {
     const key = conversationKeyFor(this.deps.routes ?? [], target);
     let sessionId = this.deps.store.conversation(key);
     if (!sessionId) {
@@ -129,5 +129,7 @@ export class ChatDirectory {
       message: { role: 'user', content: [{ type: 'text', text: `[Context note, not written by your owner: you sent them this message from ${note.from}.]\n${text}` }] },
       source: 'notification',
     });
+    // A tainted sender's text can carry injected instructions: the conversation it lands in is tainted too.
+    for (const source of new Set(note.taint ?? [])) this.deps.sessions.append(sessionId, { type: 'tainted', source, inherited: true });
   }
 }

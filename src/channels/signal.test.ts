@@ -405,7 +405,7 @@ test('attachments carry a getAttachment reference; downloads decode base64 and e
   d.feeds[0]!.push(env({ message: null, attachments: [{ id: 'att1.m4a', contentType: 'audio/aac', size: 6, voiceNote: true }] }));
   d.feeds[0]!.push(notification({ sourceNumber: '+15559998888', sourceUuid: 'uuid-1', timestamp: 1700000000002, dataMessage: { message: 'pic', groupInfo: { groupId: 'G1' }, attachments: [{ id: 'att2.jpg', contentType: 'image/jpeg', filename: 'cat.jpg', size: 3 }] } }));
   await until(() => got.length === 2, 'two messages');
-  assert.deepEqual(got[0]!.attachments, [{ kind: 'audio', ref: JSON.stringify({ id: 'att1.m4a', recipient: '+15559998888' }), name: 'voice.m4a', mimeType: 'audio/aac', size: 6 }]);
+  assert.deepEqual(got[0]!.attachments, [{ kind: 'audio', ref: JSON.stringify({ id: 'att1.m4a', recipient: '+15559998888' }), name: 'voice.m4a', mimeType: 'audio/aac', size: 6, liveVoice: true }]);
   assert.equal(got[0]!.text, '');
   assert.equal(JSON.parse(got[1]!.attachments![0]!.ref).groupId, 'G1');
   const file = await channel.fetchAttachment(got[0]!.attachments![0]!.ref, { maxBytes: 100, signal: new AbortController().signal });

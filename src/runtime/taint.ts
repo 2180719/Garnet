@@ -10,6 +10,14 @@ import { normalizeUrl, urlsInText } from '../policy/index.ts';
  * either: a summary written from untrusted text can carry its instructions.
  * A fresh session (`/new`) starts clean.
  */
+/**
+ * User-message sources whose text the owner did not write: a note recording a
+ * message Ruby sent on its own (`notification`) and the continuation after an
+ * approval (`approval`, which embeds a model-composed summary). URLs in them
+ * are never the owner's.
+ */
+const NOT_OWNER_SOURCES = new Set(['notification', 'approval']);
+
 export function sessionTaint(events: readonly SessionEvent[]): SessionTaint {
   const sources: string[] = [];
   const ownerUrls = new Set<string>();
@@ -24,7 +32,7 @@ export function sessionTaint(events: readonly SessionEvent[]): SessionTaint {
   for (const e of events) {
     if (e.type === 'tainted') {
       if (!sources.includes(e.source)) sources.push(e.source);
-    } else if (e.type === 'user_message' && !notOwner.has(e.seq)) {
+    } else if (e.type === 'user_message' && !notOwner.has(e.seq) && !NOT_OWNER_SOURCES.has(e.source)) {
       for (const u of urlsInText(textOf(e.message))) ownerUrls.add(u);
     } else if (e.type === 'tool_finished' && e.result.untrusted?.links) {
       for (const link of e.result.untrusted.links) {

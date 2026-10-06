@@ -105,6 +105,14 @@ test('inherited taint (a subagent of a tainted session) applies from the first c
   assert.equal(t.events.filter((e) => e.type === 'tainted').length, 1);
 });
 
+test('URLs in notification and approval messages are not the owner’s', () => {
+  const t = setup([]);
+  for (const source of ['notification', 'approval', 'cli']) {
+    t.store.append(t.session.id, { type: 'user_message', message: { role: 'user', content: [{ type: 'text', text: `see https://${source}.example/x` }] }, source });
+  }
+  assert.deepEqual([...sessionTaint(t.store.events(t.session.id)).ownerUrls], ['https://cli.example/x']);
+});
+
 test('a fresh session starts clean', async () => {
   const t = setup([{ toolCalls: [{ name: 'fake_web', input: { url: 'https://a.example/' } }] }, { text: 'ok' }]);
   await t.run('read');

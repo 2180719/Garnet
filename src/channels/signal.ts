@@ -377,6 +377,7 @@ export class SignalChannel implements ChannelAdapter {
         ...(typeof a.filename === 'string' && a.filename ? { name: a.filename } : a.voiceNote ? { name: 'voice.m4a' } : {}),
         ...(mime ? { mimeType: mime } : {}),
         ...(typeof a.size === 'number' ? { size: a.size } : {}),
+        ...(a.voiceNote === true ? { liveVoice: true } : {}),
       };
     });
     return {

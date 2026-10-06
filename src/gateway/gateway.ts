@@ -16,7 +16,7 @@ import {
   type TaskRecord,
   type UnsupportedContent,
 } from '../contracts/index.ts';
-import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
+import { sessionTaint, type Agent, type LaneQueue, type RuntimeEvent } from '../runtime/index.ts';
 import type { FailedFile, MediaIngest, MediaInput } from '../media/index.ts';
 import type { ApprovalStore, GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
 import { ChatDirectory, chatOfKey, conversationKeyFor } from './directory.ts';
@@ -243,7 +243,7 @@ export class Gateway {
     if (!decided) throw new RubyError('invalid_input', 'No pending approval with that code (it may have expired or been decided).');
     const key = this.deps.store.keyForSession(decided.sessionId);
     if (!key) return { status: decision, text: null, resumed: false };
-    const result = await this.chat(key, approvalText(decided.code, decided.summary, decision === 'approved'), { source: 'dashboard' });
+    const result = await this.chat(key, approvalText(decided.code, decided.summary, decision === 'approved'), this.continuation(decided.sessionId, { source: 'dashboard' }));
     const chat = chatOfKey(key);
     if (chat && this.channels.has(channelKey(chat.channel, chat.account))) this.notify(chat, result.text);
     return { status: result.task.status, text: result.text, resumed: true };
@@ -270,7 +270,18 @@ export class Gateway {
     }
     const decided = approvals.decide(pending.code, decision, this.now().toISOString());
     if (!decided) return { text: 'That approval already expired or was decided.' };
-    return this.chat(conversationKey, approvalText(decided.code, decided.summary, decision === 'approved'), options);
+    return this.chat(conversationKey, approvalText(decided.code, decided.summary, decision === 'approved'), this.continuation(decided.sessionId, options));
+  }
+
+  /**
+   * Options for the turn that continues a task after an approval. Its text embeds
+   * a summary the model composed, so it is tagged `approval` (URLs in it are not
+   * the owner's) and, when the session is tainted, the taint is re-recorded right
+   * after it as inherited (the approval carried it).
+   */
+  private continuation<T extends { source: string }>(sessionId: string, options: T): T & { source: string; taint?: readonly string[] } {
+    const taint = sessionTaint(this.deps.sessions.events(sessionId)).sources;
+    return { ...options, source: APPROVAL_SOURCE, ...(taint.length ? { taint } : {}) };
   }
 
   /**
@@ -282,7 +293,7 @@ export class Gateway {
   notify(
     target: { channel: string; account: string; chatId: string },
     text: string,
-    record?: { from: string; skipSession?: string },
+    record?: { from: string; skipSession?: string; taint?: readonly string[] },
     attachments?: OutboundMessage['attachments'],
   ): string {
     const out = this.deps.store.enqueue({ ...target, text, ...(attachments?.length ? { attachments } : {}) });
@@ -351,7 +362,8 @@ export class Gateway {
       }
       // Continue the task in the conversation that asked; an approval grants exactly that operation once.
       const text = approvalText(decided.code, decided.summary, command === '/approve');
-      void this.deps.lanes.run(targetKey, () => this.process({ ...row, text }, targetKey)).catch((e) => this.log('error', `resuming ${row.id}: ${errorMessage(e)}`));
+      const resumed = this.continuation(decided.sessionId, { source: row.channel });
+      void this.deps.lanes.run(targetKey, () => this.process({ ...row, text }, targetKey, resumed)).catch((e) => this.log('error', `resuming ${row.id}: ${errorMessage(e)}`));
       return;
     }
     if (command === '/start') {
@@ -421,7 +433,7 @@ export class Gateway {
       }
       try {
         const got = await channel.fetchAttachment(f.ref, { maxBytes: media.maxBytes, signal });
-        received.push({ data: got.data, name: f.name, mimeType: got.mimeType ?? f.mimeType, durationSec: f.durationSec });
+        received.push({ data: got.data, name: f.name, mimeType: got.mimeType ?? f.mimeType, durationSec: f.durationSec, liveVoice: f.liveVoice === true && row.isPrivate && f.kind === 'audio' });
       } catch (e) {
         if (signal.aborted) throw e;
         this.log('warn', `${row.channel} attachment download failed: ${errorMessage(e)}`);
@@ -433,7 +445,7 @@ export class Gateway {
     return unreadable ? { reply: unreadable } : { turn: blocks };
   }
 
-  private async process(row: InboxRow, key: string): Promise<void> {
+  private async process(row: InboxRow, key: string, resume?: { source: string; taint?: readonly string[] }): Promise<void> {
     const { store, sessions } = this.deps;
     const agent = this.deps.agentFor?.(key) ?? this.deps.agent;
     const sessionId = this.sessionFor(key, row.channel);
@@ -452,7 +464,7 @@ export class Gateway {
         return;
       }
       const before = sessions.lastSeq(sessionId);
-      const task = await agent.run(sessionId, prepared.turn, { signal: controller.signal, source: row.channel });
+      const task = await agent.run(sessionId, prepared.turn, { signal: controller.signal, source: row.channel, ...resume });
       store.setInbox(row.id, 'done', { taskId: task.id });
       this.reply(row, this.replyText(sessionId, before, task));
     } catch (e) {
@@ -690,6 +702,8 @@ function lastOwnerMessage(events: SessionEvent[]): string | null {
   }
   return null;
 }
+
+const APPROVAL_SOURCE = 'approval';
 
 function approvalText(code: string, summary: string, approved: boolean): string {
   return approved

@@ -9,7 +9,7 @@ export type SendMessageDeps = {
   directory: ChatDirectory;
   store: GatewayStore;
   /** Queues the message and records it in the target chat's conversation (`Gateway.notify`, late-bound). Returns the delivery ID. */
-  notify: (target: { channel: string; account: string; chatId: string }, text: string, record: { from: string; skipSession?: string }) => string;
+  notify: (target: { channel: string; account: string; chatId: string }, text: string, record: { from: string; skipSession?: string; taint?: readonly string[] }) => string;
   /** Messages per rolling hour across all chats (`gateway.messagesPerHour`). */
   perHour: number;
   now?: () => Date;
@@ -70,7 +70,7 @@ export function sendMessageTool(deps: SendMessageDeps): ToolDefinition<SendInput
       const sent = assertSendAllowed(deps.store, deps.perHour, now());
       const here = deps.directory.origin(ctx.sessionId).chat;
       const sameChat = !!here && here.channel === target.channel && here.account === target.account && here.chatId === target.chatId;
-      const deliveryId = deps.notify(target, input.text, { from: 'send_message', skipSession: ctx.sessionId });
+      const deliveryId = deps.notify(target, input.text, { from: 'send_message', skipSession: ctx.sessionId, ...(ctx.taint?.sources.length ? { taint: ctx.taint.sources } : {}) });
       deps.store.recordSent({ sessionId: ctx.sessionId, channel: target.channel, account: target.account, chatId: target.chatId, deliveryId });
       return {
         content: `Queued for ${ChatDirectory.label(target)}${sameChat ? ' (this chat)' : ''}; it is delivered by the running Ruby service. ${deps.perHour - sent - 1} more message(s) allowed this hour.`,

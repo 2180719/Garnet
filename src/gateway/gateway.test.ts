@@ -185,6 +185,12 @@ test('after untrusted content, an allowed write needs /approve in chat, says why
   await t.channel.sink!(msg(`/approve ${code}`));
   await settle(t);
   assert.equal(t.channel.sent.at(-1)!.text, 'Saved.', 'the single-use grant works although the session is still tainted');
+  // The continuation embeds a model-composed summary: it is tagged so its URLs are not the owner's, and the taint is re-recorded after it.
+  const events = t.sessions.events(t.sessions.listSessions(1)[0]!.id);
+  const i = events.findIndex((e) => e.type === 'user_message' && e.source === 'approval');
+  assert.ok(i > 0, 'the approval continuation has its own source');
+  const after = events[i + 1]!;
+  assert.ok(after.type === 'tainted' && after.inherited && after.source === 'read_page https://evil.example/');
   await t.gateway.stop(0);
 });
 
@@ -420,20 +426,24 @@ test('a notification with a record lands in the chat conversation, so a reply ha
   await t.gateway.stop(0);
 });
 
-test('a forwarded image or document taints the session; a voice note does not', async () => {
+test('a forwarded image or document taints the session; a live voice note does not; forwarded voice and audio files do', async () => {
   const transcriber: Transcriber = { label: 'test', transcribe: async () => 'hello' };
   const t = withMedia([{ text: 'ok' }, { text: 'ok' }], transcriber);
   t.channel.files.set('v1', fixture('voice.ogg'));
   t.channel.files.set('p1', fixture('pixel.png'));
   await t.gateway.start();
-  await t.channel.sink!(msg('', { attachments: [{ kind: 'audio', ref: 'v1', mimeType: 'audio/ogg' }] }));
+  await t.channel.sink!(msg('', { attachments: [{ kind: 'audio', ref: 'v1', mimeType: 'audio/ogg', liveVoice: true }] }));
   await settle(t);
   const sid = t.sessions.listSessions(1)[0]!.id;
   assert.equal(t.sessions.events(sid).filter((e) => e.type === 'tainted').length, 0);
+  // The same audio without the live-voice mark (forwarded, or an audio file) taints.
+  await t.channel.sink!(msg('', { attachments: [{ kind: 'audio', ref: 'v1', name: 'fwd.ogg', mimeType: 'audio/ogg' }] }));
+  await settle(t);
+  assert.equal(t.sessions.events(sid).filter((e) => e.type === 'tainted').length, 1);
   await t.channel.sink!(msg('see', { attachments: [{ kind: 'image', ref: 'p1', name: 'scan.png' }] }));
   await settle(t);
   const tainted = t.sessions.events(sid).filter((e) => e.type === 'tainted');
-  assert.equal(tainted.length, 1);
-  assert.ok(tainted[0]!.type === 'tainted' && tainted[0]!.source === 'file "scan.png" sent in chat');
+  assert.equal(tainted.length, 2);
+  assert.ok(tainted[1]!.type === 'tainted' && tainted[1]!.source === 'file "scan.png" sent in chat');
   await t.gateway.stop(0);
 });

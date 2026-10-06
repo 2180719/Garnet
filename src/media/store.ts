@@ -12,6 +12,8 @@ export type MediaInput = {
   /** Claimed type (from the platform or a client); checked against the bytes. */
   mimeType?: string | undefined;
   durationSec?: number | undefined;
+  /** See `InboundAttachment.liveVoice`; already checked by the gateway. */
+  liveVoice?: boolean | undefined;
 };
 
 /**
