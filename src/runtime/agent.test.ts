@@ -29,7 +29,7 @@ function setup(script: FakeScript, opts: { budget?: Partial<Budget>; approver?: 
   const session = store.createSession();
   const events: RuntimeEvent[] = [];
   const run = (text: string, signal?: AbortSignal) => agent.run(session.id, text, { onEvent: (e) => events.push(e), ...(signal ? { signal } : {}) });
-  return { workspace, store, model, registry, session, events, run };
+  return { workspace, store, model, registry, session, events, run, agent };
 }
 
 test('a tool-backed task completes and records usage', async () => {
@@ -208,4 +208,25 @@ test('the tool set is frozen per session and refreshed only by compaction', asyn
   await t.run('third'); // compacts first
   assert.deepEqual(names(2), names(0), 'the summarization call reuses the frozen tools');
   assert.ok(names(3).includes('late_tool'), 'compaction re-freezes the tool set');
+});
+
+test('compact() summarizes on request, regardless of the threshold', async () => {
+  const t = setup([{ text: 'one' }, { text: 'two' }, { text: 'three' }, { text: '<summary>Said one, two, three.</summary>' }, { text: 'four' }]);
+  assert.equal((await t.agent.compact(t.session.id)).status, 'nothing_to_compact', 'nothing older than the kept turns');
+  for (const m of ['a', 'b', 'c']) await t.run(m);
+  const outcome = await t.agent.compact(t.session.id);
+  assert.equal(outcome.status, 'compacted');
+  assert.equal(outcome.usage?.inputTokens, 100);
+  assert.ok(t.store.events(t.session.id).some((e) => e.type === 'checkpoint'));
+  assert.equal((await t.agent.compact(t.session.id)).status, 'nothing_to_compact', 'already covered by the checkpoint');
+  await t.run('d');
+  const first = t.model.requests.at(-1)!.messages[0]!.content[0];
+  assert.ok(first?.type === 'text' && first.text.includes('Said one, two, three.'), 'the next request starts from the summary');
+});
+
+test('a failed compact() keeps the full history', async () => {
+  const t = setup([{ text: 'one' }, { text: 'two' }, { text: 'three' }, { error: { category: 'provider_fatal', message: 'down' } }]);
+  for (const m of ['a', 'b', 'c']) await t.run(m);
+  assert.equal((await t.agent.compact(t.session.id)).status, 'failed');
+  assert.ok(!t.store.events(t.session.id).some((e) => e.type === 'checkpoint'));
 });

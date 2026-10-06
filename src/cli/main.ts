@@ -1,12 +1,8 @@
 import { existsSync } from 'node:fs';
-import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { loadConfig, loadEnvFile, redact, rubyHome, writeConfig, configSchema } from '../config/index.ts';
 import { errorMessage, isRubyError } from '../contracts/index.ts';
 import { createRuby, VERSION } from '../main.ts';
-import { FakeModel } from '../models/index.ts';
-import type { Approver } from '../policy/index.ts';
-import type { RuntimeEvent } from '../runtime/index.ts';
 import { sparkle } from './sparkle.ts';
 import { Achievements } from '../achievements/index.ts';
 import { api, dashboard, jobs, pair, service, start } from './admin.ts';
@@ -17,6 +13,7 @@ import { unlockWarnings } from '../secrets/index.ts';
 import { secrets } from './secrets.ts';
 import { doctor } from './doctor.ts';
 import { init, setup } from './setup/command.ts';
+import { chat } from './chat/index.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
 
@@ -25,8 +22,9 @@ Usage:
                             (re-run any time; \`ruby setup --help\` for script flags)
   ruby doctor [--json]      Check the install and setup, with fixes
   ruby init [--defaults]    Create ~/.ruby (offers \`ruby setup\` on a terminal)
-  ruby chat [--fake] [--session <id>]
-                            Chat in the terminal (--fake uses an offline model)
+  ruby chat [--fake] [--session <id>] [--plain]
+                            Chat in the terminal (--fake uses an offline model;
+                            /help inside lists commands and keys)
   ruby config check         Validate the config file
   ruby config show          Print the effective config (secrets redacted)
   ruby config explain       Describe every setting
@@ -92,7 +90,8 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
       case 'doctor':
         return await doctor(rest, io, { version: VERSION });
       case 'chat':
-        return await chat(rest, io);
+        // The full terminal UI only when writing to the real terminal; otherwise plain lines through io.
+        return await chat(rest, { ...io, stdin: process.stdin, stdout: io === stdio ? process.stdout : null, env: process.env });
       case 'config':
         return configCommand(rest, io);
       case 'sessions':
@@ -202,80 +201,3 @@ function sessions(io: Io): number {
     ruby.close();
   }
 }
-
-async function chat(args: string[], io: Io): Promise<number> {
-  const color = io === stdio && process.stdout.isTTY && !('NO_COLOR' in process.env) && process.env.TERM !== 'dumb';
-  const rubyLabel = (text: string) => color ? `\x1b[1;38;2;255;102;128m${text}\x1b[0m` : text;
-  const mutedLabel = (text: string) => color ? `\x1b[38;2;163;166;173m${text}\x1b[0m` : text;
-  const { values } = parseArgs({ args, options: { fake: { type: 'boolean' }, session: { type: 'string' } } });
-  const rl = createInterface({ input: process.stdin, terminal: false });
-  // One line iterator shared by the prompt and approvals, so input typed or
-  // piped while a task runs is buffered instead of lost.
-  const lines = rl[Symbol.asyncIterator]();
-  const ask = async (prompt: string): Promise<string | null> => {
-    io.out(prompt);
-    const next = await lines.next();
-    return next.done ? null : String(next.value);
-  };
-  const ruby = createRuby({
-    ...(values.fake ? { model: new FakeModel() } : {}),
-    approver: terminalApprover(ask, io),
-  });
-  let current: AbortController | null = null;
-  const onSigint = () => {
-    if (current) {
-      current.abort();
-      io.err('\n[cancelling…]\n');
-    } else {
-      rl.close();
-    }
-  };
-  process.on('SIGINT', onSigint);
-  try {
-    const session = values.session ? ruby.store.getSession(values.session) : ruby.store.createSession('Terminal chat');
-    if (!session) {
-      io.err(`No session "${values.session}". Run \`ruby sessions\` to list them.\n`);
-      return 1;
-    }
-    if (color) io.out(`${rubyLabel('◆ RUBY')} ${mutedLabel('/ TERMINAL CHAT')}\n${mutedLabel('────────────────────────────────────────')}\n`);
-    io.out(`Ruby (${ruby.model.id}) · session ${session.id}\nType a message. /exit to quit, Ctrl+C to cancel a running task.\n\n`);
-    for (;;) {
-      const raw = await ask(mutedLabel('you › '));
-      if (raw === null) break; // input closed
-      const line = raw.trim();
-      if (!line) continue;
-      if (line === '/exit' || line === '/quit') break;
-      current = new AbortController();
-      io.out(rubyLabel('ruby › '));
-      const task = await ruby.agent.run(session.id, line, { signal: current.signal, onEvent: printer(io), source: 'cli' });
-      current = null;
-      const u = task.usage;
-      const fmt = (n: number | null) => (n === null ? '?' : String(n));
-      io.out(`\n\n  [${task.status}${task.reason ? `: ${task.reason}` : ''} · in ${fmt(u.inputTokens)} · cached ${fmt(u.cacheReadTokens)} · out ${fmt(u.outputTokens)} tokens]\n\n`);
-    }
-    return 0;
-  } finally {
-    process.off('SIGINT', onSigint);
-    rl.close();
-    ruby.close();
-  }
-}
-
-function printer(io: Io): (e: RuntimeEvent) => void {
-  return (e) => {
-    if (e.type === 'text') io.out(e.text);
-    else if (e.type === 'tool_start') io.out(`\n  ⚙ ${e.call.name} ${short(JSON.stringify(e.call.input))}\n`);
-    else if (e.type === 'tool_end' && e.result.status === 'error') io.out(`  ✗ ${e.result.category}: ${short(e.result.content)}\n`);
-    else if (e.type === 'retry') io.out(`\n  [retrying in ${Math.round(e.delayMs / 1000)}s: ${e.message}]\n`);
-  };
-}
-
-function terminalApprover(ask: (prompt: string) => Promise<string | null>, io: Io): Approver {
-  return async (req) => {
-    io.out(`\n  ⚠ ${req.tool} wants ${req.capability} on ${req.targets.join(', ') || '(no target)'}\n`);
-    const answer = ((await ask('  allow? [y/N] ')) ?? '').trim().toLowerCase();
-    return answer === 'y' || answer === 'yes' ? 'approved' : 'denied';
-  };
-}
-
-const short = (s: string, n = 160) => (s.length > n ? `${s.slice(0, n)}…` : s);
