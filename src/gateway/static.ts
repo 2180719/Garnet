@@ -29,7 +29,7 @@ const CSP = [
 export function staticFiles(root: string): (req: IncomingMessage, res: ServerResponse) => boolean {
   return (req, res) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return false;
-    const url = new URL(req.url ?? '/', 'http://ruby.local');
+    const url = new URL(req.url ?? '/', 'http://garnet.local');
     let path: string;
     try {
       path = decodeURIComponent(url.pathname);
@@ -45,7 +45,7 @@ export function staticFiles(root: string): (req: IncomingMessage, res: ServerRes
       'Content-Length': body.length,
       'Content-Security-Policy': CSP,
       'X-Frame-Options': 'DENY',
-      // Revalidate every time so an upgraded Ruby never serves stale modules; the files are small.
+      // Revalidate every time so an upgraded Garnet never serves stale modules; the files are small.
       'Cache-Control': 'no-cache',
     });
     res.end(req.method === 'HEAD' ? undefined : body);

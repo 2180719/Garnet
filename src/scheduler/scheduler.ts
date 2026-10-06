@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
-import { billedTokens, errorMessage, isRubyError, RubyError, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
+import { billedTokens, errorMessage, isGarnetError, GarnetError, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
 import { resolveInWorkspace } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
 
@@ -11,7 +11,7 @@ export const HEARTBEAT_OK = 'HEARTBEAT_OK';
 /** Text left beside HEARTBEAT_OK up to this length still counts as "nothing to report" (OpenClaw's default ackMaxChars). */
 const ACK_MAX_CHARS = 300;
 const FAILURE_THRESHOLD = 3;
-/** Abort reason for runs cancelled because Ruby is shutting down (not the job's fault). */
+/** Abort reason for runs cancelled because Garnet is shutting down (not the job's fault). */
 const SHUTDOWN = 'shutdown';
 /** Abort reason for runs whose job was deleted while they ran. */
 const DELETED = 'deleted';
@@ -28,7 +28,7 @@ export type RunScript = (
 ) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; cancelled: boolean }>;
 
 export type SchedulerDeps = {
-  /** The jobs to schedule, re-read on every tick (stored jobs can change while Ruby runs). */
+  /** The jobs to schedule, re-read on every tick (stored jobs can change while Garnet runs). */
   jobs: JobConfig[] | (() => JobConfig[]);
   store: JobStore;
   run: RunJob;
@@ -150,7 +150,7 @@ export class Scheduler {
       state.lastScheduledFor = due.at.toISOString();
       this.deps.store.saveState(state);
       if (due.missed && !job.catchUp) {
-        this.deps.store.claim(`${job.id}@${due.at.toISOString()}`, job.id, due.at.toISOString(), 'missed', 'Missed while Ruby was not running; catch-up is off.');
+        this.deps.store.claim(`${job.id}@${due.at.toISOString()}`, job.id, due.at.toISOString(), 'missed', 'Missed while Garnet was not running; catch-up is off.');
         continue;
       }
       void this.launch(job, due.at, due.missed ? 'late' : '');
@@ -160,8 +160,8 @@ export class Scheduler {
   /** Runs a job now, outside its schedule (CLI, dashboard). */
   runNow(jobId: string): Promise<void> {
     const job = this.jobs().find((j) => j.id === jobId);
-    if (!job) return Promise.reject(new RubyError('invalid_input', `No job "${jobId}"`));
-    if (this.running.has(job.id)) return Promise.reject(new RubyError('conflict', `Job "${jobId}" is already running`));
+    if (!job) return Promise.reject(new GarnetError('invalid_input', `No job "${jobId}"`));
+    if (this.running.has(job.id)) return Promise.reject(new GarnetError('conflict', `Job "${jobId}" is already running`));
     return this.launch(job, this.now(), '', 'manual');
   }
 
@@ -192,7 +192,7 @@ export class Scheduler {
         // First sight (a config job): a time that had already passed is recorded, never run late.
         if (at.getTime() < now.getTime() - 2 * tick) {
           this.deps.store.saveState({ ...this.deps.store.state(job.id), lastScheduledFor: at.toISOString() });
-          this.deps.store.claim(`${job.id}@${at.toISOString()}`, job.id, at.toISOString(), 'missed', 'Its time had already passed when Ruby first saw it.');
+          this.deps.store.claim(`${job.id}@${at.toISOString()}`, job.id, at.toISOString(), 'missed', 'Its time had already passed when Garnet first saw it.');
           return null;
         }
       }
@@ -251,7 +251,7 @@ export class Scheduler {
     timeout.unref();
     const stopped = (fields: { taskId?: string; tokens?: number } = {}): boolean => {
       const reason = controller.signal.reason;
-      if (reason === SHUTDOWN) finish('interrupted', { ...fields, note: 'Stopped because Ruby shut down.' });
+      if (reason === SHUTDOWN) finish('interrupted', { ...fields, note: 'Stopped because Garnet shut down.' });
       else if (reason === DELETED) finish('cancelled', { ...fields, note: 'The job was deleted while it ran.' });
       // A restart or a deletion is not a job failure: record it, but do not count it towards pausing or message the owner.
       return reason === SHUTDOWN || reason === DELETED;
@@ -277,20 +277,20 @@ export class Scheduler {
       if (!outcome.failed && outcome.checkValue !== undefined) fresh.checkValue = outcome.checkValue;
       if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) {
         fresh.paused = true;
-        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${outcome.reason ?? 'unknown'}. Resume with: ruby jobs resume ${job.id}`);
+        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${outcome.reason ?? 'unknown'}. Resume with: garnet jobs resume ${job.id}`);
       }
       store.saveState(fresh);
       if (outcome.message !== null) this.notify(job, outcome.message);
     } catch (e) {
       // Only an abort counts as stopped: a genuine error that races a shutdown is still a failure.
-      const aborted = e === controller.signal.reason || (e as Error)?.name === 'AbortError' || isRubyError(e, 'cancelled');
+      const aborted = e === controller.signal.reason || (e as Error)?.name === 'AbortError' || isGarnetError(e, 'cancelled');
       if (aborted && stopped()) return;
       finish('failed', { note: errorMessage(e) });
       const fresh = store.state(job.id);
       fresh.consecutiveFailures += 1;
       if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) {
         fresh.paused = true;
-        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${errorMessage(e)}. Resume with: ruby jobs resume ${job.id}`);
+        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${errorMessage(e)}. Resume with: garnet jobs resume ${job.id}`);
       }
       store.saveState(fresh);
       this.log('error', `job ${job.id}: ${errorMessage(e)}`);
@@ -307,7 +307,7 @@ export class Scheduler {
 
   /** A fixed reminder: sent as is, never calls the model. */
   private messageOutcome(job: JobConfig, at: Date, late: boolean): Outcome {
-    const lateNote = late ? ` (due ${this.when(job, at)}; Ruby was not running then)` : '';
+    const lateNote = late ? ` (due ${this.when(job, at)}; Garnet was not running then)` : '';
     return { status: 'completed', failed: false, note: 'Message sent.', message: `⏰ ${job.message}${lateNote}` };
   }
 
@@ -338,7 +338,7 @@ export class Scheduler {
   /** A normal job: runs the agent with the job's instructions. */
   private async agentOutcome(job: JobConfig, at: Date, late: boolean, signal: AbortSignal, newCheckValue: string | null): Promise<Outcome> {
     const text = [
-      `[Scheduled job "${job.id}" for ${this.when(job, at)}.${late ? ' It runs late because Ruby was not running at that time.' : ''}${job.check ? ' Its pre-check detected a change.' : ''}]`,
+      `[Scheduled job "${job.id}" for ${this.when(job, at)}.${late ? ' It runs late because Garnet was not running at that time.' : ''}${job.check ? ' Its pre-check detected a change.' : ''}]`,
       job.instructions,
       job.notifyWhen === 'on_change' ? `If nothing needs your owner's attention, reply with exactly ${NOTHING}.` : '',
     ]

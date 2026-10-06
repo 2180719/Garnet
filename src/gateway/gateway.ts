@@ -3,7 +3,7 @@ import {
   addUsage,
   billedTokens,
   errorMessage,
-  RubyError,
+  GarnetError,
   textOf,
   unknownUsage,
   type ChannelAdapter,
@@ -163,7 +163,7 @@ export class Gateway {
   }
 
   /**
-   * Content Ruby cannot read yet (voice, photos, files) gets a short honest
+   * Content Garnet cannot read yet (voice, photos, files) gets a short honest
    * reply instead of silence. It never reaches the model: a caption alone
    * would be answered as if the attachment had been seen.
    */
@@ -217,10 +217,10 @@ export class Gateway {
         let turn: string | ContentBlock[] = typeof input === 'string' ? input : input.text;
         if (typeof input !== 'string' && input.files.length) {
           const media = this.deps.media;
-          if (!media) throw new RubyError('invalid_input', 'Files are not accepted: media handling is off (media.enabled in config.json).');
+          if (!media) throw new GarnetError('invalid_input', 'Files are not accepted: media handling is off (media.enabled in config.json).');
           const blocks = [...(input.text.trim() ? [{ type: 'text' as const, text: input.text }] : []), ...(await media.ingest(input.files, { sessionId, signal: controller.signal }))];
           const unreadable = media.unreadableReply(blocks);
-          if (unreadable) throw new RubyError('invalid_input', unreadable);
+          if (unreadable) throw new GarnetError('invalid_input', unreadable);
           turn = blocks;
         }
         const task = await agent.run(sessionId, turn, { ...options, signal: controller.signal });
@@ -238,9 +238,9 @@ export class Gateway {
    */
   async resolveApproval(code: string, decision: 'approved' | 'denied'): Promise<{ status: string; text: string | null; resumed: boolean }> {
     const approvals = this.deps.approvals;
-    if (!approvals) throw new RubyError('invalid_input', 'Approvals are not enabled.');
+    if (!approvals) throw new GarnetError('invalid_input', 'Approvals are not enabled.');
     const decided = approvals.decide(code, decision, this.now().toISOString());
-    if (!decided) throw new RubyError('invalid_input', 'No pending approval with that code (it may have expired or been decided).');
+    if (!decided) throw new GarnetError('invalid_input', 'No pending approval with that code (it may have expired or been decided).');
     const key = this.deps.store.keyForSession(decided.sessionId);
     if (!key) return { status: decision, text: null, resumed: false };
     const result = await this.chat(key, approvalText(decided.code, decided.summary, decision === 'approved'), this.continuation(decided.sessionId, { source: 'dashboard' }));
@@ -368,7 +368,7 @@ export class Gateway {
     }
     if (command === '/start') {
       store.setInbox(row.id, 'done');
-      this.reply(row, "Hi! I'm Ruby. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task; /help lists every command.");
+      this.reply(row, "Hi! I'm Garnet. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task; /help lists every command.");
       return;
     }
     if (command === '/help') {
@@ -504,11 +504,11 @@ export class Gateway {
     ];
     const task = lastTaskId ? this.deps.sessions.getTask(lastTaskId) : undefined;
     if (task) lines.push(`• last task: ${n(billedTokens(task.usage))} tokens, ${task.modelCalls} model call(s), ${task.toolCalls} tool call(s), ${task.status.replaceAll('_', ' ')}`);
-    lines.push('"?" means the provider did not report it; Ruby never counts unknown as zero.');
+    lines.push('"?" means the provider did not report it; Garnet never counts unknown as zero.');
     return lines.join('\n');
   }
 
-  /** /status: what Ruby is doing in this conversation and whether its channels are healthy. */
+  /** /status: what Garnet is doing in this conversation and whether its channels are healthy. */
   private statusText(key: string): string {
     const sessionId = this.deps.store.conversation(key);
     const lines = ['Status:'];
@@ -570,7 +570,7 @@ export class Gateway {
       expiresAt: new Date(now.getTime() + ttl * 60_000).toISOString(),
     });
     this.log('info', `pairing requested by ${row.channel}:${row.sender.id} (${row.sender.displayName ?? 'unknown'}), code ${code}`);
-    this.reply(row, `Hi! I'm a private assistant. To connect, my owner needs to run this on the host:\n\nruby pair approve ${code}\n\nThe code expires in ${ttl} minutes.`);
+    this.reply(row, `Hi! I'm a private assistant. To connect, my owner needs to run this on the host:\n\ngarnet pair approve ${code}\n\nThe code expires in ${ttl} minutes.`);
   }
 
   private reply(row: InboxRow, text: string): void {
@@ -684,7 +684,7 @@ export class Gateway {
 export function approvePairing(store: GatewayStore, code: string, now: Date = new Date()): PairingCode | null {
   const p = store.approvePairing(code.trim().toUpperCase(), now.toISOString());
   if (!p) return null;
-  store.enqueue({ channel: p.channel, account: p.account, chatId: p.chatId, text: "You're connected. I'm Ruby — how can I help?" });
+  store.enqueue({ channel: p.channel, account: p.account, chatId: p.chatId, text: "You're connected. I'm Garnet — how can I help?" });
   return p;
 }
 

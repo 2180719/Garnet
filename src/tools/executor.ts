@@ -1,6 +1,6 @@
 import {
   errorMessage,
-  isRubyError,
+  isGarnetError,
   type ErrorCategory,
   type ToolCallBlock,
   type ToolContext,
@@ -42,7 +42,7 @@ export class ToolExecutor {
     const result = await this.run(call, ctx);
     if (repairs.length === 0) return result;
     // Tell the model so it learns the exact form; history itself is never rewritten.
-    const note = `\n[Ruby auto-corrected this call: ${repairs.join('; ')}. Use the exact form next time.]`;
+    const note = `\n[Garnet auto-corrected this call: ${repairs.join('; ')}. Use the exact form next time.]`;
     return { ...result, content: result.content + note, repairs };
   }
 
@@ -74,14 +74,14 @@ export class ToolExecutor {
     try {
       if (tool.bind) input = tool.bind(input, fullCtx);
     } catch (e) {
-      return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+      return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));
     }
 
     let targets: string[];
     try {
       targets = tool.targets?.(input, fullCtx) ?? [];
     } catch (e) {
-      return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+      return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));
     }
 
     // Every capability this call needs is checked (with the session's taint); the strictest verdict wins.
@@ -96,7 +96,7 @@ export class ToolExecutor {
         if (rank[d.verdict] > rank[decision.verdict] || (d.verdict === decision.verdict && cap === 'exec')) [decision, capability] = [d, cap];
       }
     } catch (e) {
-      return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+      return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));
     }
     if (decision.verdict === 'deny') {
       return fail('denied', `Not permitted: ${decision.reason}. Do not retry; tell the owner if this is needed.`);
@@ -107,7 +107,7 @@ export class ToolExecutor {
         // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
         summary = tool.summarize ? tool.summarize(input, fullCtx) : describe(tool.name, input, targets, ctx.workspace, capability === 'exec' ? 10_000 : 120);
       } catch (e) {
-        return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+        return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));
       }
       let answer: ApprovalDecision;
       try {
@@ -140,7 +140,7 @@ export class ToolExecutor {
     } catch (e) {
       if (timeout.aborted && !ctx.signal.aborted) return { ...fail('timeout', `${tool.name} timed out.`), ...defaultMark };
       if (ctx.signal.aborted) return { ...fail('cancelled', `${tool.name} was cancelled.`), ...defaultMark };
-      return { ...fail(isRubyError(e) ? e.category : 'tool_failed', errorMessage(e)), ...defaultMark };
+      return { ...fail(isGarnetError(e) ? e.category : 'tool_failed', errorMessage(e)), ...defaultMark };
     }
     const { content, truncated, artifactId } = this.limit(output.content, tool.maxOutputChars ?? DEFAULT_MAX_OUTPUT, ctx.sessionId);
     const untrusted = output.untrusted ?? defaultMark.untrusted;
@@ -194,7 +194,7 @@ function boundMark(mark: UntrustedMark): UntrustedMark {
 /** Appended to an approval summary when untrusted content is why the owner is asked. */
 function taintNote(taint: readonly string[] | undefined): string {
   if (!taint?.length) return '';
-  return `\n⚠ This conversation has read untrusted content (${describeSources(taint)}). It may be trying to steer Ruby: approve only if you asked for this.`;
+  return `\n⚠ This conversation has read untrusted content (${describeSources(taint)}). It may be trying to steer Garnet: approve only if you asked for this.`;
 }
 
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

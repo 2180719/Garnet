@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RubyError, errorMessage } from '../contracts/index.ts';
+import { GarnetError, errorMessage } from '../contracts/index.ts';
 import { extensionFor } from './mime.ts';
 
 export type CommandSpec = {
@@ -18,12 +18,12 @@ export type CommandSpec = {
  * Writes the bytes to a private temporary file (with an extension that
  * matches the type, which tools like ffmpeg rely on), runs the command
  * without a shell and with a minimal environment (no API keys or tokens
- * from Ruby's environment), and returns stdout. The temporary directory is
+ * from Garnet's environment), and returns stdout. The temporary directory is
  * always removed.
  */
 export async function runOnFile(spec: CommandSpec, data: Uint8Array, mimeType: string, signal: AbortSignal): Promise<string> {
-  if (spec.argv.length === 0) throw new RubyError('config', 'The media command is empty.');
-  const dir = await mkdtemp(join(tmpdir(), 'ruby-media-'));
+  if (spec.argv.length === 0) throw new GarnetError('config', 'The media command is empty.');
+  const dir = await mkdtemp(join(tmpdir(), 'garnet-media-'));
   try {
     const input = join(dir, `input${extensionFor(mimeType)}`);
     await writeFile(input, data, { mode: 0o600 });
@@ -39,11 +39,11 @@ export async function runOnFile(spec: CommandSpec, data: Uint8Array, mimeType: s
         (error, stdout, stderr) => {
           if (!error) return resolve(stdout);
           const e = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
-          if (e.code === 'ENOENT') return reject(new RubyError('config', `Command not found: ${argv[0]}`));
-          if (signal.aborted) return reject(new RubyError('cancelled', 'Cancelled.'));
-          if (e.killed || e.signal === 'SIGTERM') return reject(new RubyError('timeout', `${argv[0]} did not finish within ${Math.round(spec.timeoutMs / 1000)}s.`));
+          if (e.code === 'ENOENT') return reject(new GarnetError('config', `Command not found: ${argv[0]}`));
+          if (signal.aborted) return reject(new GarnetError('cancelled', 'Cancelled.'));
+          if (e.killed || e.signal === 'SIGTERM') return reject(new GarnetError('timeout', `${argv[0]} did not finish within ${Math.round(spec.timeoutMs / 1000)}s.`));
           const detail = String(stderr ?? '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
-          reject(new RubyError('tool_failed', `${argv[0]} failed${detail ? `: ${detail}` : `: ${errorMessage(error)}`}`));
+          reject(new GarnetError('tool_failed', `${argv[0]} failed${detail ? `: ${detail}` : `: ${errorMessage(error)}`}`));
         },
       );
     });

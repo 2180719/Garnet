@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { RubyError, type InboundMessage } from '../contracts/index.ts';
+import { GarnetError, type InboundMessage } from '../contracts/index.ts';
 import { SignalChannel } from './index.ts';
 
 const ACCOUNT = '+15550001111';
@@ -95,7 +95,7 @@ async function started(d = fakeDaemon()) {
 
 test('rejects malformed account numbers', () => {
   for (const account of ['', '15551234567', '+0555123456', '+123', '+1555123456789012', 'abc']) {
-    assert.throws(() => new SignalChannel({ account }), (e: unknown) => e instanceof RubyError && e.category === 'config');
+    assert.throws(() => new SignalChannel({ account }), (e: unknown) => e instanceof GarnetError && e.category === 'config');
   }
   const ch = new SignalChannel({ account: ACCOUNT });
   assert.equal(ch.channel, 'signal');
@@ -104,9 +104,9 @@ test('rejects malformed account numbers', () => {
 });
 
 test('refuses non-loopback http baseUrl but allows loopback and https', () => {
-  assert.throws(() => new SignalChannel({ account: ACCOUNT, baseUrl: 'http://192.168.1.5:8080' }), (e: unknown) => e instanceof RubyError && e.category === 'config' && /unauthenticated/.test(e.message));
-  assert.throws(() => new SignalChannel({ account: ACCOUNT, baseUrl: 'http://example.com' }), RubyError);
-  assert.throws(() => new SignalChannel({ account: ACCOUNT, baseUrl: 'not a url' }), RubyError);
+  assert.throws(() => new SignalChannel({ account: ACCOUNT, baseUrl: 'http://192.168.1.5:8080' }), (e: unknown) => e instanceof GarnetError && e.category === 'config' && /unauthenticated/.test(e.message));
+  assert.throws(() => new SignalChannel({ account: ACCOUNT, baseUrl: 'http://example.com' }), GarnetError);
+  assert.throws(() => new SignalChannel({ account: ACCOUNT, baseUrl: 'not a url' }), GarnetError);
   new SignalChannel({ account: ACCOUNT, baseUrl: 'http://localhost:9000' });
   new SignalChannel({ account: ACCOUNT, baseUrl: 'http://[::1]:8080' });
   new SignalChannel({ account: ACCOUNT, baseUrl: 'https://signal.example.com' });
@@ -114,9 +114,9 @@ test('refuses non-loopback http baseUrl but allows loopback and https', () => {
 
 test('start fails with a config error when the daemon is unreachable', async () => {
   const refused = new SignalChannel({ account: ACCOUNT, fetch: (async () => { throw new TypeError('fetch failed'); }) as typeof fetch });
-  await assert.rejects(refused.start(async () => {}), (e: unknown) => e instanceof RubyError && e.category === 'config' && /not reachable at http:\/\/127\.0\.0\.1:8080/.test(e.message) && e.message.includes('signal-cli -a +15550001111 daemon --http 127.0.0.1:8080'));
+  await assert.rejects(refused.start(async () => {}), (e: unknown) => e instanceof GarnetError && e.category === 'config' && /not reachable at http:\/\/127\.0\.0\.1:8080/.test(e.message) && e.message.includes('signal-cli -a +15550001111 daemon --http 127.0.0.1:8080'));
   const bad = setup(fakeDaemon({ check: () => new Response('', { status: 503 }) })).channel;
-  await assert.rejects(bad.start(async () => {}), RubyError);
+  await assert.rejects(bad.start(async () => {}), GarnetError);
 });
 
 test('parses direct and group messages, keepalives, and events split across chunks', async () => {

@@ -1,4 +1,4 @@
-// Tells the agent where `ruby import` archived the previous assistant's files. A prompt section,
+// Tells the agent where `garnet import` archived the previous assistant's files. A prompt section,
 // so it must be deterministic: it depends only on which source folders exist.
 import { statSync } from 'node:fs';
 import { join } from 'node:path';

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { validTimeZone, type JobConfig } from '../config/index.ts';
-import { RubyError, type Capability, type ToolContext, type ToolDefinition } from '../contracts/index.ts';
+import { GarnetError, type Capability, type ToolContext, type ToolDefinition } from '../contracts/index.ts';
 import { BindMemo } from '../tools/index.ts';
 import type { JobBook, JobEntry, JobOrigin } from './book.ts';
 import { describeDistance, describeNext, describeSchedule, describeTime, parseWhen } from './when.ts';
@@ -59,7 +59,7 @@ export function describeEntry(e: JobEntry, now: Date, labelOf: ScheduleToolDeps[
 }
 
 /**
- * `schedule`: lets Ruby create, list, change, pause and delete jobs from
+ * `schedule`: lets Garnet create, list, change, pause and delete jobs from
  * chat. Changes need `schedule.edit` (ask by default); a script job also
  * needs `exec`, so its exact command is shown to the owner for approval;
  * listing needs no permission. Jobs created here record where they came
@@ -69,27 +69,27 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
   const now = deps.now ?? (() => new Date());
 
   const need = (v: string | undefined, what: string): string => {
-    if (!v?.trim()) throw new RubyError('invalid_input', `${what} is required for this action.`);
+    if (!v?.trim()) throw new GarnetError('invalid_input', `${what} is required for this action.`);
     return v.trim();
   };
 
   /** Builds the job a create or update would produce, without saving it. */
   const plan = (i: Input, ctx: Pick<ToolContext, 'sessionId'>): { job: Record<string, unknown>; target: DeliveryTarget | null; existing?: JobEntry; notes: string[] } => {
     const origin = deps.originOf(ctx.sessionId);
-    if (origin.isJob) throw new RubyError('denied', 'Scheduled runs cannot create or change jobs.');
-    if (i.timezone && !validTimeZone(i.timezone)) throw new RubyError('invalid_input', `Unknown time zone "${i.timezone}". Use an IANA name like Europe/London.`);
+    if (origin.isJob) throw new GarnetError('denied', 'Scheduled runs cannot create or change jobs.');
+    if (i.timezone && !validTimeZone(i.timezone)) throw new GarnetError('invalid_input', `Unknown time zone "${i.timezone}". Use an IANA name like Europe/London.`);
     const actions = [i.reminder, i.instructions, i.command].filter((a) => a !== undefined && a.trim() !== '');
-    if (actions.length > 1) throw new RubyError('invalid_input', 'Give only one of reminder, instructions or command.');
+    if (actions.length > 1) throw new GarnetError('invalid_input', 'Give only one of reminder, instructions or command.');
     const notes: string[] = [];
     const job: Record<string, unknown> = {};
     let existing: JobEntry | undefined;
     if (i.action === 'update') {
       const id = need(i.id, 'id');
       existing = deps.book.list().find((e) => e.job.id === id);
-      if (!existing) throw new RubyError('invalid_input', `No job "${id}". Use action "list" to see the jobs.`);
-      if (existing.origin.by === 'config') throw new RubyError('denied', `"${id}" is the owner's job in config.json; only the owner can change it.`);
+      if (!existing) throw new GarnetError('invalid_input', `No job "${id}". Use action "list" to see the jobs.`);
+      if (existing.origin.by === 'config') throw new GarnetError('denied', `"${id}" is the owner's job in config.json; only the owner can change it.`);
     } else if (actions.length === 0) {
-      throw new RubyError('invalid_input', 'Say what the job does: reminder (fixed text), instructions (you run), or command (script-only).');
+      throw new GarnetError('invalid_input', 'Say what the job does: reminder (fixed text), instructions (you run), or command (script-only).');
     }
     const zone = i.timezone ?? existing?.job.timezone ?? deps.book.timezone;
     if (i.timezone) job.timezone = i.timezone;
@@ -119,7 +119,7 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
       } catch (e) {
         // A task can still run with results kept in history; a reminder or script with nowhere to go is pointless.
         if (i.to !== undefined || job.message !== undefined || job.script !== undefined) throw e;
-        notes.push('There is no paired chat to deliver to, so results are kept in run history only (`ruby jobs history`).');
+        notes.push('There is no paired chat to deliver to, so results are kept in run history only (`garnet jobs history`).');
       }
       if (target) job.notify = { channel: target.channel, chatId: target.chatId, account: target.account };
     }
@@ -137,8 +137,8 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
     if (i.action !== 'pause' && i.action !== 'resume') return;
     const id = need(i.id, 'id');
     const found = deps.book.list().find((e) => e.job.id === id);
-    if (!found) throw new RubyError('invalid_input', `No job "${id}". Use action "list" to see the jobs.`);
-    if (found.origin.by === 'config') throw new RubyError('denied', `"${id}" is the owner's job in config.json; only the owner can ${i.action} it.`);
+    if (!found) throw new GarnetError('invalid_input', `No job "${id}". Use action "list" to see the jobs.`);
+    if (found.origin.by === 'config') throw new GarnetError('denied', `"${id}" is the owner's job in config.json; only the owner can ${i.action} it.`);
   };
 
   /**
@@ -199,7 +199,7 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
     const parts = [`schedule: ${i.action === 'create' ? 'create' : `update`} job "${merged.id}"`];
     if (merged.kind) parts.push(`when: ${describeSchedule(merged, zone, t)}${merged.kind === 'once' ? ` (${zone}, ${describeDistance(new Date(merged.at!), t)})` : ` (${zone})`}`);
     if (p.job.message !== undefined) parts.push(`sends: ${String(p.job.message)}`);
-    if (p.job.instructions !== undefined) parts.push(`Ruby will: ${String(p.job.instructions)}`);
+    if (p.job.instructions !== undefined) parts.push(`Garnet will: ${String(p.job.instructions)}`);
     if (p.job.script !== undefined) parts.push(`runs this command in the sandbox, unattended, each time:\n${(p.job.script as { command: string }).command}`);
     if (p.target) parts.push(`delivers to: ${p.target.label}`);
     if (i.allow?.length) parts.push(`extra permissions: ${i.allow.join(', ')}`);
@@ -226,7 +226,7 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
         if (!entries.length) return { content: `No jobs yet. It is now ${describeTime(t, deps.book.timezone, t)} (${deps.book.timezone}).` };
         return { content: [`Jobs (now: ${describeTime(t, deps.book.timezone, t)}, ${deps.book.timezone}):`, ...entries.map(describe)].join('\n') };
       }
-      if (origin.isJob) throw new RubyError('denied', 'Scheduled runs cannot create or change jobs.');
+      if (origin.isJob) throw new GarnetError('denied', 'Scheduled runs cannot create or change jobs.');
       assertNotConfigJob(i);
       memo.consume(ctx.sessionId, i);
       if (i.action === 'pause' || i.action === 'resume' || i.action === 'delete') {

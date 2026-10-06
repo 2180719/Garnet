@@ -1,4 +1,4 @@
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 
 /**
  * Standard 5-field cron (minute hour day-of-month month day-of-week) evaluated
@@ -32,23 +32,23 @@ function field(text: string, min: number, max: number, names: string[] = [], nam
   const value = (v: string) => {
     const i = names.indexOf(v.toLowerCase());
     // Plain decimal digits only: Number() would also read "", "0x1" and "1e1".
-    if (i < 0 && !/^\d+$/.test(v)) throw new RubyError('invalid_input', `Invalid cron value "${v}" in "${text}"`);
+    if (i < 0 && !/^\d+$/.test(v)) throw new GarnetError('invalid_input', `Invalid cron value "${v}" in "${text}"`);
     return i >= 0 ? i + nameBase : Number(v);
   };
   for (const part of text.split(',')) {
     const [range, stepText] = part.split('/');
     const step = stepText === undefined ? 1 : /^\d+$/.test(stepText) ? Number(stepText) : 0;
-    if (step < 1 || part.split('/').length > 2) throw new RubyError('invalid_input', `Invalid cron step in "${part}"`);
+    if (step < 1 || part.split('/').length > 2) throw new GarnetError('invalid_input', `Invalid cron step in "${part}"`);
     let lo: number;
     let hi: number;
     if (range === '*') [lo, hi] = [min, max];
     else if (range!.includes('-')) {
       const ends = range!.split('-');
-      if (ends.length !== 2) throw new RubyError('invalid_input', `Invalid cron range "${range}"`);
+      if (ends.length !== 2) throw new GarnetError('invalid_input', `Invalid cron range "${range}"`);
       [lo, hi] = ends.map(value) as [number, number];
     }
     else [lo, hi] = [value(range!), stepText === undefined ? value(range!) : max];
-    if (lo < min || hi > max || lo > hi) throw new RubyError('invalid_input', `Cron value out of range in "${part}" (${min}-${max})`);
+    if (lo < min || hi > max || lo > hi) throw new GarnetError('invalid_input', `Cron value out of range in "${part}" (${min}-${max})`);
     for (let n = lo; n <= hi; n += step) out.add(n);
   }
   return out;
@@ -57,7 +57,7 @@ function field(text: string, min: number, max: number, names: string[] = [], nam
 export function parseCron(expression: string): Cron {
   const expr = ALIASES[expression.trim()] ?? expression.trim();
   const parts = expr.split(/\s+/);
-  if (parts.length !== 5) throw new RubyError('invalid_input', `Cron needs 5 fields (minute hour day month weekday), got "${expression}"`);
+  if (parts.length !== 5) throw new GarnetError('invalid_input', `Cron needs 5 fields (minute hour day month weekday), got "${expression}"`);
   const [m, h, dom, mon, dow] = parts as [string, string, string, string, string];
   const weekdays = field(dow, 0, 7, DAYS);
   if (weekdays.has(7)) weekdays.add(0); // 7 is also Sunday

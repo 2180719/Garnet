@@ -29,7 +29,7 @@ function harness(env: NodeJS.ProcessEnv, input = `${VALUE}\n`) {
 
 test('set reads the value from stdin; list prints names only; rm removes; nothing echoes the value', async () => {
   const home = tempDir();
-  const env = { RUBY_HOME: home, [PASSPHRASE_ENV]: PASS };
+  const env = { GARNET_HOME: home, [PASSPHRASE_ENV]: PASS };
   const h = harness(env);
   assert.equal(await h.run('list'), 0);
   assert.match(h.out(), /No secret store yet/);
@@ -48,14 +48,14 @@ test('set reads the value from stdin; list prints names only; rm removes; nothin
 
 test('a value on the command line is refused and never echoed', async () => {
   const home = tempDir();
-  const h = harness({ RUBY_HOME: home, [PASSPHRASE_ENV]: PASS });
+  const h = harness({ GARNET_HOME: home, [PASSPHRASE_ENV]: PASS });
   assert.equal(await h.run('set', 'ANTHROPIC_API_KEY', VALUE), 2);
   assert.match(h.err(), /read from stdin, never from the command line/);
   assert.equal(h.all().includes(VALUE), false);
   assert.equal(existsSync(join(home, 'secrets')), false);
   assert.equal(h.prompts.length, 0);
   // Empty input stores nothing; bad names and unknown subcommands are usage errors.
-  const empty = harness({ RUBY_HOME: home, [PASSPHRASE_ENV]: PASS }, '\n');
+  const empty = harness({ GARNET_HOME: home, [PASSPHRASE_ENV]: PASS }, '\n');
   assert.equal(await empty.run('set', 'A_KEY'), 1);
   assert.equal(existsSync(join(home, 'secrets')), false);
   assert.equal(await h.run('set', 'bad-name'), 2);
@@ -64,16 +64,16 @@ test('a value on the command line is refused and never echoed', async () => {
 
 test('locked and wrong-passphrase errors are clear and do not leak', async () => {
   const home = tempDir();
-  await harness({ RUBY_HOME: home, [PASSPHRASE_ENV]: PASS }).run('set', 'A_KEY');
-  const locked = harness({ RUBY_HOME: home });
-  await assert.rejects(locked.run('list'), /is locked\. Set RUBY_SECRETS_PASSPHRASE, or RUBY_SECRETS_KEY_FILE/);
-  const wrong = harness({ RUBY_HOME: home, [PASSPHRASE_ENV]: 'not the right passphrase' });
+  await harness({ GARNET_HOME: home, [PASSPHRASE_ENV]: PASS }).run('set', 'A_KEY');
+  const locked = harness({ GARNET_HOME: home });
+  await assert.rejects(locked.run('list'), /is locked\. Set GARNET_SECRETS_PASSPHRASE, or GARNET_SECRETS_KEY_FILE/);
+  const wrong = harness({ GARNET_HOME: home, [PASSPHRASE_ENV]: 'not the right passphrase' });
   await assert.rejects(wrong.run('set', 'B_KEY'), (e) => /wrong, or the file was modified/.test((e as Error).message) && !(e as Error).message.includes(VALUE));
 });
 
 test('list marks names the environment overrides', async () => {
   const home = tempDir();
-  const env = { RUBY_HOME: home, [PASSPHRASE_ENV]: PASS };
+  const env = { GARNET_HOME: home, [PASSPHRASE_ENV]: PASS };
   await harness(env).run('set', 'A_KEY');
   const h = harness({ ...env, A_KEY: 'from-env' });
   await h.run('list');
@@ -89,7 +89,7 @@ test('import-env moves the names config refers to into the store and out of the 
     `# my secrets\nANTHROPIC_API_KEY=${VALUE}\nexport TELEGRAM_BOT_TOKEN="123:abc"\nDOCKER_HOST=unix:///run/docker.sock\n${KEY_FILE_ENV}=/elsewhere/key\n`,
     { mode: 0o600 },
   );
-  const env = { RUBY_HOME: home, [PASSPHRASE_ENV]: PASS };
+  const env = { GARNET_HOME: home, [PASSPHRASE_ENV]: PASS };
   const h = harness(env);
   assert.equal(await h.run('import-env'), 0);
   const store = openSecretStore(home, env);
@@ -114,18 +114,18 @@ test('import-env moves the names config refers to into the store and out of the 
 test('keygen writes a private random key file that unlocks the store', async () => {
   const dir = tempDir();
   const home = tempDir();
-  const keyFile = join(dir, 'ruby.key');
-  const h = harness({ RUBY_HOME: home });
+  const keyFile = join(dir, 'garnet.key');
+  const h = harness({ GARNET_HOME: home });
   assert.equal(await h.run('keygen', keyFile), 0);
   assert.equal(statSync(keyFile).mode & 0o777, 0o600);
   const key = readFileSync(keyFile, 'utf8').trim();
   assert.equal(Buffer.from(key, 'base64').length, 32);
   assert.equal(h.all().includes(key), false, 'the key is not printed');
   assert.equal(await h.run('keygen', keyFile), 1, 'never overwrites a key');
-  const env = { RUBY_HOME: home, [KEY_FILE_ENV]: keyFile };
+  const env = { GARNET_HOME: home, [KEY_FILE_ENV]: keyFile };
   assert.equal(await harness(env).run('set', 'A_KEY'), 0);
   assert.equal(openSecretStore(home, env).get('A_KEY'), VALUE);
-  const inside = harness({ RUBY_HOME: home });
+  const inside = harness({ GARNET_HOME: home });
   await inside.run('keygen', join(home, 'key'));
   assert.match(inside.err(), /inside/);
 });

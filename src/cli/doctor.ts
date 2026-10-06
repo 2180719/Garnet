@@ -1,4 +1,4 @@
-// `ruby doctor`: diagnoses the install and the setup, offline, and says how to
+// `garnet doctor`: diagnoses the install and the setup, offline, and says how to
 // fix each problem. It never prints secret values and never changes anything.
 import { execFile } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -6,11 +6,11 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
-import { CONFIG_VERSION, parseConfig, parseEnv, rubyHome, type RubyConfig } from '../config/index.ts';
+import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
-import { defaultEntry, installedServices, resolveService, serviceStatus, type CommandResult } from '../service/index.ts';
+import { defaultEntry, installedServices, legacyServices, resolveService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
 
@@ -29,7 +29,7 @@ export type DoctorDeps = {
   run: (cmd: string[]) => Promise<CommandResult>;
   sqlite: () => { ok: boolean; detail: string };
   /** Docker sandbox readiness (only called when commands are allowed). */
-  sandboxCheck: (config: RubyConfig, workspace: string) => Promise<{ ok: boolean; detail: string }>;
+  sandboxCheck: (config: GarnetConfig, workspace: string) => Promise<{ ok: boolean; detail: string }>;
 };
 
 export const MIN_NODE = [22, 18] as const;
@@ -48,17 +48,23 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
 
   // Runtime
   if (nodeOk(d.nodeVersion)) add('node', 'ok', `Node.js ${d.nodeVersion}`);
-  else add('node', 'fail', `Node.js ${d.nodeVersion} is too old; Ruby needs ${MIN_NODE.join('.')} or newer`, 'Install a current Node.js: https://nodejs.org (or `fnm install 22` / `nvm install 22`).');
+  else add('node', 'fail', `Node.js ${d.nodeVersion} is too old; Garnet needs ${MIN_NODE.join('.')} or newer`, 'Install a current Node.js: https://nodejs.org (or `fnm install 22` / `nvm install 22`).');
   const sqlite = d.sqlite();
   add('sqlite', sqlite.ok ? 'ok' : 'fail', sqlite.detail, sqlite.ok ? undefined : 'Use the official Node.js build (22.18+), which includes node:sqlite with FTS5.');
 
   // Install and PATH
-  add('install', 'info', `Ruby ${d.version} at ${installDir}`);
+  add('install', 'info', `Garnet ${d.version} at ${installDir}`);
   out.push(pathFinding(d, installDir));
 
-  // RUBY_HOME
+  // Deprecated names: RUBY_* variables and a ~/.ruby home from before the rename
+  for (const v of deprecatedEnvVars(d.env)) add('env', 'warn', `${v.old} is deprecated, rename to ${v.name}`, `Set ${v.name} instead (a line in ${join(d.home, 'env')}, your shell profile or the service environment).`);
+  if (d.home === join(d.userHome, '.ruby') && !envVar(d.env, 'GARNET_HOME')) add('home', 'warn', `${d.home} is a legacy data directory from before the rename`, `Stop Garnet, then run: mv ${d.home} ${join(d.userHome, '.garnet')}`);
+
+  for (const s of legacyServices({ platform: d.platform, userHome: d.userHome })) add('service', 'warn', `A legacy service from before the rename is still installed (${s.path})`, `Run \`garnet service install\` to replace it, or remove ${s.path} by hand.`);
+
+  // GARNET_HOME
   if (!existsSync(d.home)) {
-    add('home', 'fail', `${d.home} does not exist yet`, 'Run `ruby setup`.');
+    add('home', 'fail', `${d.home} does not exist yet`, 'Run `garnet setup`.');
     return out;
   }
   const mode = statSync(d.home).mode & 0o777;
@@ -71,16 +77,16 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
 
   // Config
   const file = join(d.home, 'config.json');
-  let config: RubyConfig | null = null;
+  let config: GarnetConfig | null = null;
   if (!existsSync(file)) {
-    add('config', 'fail', `No config at ${file}`, 'Run `ruby setup`.');
+    add('config', 'fail', `No config at ${file}`, 'Run `garnet setup`.');
   } else {
     try {
       const raw = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown };
       config = parseConfig(raw);
-      add('config', 'ok', `${file} is valid${raw.version !== CONFIG_VERSION ? ' (an older version; it is migrated, with a backup, the next time Ruby loads it)' : ''}`);
+      add('config', 'ok', `${file} is valid${raw.version !== CONFIG_VERSION ? ' (an older version; it is migrated, with a backup, the next time Garnet loads it)' : ''}`);
     } catch (e) {
-      add('config', 'fail', `${file}: ${errorMessage(e)}`, 'Run `ruby setup` to fix it interactively, or edit the file (`ruby config explain` lists every setting).');
+      add('config', 'fail', `${file}: ${errorMessage(e)}`, 'Run `garnet setup` to fix it interactively, or edit the file (`garnet config explain` lists every setting).');
     }
   }
 
@@ -106,12 +112,12 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     if (storeNames?.has(name)) return 'encrypted store';
     return null;
   };
-  const missingFix = (name: string) => (storeError ? `Unlock the store (see above), or set ${name}.` : `Run \`ruby setup\`, or \`ruby secrets set ${name}\`.`);
+  const missingFix = (name: string) => (storeError ? `Unlock the store (see above), or set ${name}.` : `Run \`garnet setup\`, or \`garnet secrets set ${name}\`.`);
 
   if (config) {
     // Model and key
     const m = config.model;
-    if (m.provider === 'fake') add('model', 'warn', 'Using the offline demo model; replies are scripted', 'Run `ruby setup` to pick a real model.');
+    if (m.provider === 'fake') add('model', 'warn', 'Using the offline demo model; replies are scripted', 'Run `garnet setup` to pick a real model.');
     else {
       const loc = where(m.apiKeyEnv);
       if (m.provider === 'anthropic') {
@@ -121,7 +127,7 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
         const host = m.baseUrl ? new URL(m.baseUrl).hostname : '';
         const local = LOOPBACK.includes(host);
         if (loc && m.apiKeyEnv === 'ANTHROPIC_API_KEY' && !host.endsWith('anthropic.com')) {
-          add('model', 'warn', `openai-compatible · ${m.name} · would send ANTHROPIC_API_KEY to ${host}`, 'Set model.apiKeyEnv to the key for this server (`ruby setup`).');
+          add('model', 'warn', `openai-compatible · ${m.name} · would send ANTHROPIC_API_KEY to ${host}`, 'Set model.apiKeyEnv to the key for this server (`garnet setup`).');
         } else if (loc || local) {
           add('model', 'ok', `openai-compatible · ${m.name} at ${m.baseUrl}${loc ? ` · key ${m.apiKeyEnv} (${loc})` : ' · no key'}`);
         } else {
@@ -133,7 +139,7 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     // Workspace and API exposure
     const workspace = resolve(d.home, config.workspace ?? 'workspace');
     if (isInside(workspace, d.home)) {
-      add('workspace', 'fail', `${workspace} contains Ruby's home, so file tools could change config.json and secrets; Ruby refuses to start`, 'Point "workspace" in config.json at a directory of its own (or remove it for the default).');
+      add('workspace', 'fail', `${workspace} contains Garnet's home, so file tools could change config.json and secrets; Garnet refuses to start`, 'Point "workspace" in config.json at a directory of its own (or remove it for the default).');
     }
     if (config.api.enabled && !LOOPBACK.includes(config.api.host)) {
       add('api', 'warn', `The API listens on ${config.api.host}:${config.api.port}, reachable from other machines (it needs a key, and has no TLS)`, 'Bind to 127.0.0.1 and use Tailscale or a reverse proxy with TLS.');
@@ -142,7 +148,7 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     // Channels
     const ch = config.channels;
     const enabled = (['telegram', 'discord', 'signal'] as const).filter((n) => ch[n].enabled);
-    if (!enabled.length) add('channels', 'info', 'No messaging channels enabled', 'Run `ruby setup` to add Telegram, Discord or Signal.');
+    if (!enabled.length) add('channels', 'info', 'No messaging channels enabled', 'Run `garnet setup` to add Telegram, Discord or Signal.');
     for (const n of ['telegram', 'discord'] as const) {
       if (!ch[n].enabled) continue;
       const loc = where(ch[n].tokenEnv);
@@ -162,7 +168,7 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     } else if (web.backend === 'none') add('web', 'info', 'web_fetch only (web.search.backend = none)');
     else add('web', 'ok', `web_search · ${web.backend}${web.backend === 'searxng' ? ` at ${web.searxngUrl}` : ' (keyless, unofficial; may be rate limited)'}`);
     if (config.permissions['net.fetch'] !== 'deny' && !config.containment.enabled) {
-      add('web', 'warn', 'Untrusted-content containment is off: a web page could steer Ruby into actions you set to allow', 'Set containment.enabled = true in config.json.');
+      add('web', 'warn', 'Untrusted-content containment is off: a web page could steer Garnet into actions you set to allow', 'Set containment.enabled = true in config.json.');
     }
 
     // Sandbox
@@ -176,32 +182,32 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
   }
 
   // Service
-  // The service for THIS RUBY_HOME: an instance installed with --name is found by the home it runs.
+  // The service for THIS GARNET_HOME: an instance installed with --name is found by the home it runs.
   const svc = { platform: d.platform, userHome: d.userHome };
   const resolved = resolveService({ ...svc, home: d.home, nodePath: process.execPath, entry: d.entry });
   if ('unsupported' in resolved) add('service', 'info', resolved.unsupported);
   else {
     const { plan, conflict } = resolved;
-    const name = /(?:ruby-|agent\.)([a-z0-9-]+)\.(?:service|plist)$/.exec(plan.path)?.[1];
+    const name = /(?:garnet-|agent\.)([a-z0-9-]+)\.(?:service|plist)$/.exec(plan.path)?.[1];
     const flag = name ? ` --name ${name}` : '';
     const others = installedServices(svc).filter((s) => s.home !== d.home).length;
-    const alongside = others ? ` (${others} other Ruby instance${others > 1 ? 's' : ''} installed; \`ruby service list\`)` : '';
+    const alongside = others ? ` (${others} other Garnet instance${others > 1 ? 's' : ''} installed; \`garnet service list\`)` : '';
     if (conflict || !existsSync(plan.path)) {
-      add('service', 'info', `Background service not installed for this RUBY_HOME${alongside}`, conflict ? 'Another RUBY_HOME uses the default service name: run `ruby service install --name <name>`.' : 'Run `ruby service install` (or `ruby setup`) to keep Ruby running.');
+      add('service', 'info', `Background service not installed for this GARNET_HOME${alongside}`, conflict ? 'Another GARNET_HOME uses the default service name: run `garnet service install --name <name>`.' : 'Run `garnet service install` (or `garnet setup`) to keep Garnet running.');
     } else {
       const status = await serviceStatus(plan, { run: d.run });
       const stale = readFileSync(plan.path, 'utf8') !== plan.contents;
       const unit = plan.path.split('/').pop()!;
-      if (status.ok) add('service', stale ? 'warn' : 'ok', `Service running (${plan.path})${stale ? ', but its file is out of date (Ruby or Node moved?)' : ''}${alongside}`, stale ? `Run \`ruby service install${flag}\` to rewrite it.` : undefined);
-      else add('service', 'warn', `Service installed but not running (${plan.path})`, plan.platform === 'systemd' ? `See \`journalctl --user -u ${unit} -e\`, then \`ruby service restart${flag}\`.` : `See ${join(d.home, 'logs')}, then \`ruby service install${flag}\`.`);
+      if (status.ok) add('service', stale ? 'warn' : 'ok', `Service running (${plan.path})${stale ? ', but its file is out of date (Garnet or Node moved?)' : ''}${alongside}`, stale ? `Run \`garnet service install${flag}\` to rewrite it.` : undefined);
+      else add('service', 'warn', `Service installed but not running (${plan.path})`, plan.platform === 'systemd' ? `See \`journalctl --user -u ${unit} -e\`, then \`garnet service restart${flag}\`.` : `See ${join(d.home, 'logs')}, then \`garnet service install${flag}\`.`);
     }
   }
   return out;
 }
 
 function pathFinding(d: DoctorDeps, installDir: string): Finding {
-  // install.sh --name <other> sets RUBY_COMMAND_NAME in its shim.
-  const name = /^[A-Za-z0-9._-]+$/.test(d.env.RUBY_COMMAND_NAME ?? '') ? d.env.RUBY_COMMAND_NAME! : 'ruby';
+  // install.sh --name <other> sets GARNET_COMMAND_NAME in its shim.
+  const name = /^[A-Za-z0-9._-]+$/.test(envVar(d.env, 'GARNET_COMMAND_NAME') ?? '') ? envVar(d.env, 'GARNET_COMMAND_NAME')! : 'garnet';
   const dirs = (d.env.PATH ?? '').split(delimiter).filter(Boolean);
   const found: string[] = [];
   for (const dir of dirs) {
@@ -222,14 +228,14 @@ function pathFinding(d: DoctorDeps, installDir: string): Finding {
     }
   };
   const first = found[0];
-  if (!first) return { area: 'path', status: 'warn', message: `\`${name}\` is not on your PATH`, fix: `Run install.sh, or \`npm link\` in ${installDir}; until then use \`npm run ruby --\`.` };
+  if (!first) return { area: 'path', status: 'warn', message: `\`${name}\` is not on your PATH`, fix: `Run install.sh, or \`npm link\` in ${installDir}; until then use \`npm run garnet --\`.` };
   if (ours(first)) return { area: 'path', status: 'ok', message: `\`${name}\` on PATH is this install (${first})` };
   const later = found.slice(1).find(ours);
   return {
     area: 'path',
     status: 'warn',
-    message: `\`${name}\` on your PATH is ${first}, not this install${later ? ` (which is at ${later}, later in PATH)` : ''}; it may be the Ruby programming language`,
-    fix: later ? `Put ${dirname(later)} earlier in PATH.` : 'Reinstall with `install.sh --name <other-name>`, or use `npm run ruby --`.',
+    message: `\`${name}\` on your PATH is ${first}, not this install${later ? ` (which is at ${later}, later in PATH)` : ''}; it is a different program`,
+    fix: later ? `Put ${dirname(later)} earlier in PATH.` : 'Reinstall with `install.sh --name <other-name>`, or use `npm run garnet --`.',
   };
 }
 
@@ -245,7 +251,7 @@ export function formatFindings(findings: Finding[], s: Style): string {
     : warns
       ? s.warn(`No problems; ${warns} warning${warns === 1 ? '' : 's'}.`)
       : s.ok('Everything looks good.');
-  return `${s.accent('◆ RUBY')} ${s.muted('/ DOCTOR')}\n${lines.join('\n')}\n\n${verdict}\n`;
+  return `${s.accent('◆ GARNET')} ${s.muted('/ DOCTOR')}\n${lines.join('\n')}\n\n${verdict}\n`;
 }
 
 export function realSqliteCheck(): { ok: boolean; detail: string } {
@@ -270,7 +276,7 @@ export async function doctor(args: string[], io: Io, overrides: Partial<DoctorDe
       );
     });
   const deps: DoctorDeps = {
-    home: rubyHome(),
+    home: garnetHome(),
     env: process.env,
     platform: process.platform,
     nodeVersion: process.versions.node,

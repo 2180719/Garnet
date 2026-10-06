@@ -1,7 +1,7 @@
 import { api, enc, session } from '../api.js';
 import { busy, confirmDialog, copyText, empty, errorBox, field, fmtDate, h, ago, pageHead, pill, table, toast } from '../ui.js';
 
-const SCOPES = [['chat', 'Chat: talk to Ruby through /v1/chat/completions'], ['read', 'Read: view status, memory, skills, jobs, usage'], ['admin', 'Admin: change anything, including keys and config']];
+const SCOPES = [['chat', 'Chat: talk to Garnet through /v1/chat/completions'], ['read', 'Read: view status, memory, skills, jobs, usage'], ['admin', 'Admin: change anything, including keys and config']];
 
 function state(k) {
   if (k.revokedAt) return pill('revoked', 'err');
@@ -52,6 +52,6 @@ export default async function mount(root) {
       await load();
     });
   });
-  root.append(pageHead('API keys', 'Keys let apps and this dashboard talk to Ruby. Only a hash is stored on the host.'), shown, list, form);
+  root.append(pageHead('API keys', 'Keys let apps and this dashboard talk to Garnet. Only a hash is stored on the host.'), shown, list, form);
   await load();
 }

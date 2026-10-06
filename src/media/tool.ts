@@ -1,7 +1,7 @@
 // send_file: sends a workspace file to the chat the conversation is in.
 import { realpath, stat, readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import { RubyError, formatBytes, type OutboundAttachment, type ToolDefinition } from '../contracts/index.ts';
+import { GarnetError, formatBytes, type OutboundAttachment, type ToolDefinition } from '../contracts/index.ts';
 import { resolveInWorkspace } from '../policy/index.ts';
 import type { MediaStore } from './store.ts';
 
@@ -36,18 +36,18 @@ export function sendFileTool(deps: SendFileDeps): ToolDefinition<{ path: string;
     targets: (i, ctx) => [resolveInWorkspace(ctx.workspace, i.path)],
     async run({ path, caption }, ctx) {
       const target = deps.target(ctx.sessionId);
-      if (!target) throw new RubyError('invalid_input', 'This conversation is not in a messaging chat (it is the terminal, the API or the dashboard), so there is nowhere to send a file. Tell the owner the workspace path instead.');
+      if (!target) throw new GarnetError('invalid_input', 'This conversation is not in a messaging chat (it is the terminal, the API or the dashboard), so there is nowhere to send a file. Tell the owner the workspace path instead.');
       const limit = deps.maxUploadBytes(target.channel);
-      if (limit === undefined) throw new RubyError('invalid_input', `The ${target.channel} channel cannot send files.`);
+      if (limit === undefined) throw new GarnetError('invalid_input', `The ${target.channel} channel cannot send files.`);
       const logical = resolveInWorkspace(ctx.workspace, path);
       // Re-check containment at the moment of use: a symlink may have been swapped in since targets() ran.
       const real = await realpath(logical).catch(() => null);
-      if (!real) throw new RubyError('invalid_input', `"${path}" does not exist. Use list_files to find it.`);
+      if (!real) throw new GarnetError('invalid_input', `"${path}" does not exist. Use list_files to find it.`);
       resolveInWorkspace(ctx.workspace, real);
       const info = await stat(real);
-      if (!info.isFile()) throw new RubyError('invalid_input', `"${path}" is not a file.`);
+      if (!info.isFile()) throw new GarnetError('invalid_input', `"${path}" is not a file.`);
       const max = Math.min(limit, deps.media.maxBytes);
-      if (info.size > max) throw new RubyError('invalid_input', `"${path}" is ${formatBytes(info.size)}; ${target.channel} accepts at most ${formatBytes(max)} here.`);
+      if (info.size > max) throw new GarnetError('invalid_input', `"${path}" is ${formatBytes(info.size)}; ${target.channel} accepts at most ${formatBytes(max)} here.`);
       const ref = deps.media.put({ data: await readFile(real), name: real.split(/[\\/]/).pop() });
       const attachment: OutboundAttachment = { path: deps.media.path(ref.id), name: ref.name ?? `file${ref.id.slice(-6)}`, mimeType: ref.mimeType, kind: ref.kind, size: ref.size };
       deps.enqueue(target, caption ?? '', [attachment], ctx.sessionId);

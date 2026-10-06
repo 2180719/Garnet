@@ -3,7 +3,7 @@ import type { Scope } from './keys.ts';
 /**
  * Everything the dashboard can see and change, implemented by the
  * composition root so the gateway does not depend on memory, skills or the
- * scheduler. Methods throw RubyError('invalid_input') for bad requests.
+ * scheduler. Methods throw GarnetError('invalid_input') for bad requests.
  */
 export interface AdminBackend {
   overview(): unknown;

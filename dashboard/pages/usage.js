@@ -29,7 +29,7 @@ export default async function mount(root) {
   const load = async () => {
     try {
       const { days } = await api.get(`/api/usage?days=${sel.value}`);
-      if (!days.length) { out.replaceChildren(empty('No usage yet', 'Token counts appear after Ruby completes its first task.')); return; }
+      if (!days.length) { out.replaceChildren(empty('No usage yet', 'Token counts appear after Garnet completes its first task.')); return; }
       out.replaceChildren(
         h('div', { class: 'grid' }, [['Tasks', sum(days, 'tasks')], ['Input tokens', sum(days, 'inputTokens')], ['Cached (read)', sum(days, 'cacheReadTokens')], ['Output tokens', sum(days, 'outputTokens')]]
           .map(([l, v]) => h('div', { class: 'card stat' }, h('div', { class: 'label' }, l), h('div', { class: 'value' }, num(v))))),
@@ -39,6 +39,6 @@ export default async function mount(root) {
     } catch (e) { out.replaceChildren(errorBox(e, load)); }
   };
   sel.addEventListener('change', load);
-  root.append(pageHead('Usage', 'Token use per day, from the tasks Ruby has run.', field('Range', sel, null, 'range')), out);
+  root.append(pageHead('Usage', 'Token use per day, from the tasks Garnet has run.', field('Range', sel, null, 'range')), out);
   await load();
 }

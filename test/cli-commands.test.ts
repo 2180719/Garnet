@@ -1,20 +1,20 @@
 // CLI argument handling for the owner commands (memory, skills, flags).
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { tempDir } from './helpers.ts';
 import { main } from '../src/cli/main.ts';
 import { MemoryStore } from '../src/memory/index.ts';
-import { createRuby } from '../src/main.ts';
+import { createGarnet } from '../src/main.ts';
 import { MediaStore } from '../src/media/index.ts';
 import { GatewayStore } from '../src/store/index.ts';
 
 const home = tempDir();
-const saved = { home: process.env.RUBY_HOME, editor: process.env.EDITOR, visual: process.env.VISUAL };
-process.env.RUBY_HOME = home;
+const saved = { home: process.env.GARNET_HOME, editor: process.env.EDITOR, visual: process.env.VISUAL };
+process.env.GARNET_HOME = home;
 after(() => {
-  for (const [k, v] of [['RUBY_HOME', saved.home], ['EDITOR', saved.editor], ['VISUAL', saved.visual]] as const) {
+  for (const [k, v] of [['GARNET_HOME', saved.home], ['EDITOR', saved.editor], ['VISUAL', saved.visual]] as const) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
@@ -72,7 +72,7 @@ test('backup and restore round-trip the database, config, memory, skills, artifa
   const target = join(tempDir(), 'bk');
   const b = await run('backup', target);
   assert.equal(b.code, 0, b.err);
-  for (const name of ['ruby.db', 'config.json', 'memory', 'workspace', 'artifacts', 'BACKUP.json']) assert.ok(existsSync(join(target, name)), name);
+  for (const name of ['garnet.db', 'config.json', 'memory', 'workspace', 'artifacts', 'BACKUP.json']) assert.ok(existsSync(join(target, name)), name);
 
   mem.write('default', 'memory', '- changed after the backup');
   writeFileSync(join(home, 'artifacts', 'art_1.txt'), 'changed');
@@ -88,11 +88,11 @@ test('backup and restore round-trip the database, config, memory, skills, artifa
 test('backup and restore include the media store, so a pending outbox attachment survives', async () => {
   const media = new MediaStore(join(home, 'media'), 1_000_000);
   const ref = media.put({ data: Buffer.from('attachment bytes'), name: 'a.txt', mimeType: 'text/plain' });
-  const ruby = createRuby({ noModel: true, home });
+  const garnet = createGarnet({ noModel: true, home });
   try {
-    new GatewayStore(ruby.db).enqueue({ channel: 'telegram', account: 'a', chatId: '1', text: 'here', attachments: [{ path: media.path(ref.id), name: 'a.txt', mimeType: 'text/plain', kind: ref.kind, size: ref.size }] });
+    new GatewayStore(garnet.db).enqueue({ channel: 'telegram', account: 'a', chatId: '1', text: 'here', attachments: [{ path: media.path(ref.id), name: 'a.txt', mimeType: 'text/plain', kind: ref.kind, size: ref.size }] });
   } finally {
-    ruby.close();
+    garnet.close();
   }
   const target = join(tempDir(), 'bk-media');
   const b = await run('backup', target);
@@ -105,14 +105,38 @@ test('backup and restore include the media store, so a pending outbox attachment
   assert.equal(readFileSync(media.path(ref.id), 'utf8'), 'attachment bytes', 'the restored outbox row still points at an existing file');
 });
 
-test('ruby jobs: add, list, show, pause, edit and delete; config.json jobs stay read-only', async () => {
+test('restore accepts a pre-rename backup (ruby.db) and the restored data is what the app opens', async () => {
+  const before = createGarnet({ noModel: true, home });
+  const sessionId = before.store.createSession('from the old backup').id;
+  before.close();
+  const target = join(tempDir(), 'bk-legacy');
+  assert.equal((await run('backup', target)).code, 0);
+  renameSync(join(target, 'garnet.db'), join(target, 'ruby.db'));
+  const garnetNow = createGarnet({ noModel: true, home });
+  const extra = garnetNow.store.createSession('made after the backup').id;
+  garnetNow.close();
+
+  const r = await run('restore', target);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(existsSync(join(home, 'garnet.db')) && !existsSync(join(home, 'ruby.db')));
+  const after = createGarnet({ noModel: true, home });
+  try {
+    const ids = after.store.listSessions().map((s) => s.id);
+    assert.ok(ids.includes(sessionId), 'the backup data is open');
+    assert.ok(!ids.includes(extra), 'later data is not');
+  } finally {
+    after.close();
+  }
+});
+
+test('garnet jobs: add, list, show, pause, edit and delete; config.json jobs stay read-only', async () => {
   const own = tempDir();
-  process.env.RUBY_HOME = own;
+  process.env.GARNET_HOME = own;
   try {
     writeFileSync(join(own, 'config.json'), JSON.stringify({ version: 1, timezone: 'Europe/London', jobs: [{ id: 'brief', kind: 'cron', cron: '0 7 * * 1-5', instructions: 'Morning brief.' }] }));
     const nowhere = await run('jobs', 'add', '--when', 'in 20 minutes', '--message', 'Stretch');
     assert.equal(nowhere.code, 1);
-    assert.match(nowhere.err, /no chat to send to.*ruby pair/s);
+    assert.match(nowhere.err, /no chat to send to.*garnet pair/s);
     const added = await run('jobs', 'add', '--when', 'every day at 8am', '--instructions', 'Tidy notes', '--name', 'tidy');
     assert.equal(added.code, 0, added.err);
     assert.match(added.out, /Added tidy: every day at 08:00, next .* \(Europe\/London, in .*\) \(results kept in history only\)\./);
@@ -129,8 +153,8 @@ test('ruby jobs: add, list, show, pause, edit and delete; config.json jobs stay 
     assert.match(refused.err, /config\.json/);
     assert.equal((await run('jobs', 'delete', 'tidy')).code, 0);
     assert.doesNotMatch((await run('jobs')).out, /tidy/);
-    assert.match((await run('jobs', 'help')).out, /ruby jobs add --when/);
+    assert.match((await run('jobs', 'help')).out, /garnet jobs add --when/);
   } finally {
-    process.env.RUBY_HOME = home;
+    process.env.GARNET_HOME = home;
   }
 });

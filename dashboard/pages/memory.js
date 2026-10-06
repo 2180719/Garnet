@@ -45,7 +45,7 @@ export default async function mount(root) {
       out.replaceChildren(h('div', { class: 'sbs two' }, d.files.map((f) => editor(ns, f, load))));
     } catch (e) { out.replaceChildren(errorBox(e, load)); }
   };
-  const form = h('form', { class: 'row' }, field('Namespace', nsInput, 'a-z, 0-9 and "-". "default" is what Ruby uses day to day.', 'ns'),
+  const form = h('form', { class: 'row' }, field('Namespace', nsInput, 'a-z, 0-9 and "-". "default" is what Garnet uses day to day.', 'ns'),
     h('button', { class: 'btn btn-ghost', type: 'submit' }, 'Load'));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -53,6 +53,6 @@ export default async function mount(root) {
     if (!NS.test(v)) { toast('Namespace must be 1 to 40 characters of a-z, 0-9 and "-".', 'error'); return; }
     ns = v; load();
   });
-  root.append(pageHead('Memory', 'The small, bounded notes Ruby sees at the start of every session. Edits are versioned and can be rolled back.'), form, out);
+  root.append(pageHead('Memory', 'The small, bounded notes Garnet sees at the start of every session. Edits are versioned and can be rolled back.'), form, out);
   await load();
 }

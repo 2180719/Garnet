@@ -1,13 +1,13 @@
 // Maps scheduled jobs from Hermes (cron/jobs.json) and OpenClaw (automation rows in its state
-// database) to Ruby jobs. Every imported job is DISABLED: the owner reviews and enables it.
-// Anything that has no faithful Ruby equivalent is skipped with the reason, never approximated
+// database) to Garnet jobs. Every imported job is DISABLED: the owner reviews and enables it.
+// Anything that has no faithful Garnet equivalent is skipped with the reason, never approximated
 // silently.
 import { parseCron, validTimeZone, type JobConfig } from '../config/index.ts';
 import { isRecord } from './json5.ts';
 import type { JobAction } from './types.ts';
 
 const INSTRUCTIONS_MAX = 4000;
-const RUBY_CHANNELS = new Set(['telegram', 'discord', 'signal']);
+const GARNET_CHANNELS = new Set(['telegram', 'discord', 'signal']);
 const MIN_EVERY = 5;
 const MAX_EVERY = 10_080;
 
@@ -20,7 +20,7 @@ export type DeliveryHints = {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
 
-/** Lowercase-hyphen id within Ruby's job id rules, unique against `taken`. */
+/** Lowercase-hyphen id within Garnet's job id rules, unique against `taken`. */
 export function jobId(prefix: string, name: string, taken: Set<string>): string {
   const slug =
     name
@@ -64,7 +64,7 @@ function clip(text: string, notes: string[]): string {
   return `${text.slice(0, INSTRUCTIONS_MAX - 60).trimEnd()}\n[Shortened on import; the original is archived.]`;
 }
 
-/** A cron expression Ruby accepts, or null. `secondsFirst`: croner's 6-field form (OpenClaw); Hermes' croniter puts seconds last. */
+/** A cron expression Garnet accepts, or null. `secondsFirst`: croner's 6-field form (OpenClaw); Hermes' croniter puts seconds last. */
 function cronExpr(expr: string, secondsFirst: boolean, notes: string[]): string | null {
   const fields = expr.trim().split(/\s+/);
   let five = expr.trim();
@@ -72,7 +72,7 @@ function cronExpr(expr: string, secondsFirst: boolean, notes: string[]): string 
     const sec = secondsFirst ? fields[0] : fields[5];
     if (sec !== '0') return null;
     five = (secondsFirst ? fields.slice(1) : fields.slice(0, 5)).join(' ');
-    notes.push('dropped the seconds field (Ruby schedules to the minute)');
+    notes.push('dropped the seconds field (Garnet schedules to the minute)');
   }
   try {
     parseCron(five);
@@ -85,8 +85,8 @@ function cronExpr(expr: string, secondsFirst: boolean, notes: string[]): string 
 function everyToJob(job: JobConfig, minutes: number, notes: string[]): string | null {
   if (!Number.isFinite(minutes) || minutes <= 0) return 'invalid interval';
   const m = Math.round(minutes);
-  if (m < MIN_EVERY) return `runs every ${minutes} min; Ruby's shortest interval is ${MIN_EVERY} min`;
-  if (m > MAX_EVERY) return `runs every ${minutes} min; Ruby's longest interval is ${MAX_EVERY} min (7 days): use a cron expression instead`;
+  if (m < MIN_EVERY) return `runs every ${minutes} min; Garnet's shortest interval is ${MIN_EVERY} min`;
+  if (m > MAX_EVERY) return `runs every ${minutes} min; Garnet's longest interval is ${MAX_EVERY} min (7 days): use a cron expression instead`;
   if (m !== minutes) notes.push(`interval rounded from ${minutes} to ${m} min`);
   job.kind = 'heartbeat';
   job.everyMinutes = m;
@@ -117,13 +117,13 @@ export function hermesJobs(data: unknown, opts: { timezone: string | null; hints
     const notes: string[] = [];
     const skip = (why: string) => out.push({ from: label, job: null, notes: [why] });
     if (raw.no_agent === true) {
-      skip('script-only job (no_agent): Ruby jobs always run the model; recreate it as a system cron entry');
+      skip('script-only job (no_agent): Garnet jobs always run the model; recreate it as a system cron entry');
       continue;
     }
     const schedule = isRecord(raw.schedule) ? raw.schedule : {};
     const kind = str(schedule.kind);
     if (kind === 'once') {
-      skip(`one-shot job (${str(schedule.run_at) || str(raw.schedule_display) || 'once'}): Ruby has no one-shot jobs yet`);
+      skip(`one-shot job (${str(schedule.run_at) || str(raw.schedule_display) || 'once'}): Garnet has no one-shot jobs yet`);
       continue;
     }
     const skills = (Array.isArray(raw.skills) ? raw.skills : raw.skill ? [raw.skill] : []).map(str).filter(Boolean);
@@ -135,7 +135,7 @@ export function hermesJobs(data: unknown, opts: { timezone: string | null; hints
     }
     if (prompt) lines.push(prompt);
     if (str(raw.script).trim()) {
-      lines.push(`(Imported from Hermes: this job used to run the script ${str(raw.script).trim()} first and read its output. Ruby cannot do that step; ask the owner how to replace it.)`);
+      lines.push(`(Imported from Hermes: this job used to run the script ${str(raw.script).trim()} first and read its output. Garnet cannot do that step; ask the owner how to replace it.)`);
       notes.push('its pre-run script is not supported; the instructions say so');
     }
     if (!lines.length) {
@@ -147,7 +147,7 @@ export function hermesJobs(data: unknown, opts: { timezone: string | null; hints
       const expr = cronExpr(str(schedule.expr), false, notes);
       if (!expr) {
         opts.taken.delete(job.id);
-        skip(`cron expression "${str(schedule.expr)}" is not one Ruby understands`);
+        skip(`cron expression "${str(schedule.expr)}" is not one Garnet understands`);
         continue;
       }
       job.cron = expr;
@@ -166,7 +166,7 @@ export function hermesJobs(data: unknown, opts: { timezone: string | null; hints
     }
     const target = hermesTarget(raw, opts.hints, notes);
     if (target) job.notify = target;
-    if (str(raw.model)) notes.push(`per-job model "${str(raw.model)}" is not supported; it will use Ruby's model`);
+    if (str(raw.model)) notes.push(`per-job model "${str(raw.model)}" is not supported; it will use Garnet's model`);
     const wasOn = raw.enabled !== false && str(raw.state) !== 'paused' && !raw.paused_at;
     notes.push(wasOn ? 'was enabled in Hermes' : 'was paused in Hermes');
     out.push({ from: label, job, notes });
@@ -177,7 +177,7 @@ export function hermesJobs(data: unknown, opts: { timezone: string | null; hints
 function hermesTarget(raw: Record<string, unknown>, hints: DeliveryHints, notes: string[]): JobConfig['notify'] | undefined {
   const deliver = str(raw.deliver).trim() || 'local';
   if (deliver === 'local') {
-    notes.push('delivered nowhere in Hermes (local): results stay in Ruby run history');
+    notes.push('delivered nowhere in Hermes (local): results stay in Garnet run history');
     return undefined;
   }
   const parts = deliver.split(',').map((s) => s.trim()).filter(Boolean);
@@ -186,18 +186,18 @@ function hermesTarget(raw: Record<string, unknown>, hints: DeliveryHints, notes:
       const o = isRecord(raw.origin) ? raw.origin : {};
       const platform = str(o.platform).toLowerCase();
       const chat = str(o.chat_id);
-      if (RUBY_CHANNELS.has(platform) && chat) return finish(notifyFor(platform, chat), parts, notes);
+      if (GARNET_CHANNELS.has(platform) && chat) return finish(notifyFor(platform, chat), parts, notes);
       continue;
     }
     const [platform, chat] = part.includes(':') ? [part.slice(0, part.indexOf(':')).toLowerCase(), part.slice(part.indexOf(':') + 1)] : [part.toLowerCase(), hints.homeChannels[part.toLowerCase()] ?? ''];
-    if (RUBY_CHANNELS.has(platform!) && chat) return finish(notifyFor(platform!, chat), parts, notes);
+    if (GARNET_CHANNELS.has(platform!) && chat) return finish(notifyFor(platform!, chat), parts, notes);
   }
-  notes.push(`delivery "${deliver}" has no Ruby equivalent (or no known chat ID): add notify to the job to get messages`);
+  notes.push(`delivery "${deliver}" has no Garnet equivalent (or no known chat ID): add notify to the job to get messages`);
   return undefined;
 }
 
 function finish(n: JobConfig['notify'], parts: string[], notes: string[]): JobConfig['notify'] {
-  if (parts.length > 1) notes.push(`delivered to several targets in Hermes; Ruby notifies one (${n!.channel} ${n!.chatId})`);
+  if (parts.length > 1) notes.push(`delivered to several targets in Hermes; Garnet notifies one (${n!.channel} ${n!.chatId})`);
   return n;
 }
 
@@ -226,7 +226,7 @@ export function openclawJobs(rows: OpenClawCronRow[], opts: { hints: DeliveryHin
     else if (pk === 'heartbeat') {
       let scratch = (row.scratch ?? '').trim();
       if (scratch.includes('HEARTBEAT_OK')) {
-        // OpenClaw's "nothing to say" token; Ruby's is NOTHING_TO_REPORT.
+        // OpenClaw's "nothing to say" token; Garnet's is NOTHING_TO_REPORT.
         scratch = scratch.replaceAll('HEARTBEAT_OK', 'NOTHING_TO_REPORT');
         notes.push('HEARTBEAT_OK replaced by NOTHING_TO_REPORT');
       }
@@ -235,7 +235,7 @@ export function openclawJobs(rows: OpenClawCronRow[], opts: { hints: DeliveryHin
         : "Heartbeat: check whether anything needs the owner's attention.";
       notes.push(scratch ? 'heartbeat checklist taken from its monitor scratch' : 'heartbeat had no checklist (scratch)');
     } else {
-      skip(`${pk || 'unknown'} payload: Ruby jobs run the model, not commands or scripts`);
+      skip(`${pk || 'unknown'} payload: Garnet jobs run the model, not commands or scripts`);
       continue;
     }
     if (!text) {
@@ -245,11 +245,11 @@ export function openclawJobs(rows: OpenClawCronRow[], opts: { hints: DeliveryHin
     const s = isRecord(j.schedule) ? j.schedule : {};
     const sk = str(s.kind);
     if (sk === 'at') {
-      skip(`one-shot job (at ${str(s.at)}): Ruby has no one-shot jobs yet`);
+      skip(`one-shot job (at ${str(s.at)}): Garnet has no one-shot jobs yet`);
       continue;
     }
     if (sk !== 'cron' && sk !== 'every') {
-      skip(`${sk || 'unknown'} schedule: Ruby supports cron times and fixed intervals only`);
+      skip(`${sk || 'unknown'} schedule: Garnet supports cron times and fixed intervals only`);
       continue;
     }
     const job = baseJob(jobId(pk === 'heartbeat' ? 'openclaw-heartbeat' : 'openclaw', pk === 'heartbeat' ? label.replace(/^heartbeat\s*/i, '') : label, opts.taken), clip(text, notes));
@@ -257,7 +257,7 @@ export function openclawJobs(rows: OpenClawCronRow[], opts: { hints: DeliveryHin
       const expr = cronExpr(str(s.expr), true, notes);
       if (!expr) {
         opts.taken.delete(job.id);
-        skip(`cron expression "${str(s.expr)}" is not one Ruby understands`);
+        skip(`cron expression "${str(s.expr)}" is not one Garnet understands`);
         continue;
       }
       job.cron = expr;
@@ -272,17 +272,17 @@ export function openclawJobs(rows: OpenClawCronRow[], opts: { hints: DeliveryHin
         continue;
       }
     }
-    if (isRecord(j.trigger)) notes.push('its condition script is not supported (Ruby checks are file_changed and url_changed)');
+    if (isRecord(j.trigger)) notes.push('its condition script is not supported (Garnet checks are file_changed and url_changed)');
     if (isRecord(payload) && str(payload.model)) notes.push(`per-job model "${str(payload.model)}" is not supported`);
     const d = isRecord(j.delivery) ? j.delivery : null;
     const channel = str(d?.channel).toLowerCase();
     const to = str(d?.to).replace(/^(telegram|discord|signal):/i, '');
-    if (d && str(d.mode) === 'announce' && RUBY_CHANNELS.has(channel) && to) job.notify = notifyFor(channel, to);
+    if (d && str(d.mode) === 'announce' && GARNET_CHANNELS.has(channel) && to) job.notify = notifyFor(channel, to);
     else if (pk === 'heartbeat' && (!d || str(d.mode) !== 'none')) {
-      const owner = Object.entries(opts.hints.ownerChats).find(([c]) => RUBY_CHANNELS.has(c));
+      const owner = Object.entries(opts.hints.ownerChats).find(([c]) => GARNET_CHANNELS.has(c));
       if (owner) job.notify = notifyFor(owner[0], owner[1]);
     }
-    if (!job.notify && d && str(d.mode) !== 'none') notes.push(`delivery ${str(d.mode)}${channel ? ` to ${channel}` : ''} has no Ruby equivalent or no chat ID: add notify to the job`);
+    if (!job.notify && d && str(d.mode) !== 'none') notes.push(`delivery ${str(d.mode)}${channel ? ` to ${channel}` : ''} has no Garnet equivalent or no chat ID: add notify to the job`);
     if (pk === 'heartbeat') job.notifyWhen = 'on_change';
     notes.push(row.enabled ? 'was enabled in OpenClaw' : 'was disabled in OpenClaw');
     out.push({ from: label, job, notes });

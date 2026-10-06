@@ -1,7 +1,7 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import { relative, sep } from 'node:path';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import { resolveInWorkspace } from '../policy/index.ts';
 
 export type RunRequest = {
@@ -76,10 +76,10 @@ export function realWorkspace(workspace: string): string {
   try {
     real = realpathSync(workspace);
   } catch {
-    throw new RubyError('config', `Sandbox workspace "${workspace}" does not exist.`);
+    throw new GarnetError('config', `Sandbox workspace "${workspace}" does not exist.`);
   }
-  if (!statSync(real).isDirectory()) throw new RubyError('config', `Sandbox workspace "${workspace}" is not a directory.`);
-  if (real === '/' || real === sep) throw new RubyError('config', 'The sandbox workspace cannot be the filesystem root.');
+  if (!statSync(real).isDirectory()) throw new GarnetError('config', `Sandbox workspace "${workspace}" is not a directory.`);
+  if (real === '/' || real === sep) throw new GarnetError('config', 'The sandbox workspace cannot be the filesystem root.');
   return real;
 }
 
@@ -89,7 +89,7 @@ export function realWorkspace(workspace: string): string {
  * to the workspace with forward slashes ('' for the root).
  */
 export function resolveCwd(workspace: string, cwd: string): { host: string; rel: string } {
-  if (cwd.includes('\0')) throw new RubyError('invalid_input', 'cwd contains a NUL byte.');
+  if (cwd.includes('\0')) throw new GarnetError('invalid_input', 'cwd contains a NUL byte.');
   const host = resolveInWorkspace(workspace, cwd);
   const info = (() => {
     try {
@@ -98,11 +98,11 @@ export function resolveCwd(workspace: string, cwd: string): { host: string; rel:
       return null;
     }
   })();
-  if (!info) throw new RubyError('invalid_input', `Directory "${cwd}" does not exist in the workspace.`);
-  if (!info.isDirectory()) throw new RubyError('invalid_input', `"${cwd}" is not a directory.`);
+  if (!info) throw new GarnetError('invalid_input', `Directory "${cwd}" does not exist in the workspace.`);
+  if (!info.isDirectory()) throw new GarnetError('invalid_input', `"${cwd}" is not a directory.`);
   // Use the real path so a symlinked directory maps to the same place inside a container.
   const rel = relative(workspace, realpathSync(host)).split(sep).join('/');
-  if (rel === '..' || rel.startsWith('../')) throw new RubyError('denied', `Path "${cwd}" is outside the workspace.`);
+  if (rel === '..' || rel.startsWith('../')) throw new GarnetError('denied', `Path "${cwd}" is outside the workspace.`);
   return { host, rel };
 }
 
@@ -111,8 +111,8 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function validateEnv(env: Record<string, string> | undefined): [string, string][] {
   const entries = Object.entries(env ?? {});
   for (const [k, v] of entries) {
-    if (!ENV_NAME.test(k)) throw new RubyError('invalid_input', `Invalid environment variable name "${k}".`);
-    if (typeof v !== 'string' || v.includes('\0')) throw new RubyError('invalid_input', `Invalid value for environment variable "${k}".`);
+    if (!ENV_NAME.test(k)) throw new GarnetError('invalid_input', `Invalid environment variable name "${k}".`);
+    if (typeof v !== 'string' || v.includes('\0')) throw new GarnetError('invalid_input', `Invalid value for environment variable "${k}".`);
   }
   return entries;
 }
@@ -178,7 +178,7 @@ export function supervise(s: Supervision): Promise<RunResult> {
       exited = true;
       markExited();
       finish();
-      reject(new RubyError('tool_failed', `Could not start the command: ${e.message}`));
+      reject(new GarnetError('tool_failed', `Could not start the command: ${e.message}`));
     });
     child.on('close', (code: number | null) => {
       exited = true;

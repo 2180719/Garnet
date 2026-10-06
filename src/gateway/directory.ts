@@ -1,11 +1,11 @@
-// Delivery targets for messages Ruby sends on its own (send_message, job
+// Delivery targets for messages Garnet sends on its own (send_message, job
 // results): which chat a session belongs to, which chats belong to paired
 // identities, and recording a sent message in the target chat's conversation.
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import type { GatewayStore, SessionStore } from '../store/index.ts';
 import type { Route } from './gateway.ts';
 
-/** A chat Ruby can message: always a private chat of a paired identity. */
+/** A chat Garnet can message: always a private chat of a paired identity. */
 export type ChatTarget = { channel: string; account: string; chatId: string; senderId: string | null; name: string | null };
 
 /** Where a session lives: its conversation key and, for a channel chat, the chat. */
@@ -80,14 +80,14 @@ export class ChatDirectory {
     const choices = () =>
       chats.length
         ? `Paired chats: ${chats.map((c) => `${c.channel}:${c.senderId}${c.name ? ` (${c.name})` : ''}`).join(', ')}.`
-        : 'No paired chats yet: the owner must message Ruby on a channel and pair it first (ruby pair).';
+        : 'No paired chats yet: the owner must message Garnet on a channel and pair it first (garnet pair).';
     if (spec === '' || spec === 'here') {
       const here = this.origin(sessionId).chat;
       if (here) return here;
     }
     if (spec === '' || spec === 'here' || spec === 'owner') {
       const latest = chats[0];
-      if (!latest) throw new RubyError('invalid_input', `There is no chat to send to. ${choices()}`);
+      if (!latest) throw new GarnetError('invalid_input', `There is no chat to send to. ${choices()}`);
       return latest;
     }
     const [channel, ...rest] = spec.split(':');
@@ -95,10 +95,10 @@ export class ChatDirectory {
     const onChannel = chats.filter((c) => c.channel === channel);
     if (!id) {
       if (onChannel[0]) return onChannel[0];
-      throw new RubyError('invalid_input', `No paired chat on "${channel}". ${choices()}`);
+      throw new GarnetError('invalid_input', `No paired chat on "${channel}". ${choices()}`);
     }
     const match = onChannel.find((c) => c.senderId === id) ?? onChannel.find((c) => c.chatId === id);
-    if (!match) throw new RubyError('invalid_input', `"${spec}" is not a paired chat; Ruby only messages paired identities. ${choices()}`);
+    if (!match) throw new GarnetError('invalid_input', `"${spec}" is not a paired chat; Garnet only messages paired identities. ${choices()}`);
     return match;
   }
 
@@ -109,7 +109,7 @@ export class ChatDirectory {
 
 
   /**
-   * Records a message Ruby sent on its own in the target chat's conversation
+   * Records a message Garnet sent on its own in the target chat's conversation
    * (creating it if needed), so a reply ("tell me more") has context. A new
    * event, marked as not written by the owner; the log stays append-only.
    * Callers that may race a running turn go through the conversation's lane

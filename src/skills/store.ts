@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import { injectionReason } from '../memory/index.ts';
 import { parseSkillFile, serializeSkillFile, type Entry } from './frontmatter.ts';
 
@@ -53,7 +53,7 @@ function writeAtomic(path: string, data: string): void {
 }
 
 function bad(message: string): never {
-  throw new RubyError('invalid_input', message);
+  throw new GarnetError('invalid_input', message);
 }
 
 function checkFields(description: string, body: string): void {
@@ -93,6 +93,10 @@ export class SkillStore {
     return join(this.dir(name), 'PROPOSED.md');
   }
   private metaPath(name: string): string {
+    return join(this.dir(name), '.garnet.json');
+  }
+  /** Sidecar name used before the rename to Garnet; read when the new one is missing. */
+  private legacyMetaPath(name: string): string {
     return join(this.dir(name), '.ruby.json');
   }
   private iso(): string {
@@ -105,7 +109,8 @@ export class SkillStore {
       return { provenance: 'user', createdAt: t, updatedAt: t, uses: 0, lastUsedAt: null, agentHash: null, archived: false };
     };
     try {
-      const j = JSON.parse(readFileSync(this.metaPath(name), 'utf8')) as Partial<SkillMeta>;
+      const file = existsSync(this.metaPath(name)) ? this.metaPath(name) : this.legacyMetaPath(name);
+      const j = JSON.parse(readFileSync(file, 'utf8')) as Partial<SkillMeta>;
       const base = fallback();
       return {
         found: true,

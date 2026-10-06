@@ -3,7 +3,7 @@ import { lstat, mkdir, open, readdir, realpath, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { basename, dirname, join, relative } from 'node:path';
 import { z } from 'zod';
-import { RubyError, type ToolDefinition } from '../../contracts/index.ts';
+import { GarnetError, type ToolDefinition } from '../../contracts/index.ts';
 import { resolveInWorkspace } from '../../policy/index.ts';
 
 /** Not every platform has O_NOFOLLOW; there the lstat check below is the guard. */
@@ -25,7 +25,7 @@ async function realInWorkspace(workspace: string, path: string): Promise<string>
   try {
     return resolveInWorkspace(workspace, real);
   } catch {
-    throw new RubyError('denied', `Path "${path}" resolves outside the workspace.`);
+    throw new GarnetError('denied', `Path "${path}" resolves outside the workspace.`);
   }
 }
 
@@ -46,8 +46,8 @@ export const listFiles: ToolDefinition<{ path: string; depth: number }> = {
   async run({ path, depth }, ctx) {
     const root = resolveInWorkspace(ctx.workspace, path);
     const info = await stat(await realInWorkspace(ctx.workspace, path)).catch(() => null);
-    if (!info) throw new RubyError('invalid_input', `"${path}" does not exist. List its parent directory to see what is there.`);
-    if (!info.isDirectory()) throw new RubyError('invalid_input', `"${path}" is a file, not a directory. Use read_file to read it.`);
+    if (!info) throw new GarnetError('invalid_input', `"${path}" does not exist. List its parent directory to see what is there.`);
+    if (!info.isDirectory()) throw new GarnetError('invalid_input', `"${path}" is a file, not a directory. Use read_file to read it.`);
     // `root` is under the real workspace root, so paths are shown relative to that.
     const base = resolveInWorkspace(ctx.workspace, '.');
     const lines: string[] = [];
@@ -85,15 +85,15 @@ export const readFileTool: ToolDefinition<{ path: string; offset: number; limit:
   async run({ path, offset, limit }, ctx) {
     const file = await realInWorkspace(ctx.workspace, path);
     const info = await stat(file).catch(() => null);
-    if (!info) throw new RubyError('invalid_input', `File "${path}" does not exist. Use list_files to find it.`);
-    if (info.isDirectory()) throw new RubyError('invalid_input', `"${path}" is a directory. Use list_files instead.`);
+    if (!info) throw new GarnetError('invalid_input', `File "${path}" does not exist. Use list_files to find it.`);
+    if (info.isDirectory()) throw new GarnetError('invalid_input', `"${path}" is a directory. Use list_files instead.`);
     // Streamed line by line, so a large log costs only the lines returned.
     const slice: string[] = [];
     let total = 0;
     const input = createReadStream(file, { encoding: 'utf8', signal: ctx.signal });
     try {
       for await (const line of createInterface({ input, crlfDelay: Infinity })) {
-        if (line.includes('\u0000')) throw new RubyError('invalid_input', `"${path}" looks like a binary file.`);
+        if (line.includes('\u0000')) throw new GarnetError('invalid_input', `"${path}" looks like a binary file.`);
         total += 1;
         if (total >= offset && slice.length < limit) slice.push(line);
       }
@@ -101,7 +101,7 @@ export const readFileTool: ToolDefinition<{ path: string; offset: number; limit:
       input.destroy();
     }
     if (total === 0) return { content: '(empty file)' };
-    if (slice.length === 0) throw new RubyError('invalid_input', `"${path}" has only ${total} lines; use an offset of at most ${total}.`);
+    if (slice.length === 0) throw new GarnetError('invalid_input', `"${path}" has only ${total} lines; use an offset of at most ${total}.`);
     const body = slice.map((l, i) => `${String(offset + i).padStart(5)}  ${l}`).join('\n');
     const end = offset - 1 + slice.length;
     const footer = end < total ? `\n[lines ${offset}-${end} of ${total}; use offset=${end + 1} for more]` : '';
@@ -130,11 +130,11 @@ export const writeFileTool: ToolDefinition<{ path: string; content: string; over
     const file = join(await realInWorkspace(ctx.workspace, dirname(logical)), basename(logical));
     const existing = await lstat(file).catch(() => null);
     if (existing?.isSymbolicLink()) {
-      throw new RubyError('denied', `"${path}" is a symlink; write_file does not write through symlinks. Write to the real path instead.`);
+      throw new GarnetError('denied', `"${path}" is a symlink; write_file does not write through symlinks. Write to the real path instead.`);
     }
-    if (existing?.isDirectory()) throw new RubyError('invalid_input', `"${path}" is a directory.`);
+    if (existing?.isDirectory()) throw new GarnetError('invalid_input', `"${path}" is a directory.`);
     if (existing && !overwrite) {
-      throw new RubyError('invalid_input', `"${path}" already exists. Set overwrite=true to replace it.`);
+      throw new GarnetError('invalid_input', `"${path}" already exists. Set overwrite=true to replace it.`);
     }
     const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | O_NOFOLLOW | (existing ? 0 : constants.O_EXCL);
     const handle = await open(file, flags, 0o666);

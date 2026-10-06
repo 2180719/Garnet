@@ -1,9 +1,9 @@
-// `ruby secrets`: the encrypted secret store. Values come from stdin, never argv, and are never printed.
+// `garnet secrets`: the encrypted secret store. Values come from stdin, never argv, and are never printed.
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
-import { loadConfig, parseEnv, removeFromEnvFile, rubyHome, secretNames } from '../config/index.ts';
-import { RubyError } from '../contracts/index.ts';
+import { envVar, loadConfig, parseEnv, removeFromEnvFile, garnetHome, secretNames } from '../config/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import {
   KEY_FILE_ENV,
   PASSPHRASE_ENV,
@@ -17,16 +17,16 @@ import type { Io } from './main.ts';
 import { stripKeySequences } from './setup/prompt.ts';
 
 const USAGE = `Usage:
-  ruby secrets list                     Names in the encrypted store (never values)
-  ruby secrets set <NAME>               Store a value read from stdin (hidden when typed)
-  ruby secrets rm <NAME>                Remove a secret
-  ruby secrets import-env [NAME...] [--keep]
-                                        Move secrets from <RUBY_HOME>/env into the store
+  garnet secrets list                     Names in the encrypted store (never values)
+  garnet secrets set <NAME>               Store a value read from stdin (hidden when typed)
+  garnet secrets rm <NAME>                Remove a secret
+  garnet secrets import-env [NAME...] [--keep]
+                                        Move secrets from <GARNET_HOME>/env into the store
                                         (default: the names config refers to); --keep
                                         leaves the env file unchanged
-  ruby secrets keygen <path>            Write a new random key file (mode 0600)
+  garnet secrets keygen <path>            Write a new random key file (mode 0600)
 
-Unlock with ${KEY_FILE_ENV}=<path> (a mode-0600 key file kept outside RUBY_HOME)
+Unlock with ${KEY_FILE_ENV}=<path> (a mode-0600 key file kept outside GARNET_HOME)
 or ${PASSPHRASE_ENV}. Environment variables take precedence over stored secrets.
 `;
 
@@ -38,7 +38,7 @@ export type SecretsDeps = {
 
 export async function secrets(args: string[], io: Io, deps: SecretsDeps = {}): Promise<number> {
   const env = deps.env ?? process.env;
-  const home = rubyHome(env);
+  const home = garnetHome(env);
   const store = openSecretStore(home, env, deps.kdf ? { kdf: deps.kdf } : {});
   const [sub, ...rest] = args;
   const name = (): string | null => {
@@ -52,7 +52,7 @@ export async function secrets(args: string[], io: Io, deps: SecretsDeps = {}): P
   switch (sub) {
     case 'list': {
       if (!store.exists()) {
-        io.out(`No secret store yet (${store.file}). Add one with \`ruby secrets set <NAME>\`.\n`);
+        io.out(`No secret store yet (${store.file}). Add one with \`garnet secrets set <NAME>\`.\n`);
         return 0;
       }
       const names = store.names();
@@ -65,7 +65,7 @@ export async function secrets(args: string[], io: Io, deps: SecretsDeps = {}): P
       if (!n) return 2;
       if (rest.length > 1) {
         // Do not echo the extra arguments: they may be the secret itself.
-        io.err(`Secret values are read from stdin, never from the command line (it ends up in shell history and process lists).\nRun: ruby secrets set ${n}\n`);
+        io.err(`Secret values are read from stdin, never from the command line (it ends up in shell history and process lists).\nRun: garnet secrets set ${n}\n`);
         return 2;
       }
       const read = io.readSecret ?? readSecretFromStdin;
@@ -75,7 +75,7 @@ export async function secrets(args: string[], io: Io, deps: SecretsDeps = {}): P
         return 1;
       }
       store.set(n, value);
-      io.out(`Stored ${n} in ${store.file}.${env[n] ? ` Note: ${n} is also set in the environment, which takes precedence.` : ''} Restart Ruby to use it.\n`);
+      io.out(`Stored ${n} in ${store.file}.${env[n] ? ` Note: ${n} is also set in the environment, which takes precedence.` : ''} Restart Garnet to use it.\n`);
       return 0;
     }
     case 'rm': {
@@ -143,13 +143,13 @@ function importEnv(args: string[], io: Io, home: string, env: NodeJS.ProcessEnv,
   }
   const names = wanted.filter((n) => values.get(n));
   if (names.length === 0) {
-    io.out(`Nothing to import: ${file} sets none of ${wanted.join(', ')}. Name the variables to import: ruby secrets import-env NAME...\n`);
+    io.out(`Nothing to import: ${file} sets none of ${wanted.join(', ')}. Name the variables to import: garnet secrets import-env NAME...\n`);
     return 0;
   }
   store.setMany(Object.fromEntries(names.map((n) => [n, values.get(n)!])));
   // Read the file back with a fresh store before touching the env file.
   const check = openSecretStore(home, env);
-  if (names.some((n) => check.get(n) !== values.get(n))) throw new RubyError('internal', 'The secret store did not read back what was written; the env file was left unchanged.');
+  if (names.some((n) => check.get(n) !== values.get(n))) throw new GarnetError('internal', 'The secret store did not read back what was written; the env file was left unchanged.');
   io.out(`Imported ${names.join(', ')} into ${store.file}.\n`);
   if (keep) {
     io.out(`${file} still holds them in plain text (--keep). Remove those lines when you are ready.\n`);
@@ -157,7 +157,7 @@ function importEnv(args: string[], io: Io, home: string, env: NodeJS.ProcessEnv,
     const removed = removeFromEnvFile(home, names);
     io.out(`Removed ${removed.join(', ')} from ${file}. Copies may remain in backups or editor history.\n`);
   }
-  if (!env[PASSPHRASE_ENV] && !env[KEY_FILE_ENV]) io.out(`Remember to give the service ${KEY_FILE_ENV} or ${PASSPHRASE_ENV}.\n`);
+  if (!envVar(env, PASSPHRASE_ENV) && !envVar(env, KEY_FILE_ENV)) io.out(`Remember to give the service ${KEY_FILE_ENV} or ${PASSPHRASE_ENV}.\n`);
   return 0;
 }
 
@@ -186,7 +186,7 @@ export async function readSecretFromStdin(prompt: string, io: Io): Promise<strin
     const onData = (text: string) => {
       for (const ch of stripKeySequences(text)) {
         if (ch === '\r' || ch === '\n' || ch === '\u0004') return done();
-        if (ch === '\u0003') return done(new RubyError('cancelled', 'Cancelled.'));
+        if (ch === '\u0003') return done(new GarnetError('cancelled', 'Cancelled.'));
         if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1);
         else if (ch >= ' ') value += ch;
       }

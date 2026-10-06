@@ -13,22 +13,22 @@ export type ErrorCategory =
   | 'provider_fatal' // non-retryable provider failure (auth, bad request)
   | 'config' // invalid configuration
   | 'conflict' // the operation clashes with current state (e.g. already running)
-  | 'internal'; // a bug in Ruby
+  | 'internal'; // a bug in Garnet
 
-export class RubyError extends Error {
+export class GarnetError extends Error {
   readonly category: ErrorCategory;
   readonly detail: Record<string, unknown> | undefined;
 
   constructor(category: ErrorCategory, message: string, detail?: Record<string, unknown>) {
     super(message);
-    this.name = 'RubyError';
+    this.name = 'GarnetError';
     this.category = category;
     this.detail = detail;
   }
 }
 
-export function isRubyError(e: unknown, category?: ErrorCategory): e is RubyError {
-  return e instanceof RubyError && (category === undefined || e.category === category);
+export function isGarnetError(e: unknown, category?: ErrorCategory): e is GarnetError {
+  return e instanceof GarnetError && (category === undefined || e.category === category);
 }
 
 export function errorMessage(e: unknown): string {

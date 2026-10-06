@@ -27,7 +27,7 @@ function setup(t: TestContext): { sb: DockerSandbox; workspace: string } | null 
     t.skip(unavailable);
     return null;
   }
-  const workspace = tempDir('ruby-docker-');
+  const workspace = tempDir('garnet-docker-');
   // As root, hand the workspace to a regular user the way an owner would; the sandbox then runs as that user.
   if (process.getuid!() === 0) chownSync(workspace, 1000, 1000);
   return { sb: new DockerSandbox({ workspace, image: IMAGE }), workspace };
@@ -42,7 +42,7 @@ const req = (command: string, over: { timeoutMs?: number; signal?: AbortSignal; 
 });
 
 function leftovers(): string[] {
-  return execFileSync('docker', ['ps', '-a', '--filter', 'name=ruby-exec-', '--format', '{{.Names}}'], { encoding: 'utf8' })
+  return execFileSync('docker', ['ps', '-a', '--filter', 'name=garnet-exec-', '--format', '{{.Names}}'], { encoding: 'utf8' })
     .split('\n')
     .filter(Boolean);
 }
@@ -67,7 +67,7 @@ test('docker: never root; files written in /workspace belong to the workspace ow
   assert.equal(r.exitCode, 0, r.stderr);
   const file = join(s.workspace, 'sub', 'out.txt');
   assert.equal(readFileSync(file, 'utf8'), 'data\n');
-  // Ruby as a regular user: its own uid. Ruby as root: the (non-root) workspace owner, never 0.
+  // Garnet as a regular user: its own uid. Garnet as root: the (non-root) workspace owner, never 0.
   const owner = process.getuid!() === 0 ? statSync(s.workspace).uid : process.getuid!();
   assert.notEqual(owner, 0);
   assert.equal(statSync(file).uid, owner);
@@ -126,7 +126,7 @@ test('docker: abort kills the container, including during startup', async (t) =>
 test('docker: as root with a root-owned workspace, check refuses rather than running as root', async (t) => {
   if (unavailable) return t.skip(unavailable);
   if (process.getuid!() !== 0) return t.skip('only meaningful when the tests run as root');
-  const workspace = tempDir('ruby-docker-root-');
+  const workspace = tempDir('garnet-docker-root-');
   const sb = new DockerSandbox({ workspace, image: IMAGE });
   assert.equal(sb.containerUser, '65534:65534');
   const status = await sb.check();

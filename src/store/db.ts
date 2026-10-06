@@ -175,7 +175,7 @@ const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
-  -- Messages Ruby sent on its own (send_message), for rate limits and audit.
+  -- Messages Garnet sent on its own (send_message), for rate limits and audit.
   CREATE TABLE sent_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sent_at TEXT NOT NULL,
@@ -196,7 +196,7 @@ export type Db = DatabaseSync;
  * burst of writes (an import, a long session) does not leave a huge -wal file
  * behind for good. Automatic checkpoints (every 1000 pages, SQLite's default,
  * set explicitly) keep it from growing in normal use; they can complete because
- * Ruby never holds a read transaction open (rows are read with get()/all(),
+ * Garnet never holds a read transaction open (rows are read with get()/all(),
  * never with a lingering iterate()).
  */
 export const WAL_SIZE_LIMIT_BYTES = 16 * 1024 * 1024;
@@ -238,7 +238,7 @@ export function transaction<T>(db: Db, fn: () => T): T {
   }
 }
 
-/** Writes a consistent copy of the database to `target` (safe while Ruby is running). */
+/** Writes a consistent copy of the database to `target` (safe while Garnet is running). */
 export function backupDb(db: Db, target: string): void {
   db.prepare('VACUUM INTO ?').run(target);
 }

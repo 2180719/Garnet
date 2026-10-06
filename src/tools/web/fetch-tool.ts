@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RubyError, type ToolDefinition, type ToolOutput } from '../../contracts/index.ts';
+import { GarnetError, type ToolDefinition, type ToolOutput } from '../../contracts/index.ts';
 import type { FetchResponse, WebFetcher } from './fetcher.ts';
 import { htmlToText, stripInvisible } from './html.ts';
 
@@ -52,7 +52,7 @@ function render(res: FetchResponse): ToolOutput {
   } else if (TEXTUAL.test(type) || (!type && looksTextual(res.body))) {
     text = stripInvisible(decode(res.body, res.contentType, false));
   } else {
-    throw new RubyError(
+    throw new GarnetError(
       'invalid_input',
       `${res.url} is ${type || 'binary data'} (${formatBytes(res.body.length)}${res.truncated ? '+' : ''}); web_fetch reads HTML and text only.`,
     );

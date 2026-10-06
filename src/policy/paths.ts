@@ -1,6 +1,6 @@
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 
 /**
  * Resolves `path` against `workspace` and guarantees the result stays inside
@@ -16,7 +16,7 @@ export function resolveInWorkspace(workspace: string, path: string): string {
   const target = resolve(root, path);
   const real = realExistingPrefix(target, path);
   if (!isInside(root, real)) {
-    throw new RubyError('denied', `Path "${path}" is outside the workspace. Use a path relative to the workspace root.`);
+    throw new GarnetError('denied', `Path "${path}" is outside the workspace. Use a path relative to the workspace root.`);
   }
   return target;
 }
@@ -39,11 +39,11 @@ function realExistingPrefix(path: string, shown: string): string {
     // target does not: writing through it would land wherever it points.
     try {
       if (lstatSync(current).isSymbolicLink()) {
-        throw new RubyError('denied', `Path "${shown}" goes through a symlink whose target does not exist; refusing to follow it.`);
+        throw new GarnetError('denied', `Path "${shown}" goes through a symlink whose target does not exist; refusing to follow it.`);
       }
       throw unresolvable(shown, new Error('exists but cannot be resolved'));
     } catch (e) {
-      if (e instanceof RubyError) throw e;
+      if (e instanceof GarnetError) throw e;
       if (errorCode(e) !== 'ENOENT') throw unresolvable(shown, e);
     }
     const parent = dirname(current);
@@ -53,9 +53,9 @@ function realExistingPrefix(path: string, shown: string): string {
   }
 }
 
-function unresolvable(shown: string, e: unknown): RubyError {
+function unresolvable(shown: string, e: unknown): GarnetError {
   const code = errorCode(e) ?? (e instanceof Error ? e.message : String(e));
-  return new RubyError(code === 'ENOTDIR' ? 'invalid_input' : 'denied', `Path "${shown}" cannot be resolved safely (${code}).`);
+  return new GarnetError(code === 'ENOTDIR' ? 'invalid_input' : 'denied', `Path "${shown}" cannot be resolved safely (${code}).`);
 }
 
 function errorCode(e: unknown): string | undefined {

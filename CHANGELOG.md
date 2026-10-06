@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Renamed: Ruby is now Garnet
+- The project, command (`garnet`), package (`garnet-agent`), default assistant name, repository (`2180719/Garnet`), service (`garnet.service` / `dev.garnet.agent`), API key prefix (`garnet_`), header (`X-Garnet-Conversation`) and data directory (`~/.garnet`) all changed, because `ruby` clashes with the Ruby language interpreter. Environment variables are now `GARNET_*` (`GARNET_HOME`, `GARNET_SECRETS_KEY_FILE`, ...); `npm run ruby` is now `npm run garnet`.
+- Existing installs keep working: `RUBY_*` variables are read when the `GARNET_*` one is unset (`doctor` warns); `~/.ruby` is used when `~/.garnet` does not exist (`doctor` suggests `mv ~/.ruby ~/.garnet`); `ruby_` API keys and `X-Ruby-Conversation` are still accepted; `ruby.db`, `ruby-secrets` stores and `.ruby.json` skill sidecars are still read.
+- `garnet service install` stops and removes the old `ruby` systemd unit / `dev.ruby` launchd agent when we wrote it and it runs the same home; `doctor` reports a leftover one. `install.sh` moves `~/.local/share/ruby` to `.../garnet` and removes the old `ruby` shim only when it is ours.
+
 ### New capabilities
 
 #### Tier 0 (gateway/channels)
@@ -38,7 +43,7 @@
 - `jobs` shows every job's origin and next run; new `show`, `add`, `edit`, `pause` and `delete` subcommands. The dashboard can pause, edit and delete jobs.
 
 ### Installation and onboarding
-- One-line installer: `curl -fsSL https://raw.githubusercontent.com/2180719/Ruby/main/install.sh | sh`. POSIX sh, no sudo, idempotent: checks Node.js 22.18+ and `node:sqlite` (with install advice), clones or fast-forwards into `~/.local/share/ruby` (refusing to touch local changes), runs `npm ci --omit=dev`, writes a `ruby` shim in `~/.local/bin` (never over a file it did not write), warns when PATH lacks it or another `ruby` (the language) shadows it, then starts `ruby setup` on a terminal. `--name` installs under another command name.
+- One-line installer: `curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh`. POSIX sh, no sudo, idempotent: checks Node.js 22.18+ and `node:sqlite` (with install advice), clones or fast-forwards into `~/.local/share/ruby` (refusing to touch local changes), runs `npm ci --omit=dev`, writes a `ruby` shim in `~/.local/bin` (never over a file it did not write), warns when PATH lacks it or another `ruby` (the language) shadows it, then starts `ruby setup` on a terminal. `--name` installs under another command name.
 - `ruby setup`: a guided, re-runnable wizard for the model (Anthropic, OpenRouter, local servers, any OpenAI-compatible API, or the demo model), the key (hidden input; encrypted store with a new key file outside `~/.ruby`, the env file, or your own environment), persona basics, Telegram/Discord/Signal, importing from OpenClaw or Hermes (preview first), the background service, and pairing your own account. Live key checks run only with consent and cost no tokens. On a re-run it shows the current setup and a menu. `ruby setup -y` takes everything from flags (`--key-stdin` for the key) for scripts and CI.
 - `ruby doctor [--json]`: checks Node.js, `node:sqlite`, which `ruby` is on PATH, `RUBY_HOME` permissions, config validity, the env file mode, the secret store, that the model key and channel tokens resolve, the Docker sandbox (when commands are allowed) and the service, with a fix for each problem. It warns when an OpenAI-compatible server would be sent `ANTHROPIC_API_KEY`.
 - `ruby init` offers `ruby setup` on a terminal (`--defaults` keeps the old behavior).

@@ -1,4 +1,4 @@
-// `ruby import <openclaw|hermes> [--from <dir>] [--apply] ...` without depending on the composition root:
+// `garnet import <openclaw|hermes> [--from <dir>] [--apply] ...` without depending on the composition root:
 // the caller injects the stores, the persona accessors and (in the setup wizard) a way to ask the owner.
 import { parseArgs } from 'node:util';
 import { applyImport, personaHasOwnText } from './apply.ts';
@@ -6,7 +6,7 @@ import { formatPlan, formatResult } from './format.ts';
 import { defaultSourceDir, planImport } from './plan.ts';
 import { SOURCES, type ApplyOptions, type ImportDeps, type ImportPlan, type PersonaMode, type Source } from './types.ts';
 
-export const IMPORT_USAGE = `Usage: ruby import <openclaw|hermes> [--from <dir>] [--apply] [options]
+export const IMPORT_USAGE = `Usage: garnet import <openclaw|hermes> [--from <dir>] [--apply] [options]
   Without --apply this only prints what would be imported.
   --from <dir>          Source home (default ~/.openclaw or ~/.hermes; honors OPENCLAW_STATE_DIR,
                         OPENCLAW_PROFILE, OPENCLAW_WORKSPACE_DIR and HERMES_HOME)
@@ -59,7 +59,7 @@ export async function runImport(args: string[], io: { out(t: string): void; err(
     }
     const opts = await decide(plan, values, deps, tooBig);
     io.out(`\n${formatResult(applyImport(plan, deps, opts))}`);
-    io.out('Review with `ruby memory show`, `ruby skills` and `ruby jobs list`. Secrets were not imported.\n');
+    io.out('Review with `garnet memory show`, `garnet skills` and `garnet jobs list`. Secrets were not imported.\n');
     return 0;
   } catch (e) {
     io.err(`Import failed: ${(e as Error).message}\n`);
@@ -78,7 +78,7 @@ async function decide(plan: ImportPlan, values: Record<string, string | boolean 
   }
   if (typeof values.pairings === 'boolean') opts.pairings = values.pairings;
   else if (ask && plan.pairings.length && deps.pairings) {
-    opts.pairings = await ask.confirm({ id: 'import-pairings', message: `Pair the ${plan.pairings.length} allowlisted sender(s) shown above?`, help: 'They can then message Ruby and approve its actions, like you.', default: false, auto: false });
+    opts.pairings = await ask.confirm({ id: 'import-pairings', message: `Pair the ${plan.pairings.length} allowlisted sender(s) shown above?`, help: 'They can then message Garnet and approve its actions, like you.', default: false, auto: false });
   }
   if (typeof values.persona === 'string') opts.persona = values.persona as PersonaMode;
   else if (ask && plan.persona && personaHasOwnText(deps.getPersona?.())) {

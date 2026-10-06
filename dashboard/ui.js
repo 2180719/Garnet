@@ -69,7 +69,7 @@ const GEM = [
   ['var(--accent)', 1, 'M17 7h30l15 17-30 35L2 24z'], ['#fff', 0.38, 'M17 7h30l-7 17H24z'], ['#fff', 0.16, 'M17 7l7 17H2z'],
   ['#000', 0.12, 'M47 7l15 17H40z'], ['#000', 0.22, 'M2 24h22l8 35z'], ['#000', 0.38, 'M40 24h22L32 59z'], ['#fff', 0.1, 'M24 24h16L32 59z'],
 ];
-/** The Ruby gem, the same faceted mark as the public site. */
+/** The Garnet gem, the same faceted mark as the public site. */
 export function gem(cls = 'gem-ico') {
   const s = svg('svg', { viewBox: '0 0 64 64', 'aria-hidden': 'true', class: cls });
   for (const [fill, op, d] of GEM) s.append(svg('path', { fill, 'fill-opacity': op, d }));

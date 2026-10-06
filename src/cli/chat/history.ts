@@ -1,4 +1,4 @@
-// Input history persisted per RUBY_HOME as JSON lines (entries can span lines).
+// Input history persisted per GARNET_HOME as JSON lines (entries can span lines).
 
 import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 

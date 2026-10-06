@@ -6,13 +6,13 @@ export const SOURCES: Source[] = ['openclaw', 'hermes'];
 export type MemoryFile = 'memory' | 'user';
 
 export type MemoryAction = {
-  /** Ruby memory file this feeds. */
+  /** Garnet memory file this feeds. */
   file: MemoryFile;
   /** Source file, relative to its root (see `CopyAction.root`). */
   from: string;
   /** All valid entries, normalized to single lines (without the "- " prefix), in source order. */
   entries: string[];
-  /** How many of `entries` fit an empty Ruby file at the current cap (most recent first). */
+  /** How many of `entries` fit an empty Garnet file at the current cap (most recent first). */
   fitCount: number;
   cap: number;
   /** Characters all entries need as "- entry" lines in an empty file. */
@@ -37,14 +37,14 @@ export type SkillRequirements = {
   anyBin: boolean;
   /** Environment variables or secrets it needs (names only). */
   env: string[];
-  /** Tools of the old harness that the body refers to and Ruby does not have. */
+  /** Tools of the old harness that the body refers to and Garnet does not have. */
   tools: string[];
   /** Operating systems it supports, when declared. */
   os: string[];
 };
 
 export type SkillAction = {
-  /** Normalized Ruby name. */
+  /** Normalized Garnet name. */
   name: string;
   /** Name as found in the source (frontmatter name or directory name). */
   originalName: string;
@@ -52,12 +52,12 @@ export type SkillAction = {
   body: string;
   /** SKILL.md path relative to the source dir. */
   from: string;
-  /** Supporting files (scripts, references) that Ruby skills cannot hold; archived under imported/. Relative to the source dir. */
+  /** Supporting files (scripts, references) that Garnet skills cannot hold; archived under imported/. Relative to the source dir. */
   extraFiles: string[];
   bodyTruncated: boolean;
   /** Set when this skill cannot be imported (e.g. two source skills normalize to one name). */
   conflict?: string;
-  /** Extra frontmatter kept on the Ruby skill (single-line values: `metadata`, `requires`). */
+  /** Extra frontmatter kept on the Garnet skill (single-line values: `metadata`, `requires`). */
   frontmatter: Record<string, string>;
   /** What the skill needs; empty lists when nothing is declared. */
   requires: SkillRequirements;
@@ -72,7 +72,7 @@ export type SkillAction = {
 export type CopyAction = {
   /** Source path relative to `root` (or the source dir). */
   src: string;
-  /** Destination relative to the Ruby workspace (always under imported/<source>/). */
+  /** Destination relative to the Garnet workspace (always under imported/<source>/). */
   dest: string;
   reason: string;
   /** Absolute directory `src` is relative to, when it is not the source dir (a custom OpenClaw workspace). */
@@ -82,7 +82,7 @@ export type CopyAction = {
 export type JobAction = {
   /** The job's name or id in the source. */
   from: string;
-  /** The Ruby job to add (always disabled), or null when it cannot be mapped. */
+  /** The Garnet job to add (always disabled), or null when it cannot be mapped. */
   job: JobConfig | null;
   /** Why it was skipped (job is null), or what changed in the mapping. */
   notes: string[];
@@ -116,15 +116,15 @@ export type ImportPlan = {
   notImported: NotImported[];
   /** Environment variable NAMES found in the source's .env/config (never values). */
   envVars: string[];
-  /** Channels detected in the source; the user must enable the Ruby equivalents. */
+  /** Channels detected in the source; the user must enable the Garnet equivalents. */
   channels: string[];
   warnings: string[];
 };
 
 export type PlanOptions = {
-  /** Current Ruby memory caps (defaults to the built-in ones). */
+  /** Current Garnet memory caps (defaults to the built-in ones). */
   caps?: { memory: number; user: number };
-  /** Names of the tools Ruby has registered (to flag skills that need others). */
+  /** Names of the tools Garnet has registered (to flag skills that need others). */
   tools?: string[];
   /** Whether a binary is on the PATH (defaults to a PATH scan). */
   hasBin?: (name: string) => boolean;
@@ -159,14 +159,14 @@ export type ImportDeps = {
     root: string;
     create(name: string, description: string, body: string, provenance: 'user', frontmatter?: Record<string, string>): unknown;
   };
-  /** Ruby workspace directory; files go under <workspace>/imported/<source>/. */
+  /** Garnet workspace directory; files go under <workspace>/imported/<source>/. */
   workspace: string;
   setPersona: (persona: string) => void;
   /** Current config persona. When set and different, the imported persona is not applied over it. */
   getPersona?: () => string | undefined;
   /** Memory namespace (default "default"). */
   namespace?: string;
-  /** Ruby jobs in config.json. */
+  /** Garnet jobs in config.json. */
   jobs?: { ids(): string[]; add(jobs: JobConfig[]): void };
   /** Paired identities (gateway store). */
   pairings?: { has(channel: string, senderId: string): boolean; add(channel: string, senderId: string, displayName: string | null): void };

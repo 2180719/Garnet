@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { newId, RubyError, type ToolDefinition } from '../contracts/index.ts';
+import { newId, GarnetError, type ToolDefinition } from '../contracts/index.ts';
 
 const ID = /^art_[a-z0-9]+$/;
 
@@ -25,9 +25,9 @@ export class ArtifactStore {
 
   read(sessionId: string, id: string): string {
     const file = join(this.root, `${id}.json`);
-    if (!ID.test(id) || !existsSync(file)) throw new RubyError('invalid_input', `No artifact "${id}".`);
+    if (!ID.test(id) || !existsSync(file)) throw new GarnetError('invalid_input', `No artifact "${id}".`);
     const data = JSON.parse(readFileSync(file, 'utf8')) as { sessionId: string; content: string };
-    if (data.sessionId !== sessionId) throw new RubyError('denied', `Artifact "${id}" belongs to another conversation.`);
+    if (data.sessionId !== sessionId) throw new GarnetError('denied', `Artifact "${id}" belongs to another conversation.`);
     return data.content;
   }
 }

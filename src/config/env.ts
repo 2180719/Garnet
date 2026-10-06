@@ -1,6 +1,24 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { RubyConfig } from './schema.ts';
+import type { GarnetConfig } from './schema.ts';
+
+/** Environment variables Garnet reads. Before the rename each had a `RUBY_` twin, which is still read when the `GARNET_` one is unset. */
+const LEGACY_ENV_SUFFIXES = ['HOME', 'SECRETS_KEY_FILE', 'SECRETS_PASSPHRASE', 'LIVE_TESTS', 'NODE', 'COMMAND_NAME'] as const;
+
+/** Reads `name` (a `GARNET_*` variable), falling back to its deprecated `RUBY_*` twin. */
+export function envVar(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name];
+  if (value) return value; // empty falls through to the RUBY_ twin, like shell `:-`
+  const old = name.startsWith('GARNET_') ? env[`RUBY_${name.slice('GARNET_'.length)}`] : undefined;
+  return old || value;
+}
+
+/** Deprecated `RUBY_*` variables that are set and not shadowed by the `GARNET_*` name, as `{ old, name }`. */
+export function deprecatedEnvVars(env: NodeJS.ProcessEnv): { old: string; name: string }[] {
+  const out: { old: string; name: string }[] = [];
+  for (const s of LEGACY_ENV_SUFFIXES) if (env[`RUBY_${s}`] !== undefined && env[`GARNET_${s}`] === undefined) out.push({ old: `RUBY_${s}`, name: `GARNET_${s}` });
+  return out;
+}
 
 const LINE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 
@@ -102,11 +120,11 @@ export function setInEnvFile(home: string, entries: Record<string, string>): voi
 function quoteEnv(value: string): string {
   if (/^[A-Za-z0-9_\/.:@%+,=-]*$/.test(value)) return value;
   if (!value.includes("'")) return `'${value}'`;
-  throw new Error('Values containing both special characters and a single quote cannot be written to the env file; use `ruby secrets set` instead');
+  throw new Error('Values containing both special characters and a single quote cannot be written to the env file; use `garnet secrets set` instead');
 }
 
 /** Names of the environment variables (or stored secrets) the config refers to. Names only, never values. */
-export function secretNames(config: RubyConfig): string[] {
+export function secretNames(config: GarnetConfig): string[] {
   const transcription = config.media.transcription.backend === 'openai-compatible' ? config.media.transcription.apiKeyEnv : undefined;
   return [...new Set([config.model.apiKeyEnv, config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : [])])];
 }

@@ -36,7 +36,7 @@ function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((u
     home,
     env,
     style: makeStyle(false),
-    defaultKeyFile: join(keyDir, 'ruby', 'secrets.key'),
+    defaultKeyFile: join(keyDir, 'garnet', 'secrets.key'),
     kdf,
     now: () => new Date('2026-10-06T12:00:00Z'),
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
@@ -51,11 +51,11 @@ function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((u
       install: async () => {
         svc.installs++;
         svc.installed = true;
-        return ok(['systemctl', '--user', 'enable', '--now', 'ruby.service']);
+        return ok(['systemctl', '--user', 'enable', '--now', 'garnet.service']);
       },
       restart: async () => {
         svc.restarts++;
-        return ok(['systemctl', '--user', 'restart', 'ruby.service']);
+        return ok(['systemctl', '--user', 'restart', 'garnet.service']);
       },
     },
     importSources: opts.sources ?? (() => []),
@@ -102,8 +102,8 @@ test('first run: Anthropic key goes into a new encrypted store, checked live wit
   assert.equal(h.calls[0]!.url, 'https://api.anthropic.com/v1/models?limit=100');
   assert.equal(h.calls[0]!.headers['x-api-key'], KEY);
   assert.match(h.out(), /✓ key accepted/);
-  assert.match(h.out(), /Ruby is ready\./);
-  assert.match(h.out(), /ruby chat +talk to Ruby/);
+  assert.match(h.out(), /Garnet is ready\./);
+  assert.match(h.out(), /garnet chat +talk to Garnet/);
   assert.ok(existsSync(join(h.home, 'workspace')));
   // Linear flow, no menu on a first run.
   assert.equal(p.asked.includes('section'), false);
@@ -196,7 +196,7 @@ test('re-run: the menu edits one section, keeps hand-written persona text and th
   const c = h.config();
   assert.equal(c.model.name, 'some/model');
   assert.equal(c.budgets.maxToolCalls, 7);
-  assert.match(c.persona!, /^<!-- ruby setup -->\nYour name is Juno\.\n<!-- \/ruby setup -->\n\nAlways answer in British English\.$/);
+  assert.match(c.persona!, /^<!-- garnet setup -->\nYour name is Juno\.\n<!-- \/garnet setup -->\n\nAlways answer in British English\.$/);
   assert.equal(h.svc.restarts, 1);
   assert.equal(h.svc.installs, 0);
   assert.match(h.out(), /Model +openrouter · some\/model/);
@@ -267,7 +267,7 @@ test('import: preview first, apply on consent; the imported persona survives the
     ['hermes', '--from', '/home/x/.hermes'],
     ['hermes', '--from', '/home/x/.hermes', '--apply'],
   ]);
-  assert.match(h.config().persona!, /Your name is Juno\.\n<!-- \/ruby setup -->\n\nYou are a careful assistant imported from elsewhere\.$/);
+  assert.match(h.config().persona!, /Your name is Juno\.\n<!-- \/garnet setup -->\n\nYou are a careful assistant imported from elsewhere\.$/);
 });
 
 test('import: config changes land in the draft and questions go to the setup prompter', async () => {
@@ -285,13 +285,13 @@ test('import: config changes land in the draft and questions go to the setup pro
   assert.equal(h.config().memory.memoryChars, 5000);
 });
 
-test('`ruby setup` command: refuses a non-terminal without -y; -y with flags and --key-stdin works', async () => {
+test('`garnet setup` command: refuses a non-terminal without -y; -y with flags and --key-stdin works', async () => {
   const home = tempDir();
   const keyDir = tempDir();
   let out = '';
   const io: Io = { out: (t) => (out += t), err: (t) => (out += t) };
-  const prevHome = process.env.RUBY_HOME;
-  process.env.RUBY_HOME = home;
+  const prevHome = process.env.GARNET_HOME;
+  process.env.GARNET_HOME = home;
   try {
     assert.equal(await setup([], io, { tty: false }), 2);
     assert.match(out, /not a terminal/);
@@ -313,33 +313,33 @@ test('`ruby setup` command: refuses a non-terminal without -y; -y with flags and
     const bare = tempDir();
     await assert.rejects(setup(['-y', '--provider', 'openrouter'], io, { tty: false, deps: { home: bare, env: {}, service: null, importSources: () => [], style: makeStyle(false) } }), /pass --model/);
   } finally {
-    if (prevHome === undefined) delete process.env.RUBY_HOME;
-    else process.env.RUBY_HOME = prevHome;
+    if (prevHome === undefined) delete process.env.GARNET_HOME;
+    else process.env.GARNET_HOME = prevHome;
   }
 });
 
-test('`ruby init`: without a terminal it writes defaults and points at setup; on a terminal it offers setup', async () => {
-  const prevHome = process.env.RUBY_HOME;
+test('`garnet init`: without a terminal it writes defaults and points at setup; on a terminal it offers setup', async () => {
+  const prevHome = process.env.GARNET_HOME;
   let out = '';
   const io: Io = { out: (t) => (out += t), err: (t) => (out += t) };
   try {
     const plain = tempDir();
-    process.env.RUBY_HOME = plain;
+    process.env.GARNET_HOME = plain;
     assert.equal(await init([], io, { tty: false }), 0);
     assert.ok(existsSync(join(plain, 'config.json')));
-    assert.match(out, /Next: `ruby setup`/);
+    assert.match(out, /Next: `garnet setup`/);
     assert.equal(await init([], io, { tty: false }), 0);
     assert.match(out, /already set up/);
 
     const guided = tempDir();
-    process.env.RUBY_HOME = guided;
+    process.env.GARNET_HOME = guided;
     const p = new AnswerPrompter({ setup: true, provider: 'fake', telegram: false, discord: false, signal: false }, { interactive: true });
     assert.equal(await init([], io, { tty: true, prompter: p, deps: { home: guided, env: {}, service: null, importSources: () => [], style: makeStyle(false) } }), 0);
     assert.equal(p.asked[0], 'setup');
     assert.equal(parseConfig(JSON.parse(readFileSync(join(guided, 'config.json'), 'utf8'))).model.provider, 'fake');
   } finally {
-    if (prevHome === undefined) delete process.env.RUBY_HOME;
-    else process.env.RUBY_HOME = prevHome;
+    if (prevHome === undefined) delete process.env.GARNET_HOME;
+    else process.env.GARNET_HOME = prevHome;
   }
 });
 
@@ -348,10 +348,10 @@ test('persona block round-trips, keeps other text, and disappears when everythin
   const p1 = writePersona(hand, { name: 'Juno', owner: 'Dr. Sam Lee', notes: 'Short answers.' });
   assert.deepEqual(readPersona(p1), { name: 'Juno', owner: 'Dr. Sam Lee', notes: 'Short answers.' });
   assert.ok(p1!.endsWith(`\n\n${hand}`));
-  const p2 = writePersona(p1, { name: 'Ruby', owner: '', notes: '' });
+  const p2 = writePersona(p1, { name: 'Garnet', owner: '', notes: '' });
   assert.equal(p2, hand);
-  assert.equal(writePersona(undefined, { name: 'Ruby', owner: '', notes: '' }), undefined);
-  assert.deepEqual(readPersona(undefined), { name: 'Ruby', owner: '', notes: '' });
+  assert.equal(writePersona(undefined, { name: 'Garnet', owner: '', notes: '' }), undefined);
+  assert.deepEqual(readPersona(undefined), { name: 'Garnet', owner: '', notes: '' });
 });
 
 test('AnswerPrompter: flags answer by id; bad choices and missing answers are clear errors', async () => {

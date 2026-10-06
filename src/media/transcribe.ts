@@ -1,5 +1,5 @@
 // Speech to text for voice notes: an OpenAI-compatible endpoint, or a local command.
-import { RubyError, errorMessage } from '../contracts/index.ts';
+import { GarnetError, errorMessage } from '../contracts/index.ts';
 import { runOnFile } from './command.ts';
 import { extensionFor } from './mime.ts';
 
@@ -55,15 +55,15 @@ export class OpenAITranscriber implements Transcriber {
         signal: AbortSignal.any([signal, AbortSignal.timeout(o.timeoutMs)]),
       });
     } catch (e) {
-      if (signal.aborted) throw new RubyError('cancelled', 'Cancelled.');
-      throw new RubyError('provider_transient', `Transcription request failed: ${this.redact(errorMessage(e))}`);
+      if (signal.aborted) throw new GarnetError('cancelled', 'Cancelled.');
+      throw new GarnetError('provider_transient', `Transcription request failed: ${this.redact(errorMessage(e))}`);
     }
     const body = await res.text().catch(() => '');
     if (!res.ok) {
       const detail = this.redact(excerpt(body));
       const category = res.status === 429 || res.status >= 500 ? 'provider_transient' : 'provider_fatal';
       const hint = res.status === 401 || res.status === 403 ? ' (check the transcription API key)' : res.status === 404 ? ' (check media.transcription.baseUrl, path and model)' : '';
-      throw new RubyError(category, `Transcription failed with HTTP ${res.status}${hint}${detail ? `: ${detail}` : ''}`);
+      throw new GarnetError(category, `Transcription failed with HTTP ${res.status}${hint}${detail ? `: ${detail}` : ''}`);
     }
     let text: unknown;
     try {
@@ -71,7 +71,7 @@ export class OpenAITranscriber implements Transcriber {
     } catch {
       text = body; // a server that ignored response_format and sent plain text
     }
-    if (typeof text !== 'string') throw new RubyError('provider_fatal', 'Transcription response had no text.');
+    if (typeof text !== 'string') throw new GarnetError('provider_fatal', 'Transcription response had no text.');
     return text.trim();
   }
 

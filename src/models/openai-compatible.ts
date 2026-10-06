@@ -99,7 +99,7 @@ export class OpenAICompatibleModel implements ModelAdapter {
       const url = `${o.baseUrl.replace(/\/+$/, '')}/chat/completions`;
       const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(o.extraHeaders ?? {}) };
       if (o.apiKey) headers.Authorization = `Bearer ${o.apiKey}`;
-      if (isOpenRouter(o.baseUrl)) headers['X-Title'] ??= 'Ruby';
+      if (isOpenRouter(o.baseUrl)) headers['X-Title'] ??= 'Garnet';
 
       let response: Response;
       try {

@@ -22,13 +22,13 @@ async function server(script: Parameters<typeof setup>[0] = [], rate = 100, extr
   return { t, keys, keyStore, api, call };
 }
 
-const chat = (content: string, extra: object = {}) => ({ method: 'POST', body: JSON.stringify({ model: 'ruby', messages: [{ role: 'user', content }], ...extra }) });
+const chat = (content: string, extra: object = {}) => ({ method: 'POST', body: JSON.stringify({ model: 'garnet', messages: [{ role: 'user', content }], ...extra }) });
 
 test('health is public; everything else needs a valid key', async () => {
   const s = await server();
   assert.equal((await s.call('/health')).status, 200);
   assert.equal((await s.call('/v1/models')).status, 401);
-  assert.equal((await s.call('/v1/models', { key: 'ruby_AAAAAAAA_' + 'x'.repeat(32) })).status, 401);
+  assert.equal((await s.call('/v1/models', { key: 'garnet_AAAAAAAA_' + 'x'.repeat(32) })).status, 401);
   const { key, id } = s.keys.create('laptop', ['chat']);
   assert.equal((await s.call('/v1/models', { key })).status, 200);
   assert.equal((await s.call('/v1/models', { key: key.slice(0, -1) + (key.endsWith('a') ? 'b' : 'a') })).status, 401, 'one wrong character fails');
@@ -76,12 +76,24 @@ test('chat completions run a task in a per-key conversation', async () => {
   assert.equal(body.object, 'chat.completion');
   assert.equal(body.choices[0].message.content, 'First answer.');
   assert.equal(body.usage.completion_tokens, 20);
-  await s.call('/v1/chat/completions', { key, ...chat('again'), headers: { 'x-ruby-conversation': 'notes' } });
-  await s.call('/v1/chat/completions', { key, ...chat('more'), headers: { 'x-ruby-conversation': 'notes' } });
+  await s.call('/v1/chat/completions', { key, ...chat('again'), headers: { 'x-garnet-conversation': 'notes' } });
+  await s.call('/v1/chat/completions', { key, ...chat('more'), headers: { 'x-garnet-conversation': 'notes' } });
   assert.equal(s.t.model.requests[1]!.messages.length, 1, 'a named conversation is separate');
   assert.equal(s.t.model.requests[2]!.messages.length, 3, 'server-side history continues in a named conversation');
-  const bad = await s.call('/v1/chat/completions', { key, ...chat('x'), headers: { 'x-ruby-conversation': 'Bad Name!' } });
+  const bad = await s.call('/v1/chat/completions', { key, ...chat('x'), headers: { 'x-garnet-conversation': 'Bad Name!' } });
   assert.equal(bad.status, 400);
+});
+
+test('legacy ruby_ API keys and the X-Ruby-Conversation header still work', async () => {
+  const s = await server([{ text: 'one' }, { text: 'two' }, { text: 'three' }]);
+  const { key } = s.keys.create('old', ['chat']);
+  const legacy = key.replace(/^garnet_/, 'ruby_');
+  assert.notEqual(legacy, key);
+  const r = await s.call('/v1/chat/completions', { key: legacy, ...chat('hi'), headers: { 'x-ruby-conversation': 'notes' } });
+  assert.equal(r.status, 200);
+  await s.call('/v1/chat/completions', { key, ...chat('again'), headers: { 'x-garnet-conversation': 'notes' } });
+  assert.equal(s.t.model.requests[1]!.messages.length, 3, 'both header spellings name the same conversation');
+  assert.equal((await s.call('/v1/models', { key: 'ruby_AAAAAAAA_' + 'x'.repeat(32) })).status, 401);
 });
 
 test('streaming returns OpenAI-style SSE chunks', async () => {
@@ -118,19 +130,19 @@ test('the public demo is keyless, tool-less, origin-checked and rate-limited', a
   const t = setup();
   const keyStore = new KeyStore(t.db);
   const model = new FakeModel([{ text: 'Hi from the demo!' }, { text: 'again' }]);
-  const demo = new DemoChat({ model, allowedOrigins: ['https://ruby.example'], perIpPerHour: 2, dailyTokenBudget: 10_000, maxOutputTokens: 100 });
+  const demo = new DemoChat({ model, allowedOrigins: ['https://garnet.example'], perIpPerHour: 2, dailyTokenBudget: 10_000, maxOutputTokens: 100 });
   const api = new ApiServer({ gateway: t.gateway, keys: new ApiKeys(keyStore), keyStore, sessions: t.sessions, rateLimitPerMinute: 10, version: 't', demo });
   const { port } = await api.listen('127.0.0.1', 0);
   after(() => api.close(0));
   const post = (origin: string, messages: unknown) =>
     fetch(`http://127.0.0.1:${port}/v1/demo/chat/completions`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ messages }) });
-  const ok = await post('https://ruby.example', [{ role: 'user', content: 'hello' }]);
-  assert.equal(ok.headers.get('access-control-allow-origin'), 'https://ruby.example');
+  const ok = await post('https://garnet.example', [{ role: 'user', content: 'hello' }]);
+  assert.equal(ok.headers.get('access-control-allow-origin'), 'https://garnet.example');
   assert.equal(((await ok.json()) as any).choices[0].message.content, 'Hi from the demo!');
   assert.deepEqual(model.requests[0]!.tools, [], 'no tools in the demo');
   assert.equal((await post('https://evil.example', [{ role: 'user', content: 'x' }])).status, 403);
-  await post('https://ruby.example', [{ role: 'user', content: 'two' }]);
-  assert.equal((await post('https://ruby.example', [{ role: 'user', content: 'three' }])).status, 429, 'per-IP limit');
+  await post('https://garnet.example', [{ role: 'user', content: 'two' }]);
+  assert.equal((await post('https://garnet.example', [{ role: 'user', content: 'three' }])).status, 429, 'per-IP limit');
 });
 
 test('behind a trusted proxy the client IP is the rightmost X-Forwarded-For entry', async () => {
@@ -150,7 +162,7 @@ test('keyless traffic is not audited and failed logins are audited at a limited 
   const s = await server();
   for (let i = 0; i < 5; i++) await s.call('/nope');
   assert.equal(s.keyStore.auditLog().length, 0, 'unknown paths are not audited');
-  for (let i = 0; i < 15; i++) await s.call('/v1/models', { key: 'ruby_AAAAAAAA_' + 'x'.repeat(32) });
+  for (let i = 0; i < 15; i++) await s.call('/v1/models', { key: 'garnet_AAAAAAAA_' + 'x'.repeat(32) });
   const failures = s.keyStore.auditLog().length;
   assert.ok(failures >= 1 && failures <= 5, `failed attempts are audited but limited (got ${failures})`);
   const { key } = s.keys.create('app', ['read']);
@@ -256,11 +268,11 @@ test('disconnecting from the demo does not refund the reservation', async () => 
 });
 
 test('a conflict (job already running) is a 409, not a 500', async () => {
-  const { RubyError } = await import('../contracts/index.ts');
+  const { GarnetError } = await import('../contracts/index.ts');
   const t = setup();
   const keyStore = new KeyStore(t.db);
   const keys = new ApiKeys(keyStore);
-  const admin = { jobAction: async () => Promise.reject(new RubyError('conflict', 'Job "tea" is already running')) };
+  const admin = { jobAction: async () => Promise.reject(new GarnetError('conflict', 'Job "tea" is already running')) };
   const api = new ApiServer({ gateway: t.gateway, keys, keyStore, sessions: t.sessions, rateLimitPerMinute: 10, version: 't', admin: admin as never });
   const { port } = await api.listen('127.0.0.1', 0);
   after(() => api.close(0));
@@ -284,7 +296,7 @@ async function mediaServer(script: Parameters<typeof setup>[0], images: boolean)
     fetch(`http://127.0.0.1:${addr.port}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model: 'ruby', messages: [{ role: 'user', content }], ...extra }),
+      body: JSON.stringify({ model: 'garnet', messages: [{ role: 'user', content }], ...extra }),
     });
   return { t, post };
 }
@@ -324,7 +336,7 @@ test('remote image URLs, unknown parts and oversize bodies are refused; text-onl
   assert.equal(blind.t.model.requests.length, 0);
 });
 
-const post = (messages: unknown[], extra: object = {}) => ({ method: 'POST', body: JSON.stringify({ model: 'ruby', messages, ...extra }) });
+const post = (messages: unknown[], extra: object = {}) => ({ method: 'POST', body: JSON.stringify({ model: 'garnet', messages, ...extra }) });
 const turnText = (s: { t: { model: { requests: { messages: { content: { type: string; text?: string }[] }[] }[] } } }, i: number) =>
   s.t.model.requests[i]!.messages.map((m) => m.content.map((b) => b.text ?? '').join('')).join('\n');
 
@@ -333,7 +345,7 @@ test('stateless clients get one conversation per chat, keyed by its first messag
   const { key } = s.keys.create('webui', ['chat']);
   await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'Plan a trip' }]) });
   await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'Fix my bike' }]) });
-  // Chat A continues: the client resends its history; Ruby uses only the newest message.
+  // Chat A continues: the client resends its history; Garnet uses only the newest message.
   await s.call('/v1/chat/completions', {
     key,
     ...post([{ role: 'system', content: 'Be brief.' }, { role: 'user', content: 'Plan a trip' }, { role: 'assistant', content: 'A1' }, { role: 'user', content: 'To Rome' }]),
@@ -451,7 +463,7 @@ test('/approve and /deny work in an API chat, only for approvals raised in that 
   const s = await server([{ toolCalls: [write] }, { toolCalls: [write] }, { text: 'Saved.' }], 100, {}, { withApprovals: true });
   const { key } = s.keys.create('webui', ['chat']);
   const { key: other } = s.keys.create('other', ['chat']);
-  const h = { 'x-ruby-conversation': 'work' };
+  const h = { 'x-garnet-conversation': 'work' };
   const first = (await (await s.call('/v1/chat/completions', { key, ...chat('save a note'), headers: h })).json()) as any;
   const code = /\/approve ([A-Z0-9]{5})/.exec(first.choices[0].message.content)?.[1];
   assert.ok(code, first.choices[0].message.content);

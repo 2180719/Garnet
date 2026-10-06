@@ -1,12 +1,12 @@
-// `ruby setup`: parses flags, builds the prompter and the real dependencies.
+// `garnet setup`: parses flags, builds the prompter and the real dependencies.
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { defaultConfig, rubyHome, writeConfig } from '../../config/index.ts';
-import { RubyError } from '../../contracts/index.ts';
+import { defaultConfig, garnetHome, writeConfig } from '../../config/index.ts';
+import { GarnetError } from '../../contracts/index.ts';
 import { approvePairing } from '../../gateway/index.ts';
-import { createRuby } from '../../main.ts';
+import { createGarnet } from '../../main.ts';
 import { defaultSourceDir, runImport } from '../../migrate/index.ts';
 import { defaultEntry, installService, resolveService, restartService } from '../../service/index.ts';
 import { importDeps } from '../import.ts';
@@ -14,7 +14,7 @@ import type { Io } from '../main.ts';
 import { AnswerPrompter, TerminalPrompter, makeStyle, wantsColor, type Answer, type Prompter } from './prompt.ts';
 import { runSetup, type SetupDeps } from './wizard.ts';
 
-export const SETUP_USAGE = `Usage: ruby setup [options]
+export const SETUP_USAGE = `Usage: garnet setup [options]
 
 Interactive on a terminal. With --non-interactive (or -y), every answer comes
 from the options below, the current config, or safe defaults; nothing optional
@@ -27,7 +27,7 @@ from the options below, the current config, or safe defaults; nothing optional
   --key-stdin               Read the model key from stdin (never pass it as an argument)
   --secrets <where>         encrypted (default) | env-file | env
   --key-file <path>         Key file for the encrypted store (created if missing)
-  --name <name>             What the assistant is called (default Ruby)
+  --name <name>             What the assistant is called (default Garnet)
   --owner <name>            What it calls you
   --notes <text>            One line about how you like answers
   --telegram / --no-telegram, --telegram-token-env <NAME>
@@ -97,7 +97,7 @@ export async function setup(args: string[], io: Io, opts: SetupCommandDeps = {})
   const tty = opts.tty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const nonInteractive = Boolean(values['non-interactive']);
   if (!nonInteractive && !tty && !opts.prompter) {
-    io.err('`ruby setup` asks questions, but this is not a terminal. Re-run with --non-interactive (-y) and options; see `ruby setup --help`.\n');
+    io.err('`garnet setup` asks questions, but this is not a terminal. Re-run with --non-interactive (-y) and options; see `garnet setup --help`.\n');
     return 2;
   }
   if (values['key-stdin'] && values.secrets === 'env') {
@@ -117,7 +117,7 @@ export async function setup(args: string[], io: Io, opts: SetupCommandDeps = {})
       const secrets: Record<string, string> = {};
       if (values['key-stdin']) {
         const key = (await (opts.readStdin ?? readAll)()).trim();
-        if (!key) throw new RubyError('invalid_input', '--key-stdin was given but stdin was empty.');
+        if (!key) throw new GarnetError('invalid_input', '--key-stdin was given but stdin was empty.');
         secrets.key = key;
         // A key passed in means "use this one", not "keep what is there".
         answers['keep-key'] = false;
@@ -137,9 +137,9 @@ async function readAll(): Promise<string> {
 }
 
 function defaultDeps(io: Io): SetupDeps {
-  const home = rubyHome();
+  const home = garnetHome();
   const userHome = homedir();
-  // The instance already installed for this RUBY_HOME (ruby service install --name), else the default.
+  // The instance already installed for this GARNET_HOME (garnet service install --name), else the default.
   const resolved = resolveService({ platform: process.platform, home, userHome, nodePath: process.execPath, entry: defaultEntry() });
   const plan = 'unsupported' in resolved ? resolved : resolved.plan;
   const conflict = 'unsupported' in resolved ? null : resolved.conflict;
@@ -158,48 +158,48 @@ function defaultDeps(io: Io): SetupDeps {
     home,
     env: process.env,
     style: makeStyle(wantsColor(process.stdout)),
-    defaultKeyFile: join(process.env.XDG_CONFIG_HOME || join(userHome, '.config'), 'ruby', 'secrets.key'),
+    defaultKeyFile: join(process.env.XDG_CONFIG_HOME || join(userHome, '.config'), 'garnet', 'secrets.key'),
     service,
     importSources: () =>
       (['openclaw', 'hermes'] as const).map((source) => ({ source, dir: defaultSourceDir(source) })).filter((s) => existsSync(s.dir)),
     runImport: async (args, draft) => {
-      const ruby = createRuby({ noModel: true, home });
+      const garnet = createGarnet({ noModel: true, home });
       try {
-        return await runImport(args, io, importDeps(ruby, { getConfig: draft.config, setConfig: draft.setConfig, getPersona: draft.get, setPersona: draft.set, ask: draft.ask }));
+        return await runImport(args, io, importDeps(garnet, { getConfig: draft.config, setConfig: draft.setConfig, getPersona: draft.get, setPersona: draft.set, ask: draft.ask }));
       } finally {
-        ruby.close();
+        garnet.close();
       }
     },
     pairing: () => {
-      const ruby = createRuby({ noModel: true, home });
+      const garnet = createGarnet({ noModel: true, home });
       return {
-        pending: () => ruby.gatewayStore.pairings(new Date().toISOString()),
-        approve: (code) => approvePairing(ruby.gatewayStore, code),
-        close: () => ruby.close(),
+        pending: () => garnet.gatewayStore.pairings(new Date().toISOString()),
+        approve: (code) => approvePairing(garnet.gatewayStore, code),
+        close: () => garnet.close(),
       };
     },
   };
 }
 
 /**
- * `ruby init`: on a terminal, offers the setup wizard; otherwise (or when
+ * `garnet init`: on a terminal, offers the setup wizard; otherwise (or when
  * declined) writes the default config as before.
  */
 export async function init(args: string[], io: Io, opts: SetupCommandDeps = {}): Promise<number> {
-  const home = rubyHome();
+  const home = garnetHome();
   const configured = existsSync(join(home, 'config.json'));
   const tty = opts.tty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (configured) {
-    io.out(`Ruby is already set up at ${home}. Run \`ruby setup\` to change it, or \`ruby doctor\` to check it.\n`);
+    io.out(`Garnet is already set up at ${home}. Run \`garnet setup\` to change it, or \`garnet doctor\` to check it.\n`);
     return 0;
   }
   if (tty && !args.includes('--defaults')) {
     const style = makeStyle(wantsColor(process.stdout));
     const p = opts.prompter ?? new TerminalPrompter({ style });
-    if (await p.confirm({ id: 'setup', message: 'Set up Ruby now? (model, key, persona, channels)', default: true })) return setup([], io, { ...opts, prompter: p });
+    if (await p.confirm({ id: 'setup', message: 'Set up Garnet now? (model, key, persona, channels)', default: true })) return setup([], io, { ...opts, prompter: p });
   }
   writeConfig(home, defaultConfig());
   mkdirSync(join(home, 'workspace'), { recursive: true });
-  io.out(`Created ${home}/config.json and ${home}/workspace.\nNext: \`ruby setup\` walks you through the model, keys and channels (\`ruby setup -y --help\` for scripts).\n`);
+  io.out(`Created ${home}/config.json and ${home}/workspace.\nNext: \`garnet setup\` walks you through the model, keys and channels (\`garnet setup -y --help\` for scripts).\n`);
   return 0;
 }

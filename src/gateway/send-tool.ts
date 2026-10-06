@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RubyError, type ToolDefinition } from '../contracts/index.ts';
+import { GarnetError, type ToolDefinition } from '../contracts/index.ts';
 import type { GatewayStore } from '../store/index.ts';
 import { BindMemo } from '../tools/index.ts';
 import { ChatDirectory } from './directory.ts';
@@ -17,22 +17,22 @@ export type SendMessageDeps = {
 };
 
 /**
- * Throws when Ruby already sent `perHour` messages or files on its own in the
+ * Throws when Garnet already sent `perHour` messages or files on its own in the
  * last hour (shared by send_message and send_file). Returns how many it sent.
  */
 export function assertSendAllowed(store: GatewayStore, perHour: number, now: Date): number {
   const sent = store.sentSince(new Date(now.getTime() - 3_600_000).toISOString());
   if (sent >= perHour) {
-    throw new RubyError(
+    throw new GarnetError(
       'budget_exhausted',
-      `Not sent: Ruby already sent ${sent} messages or files on its own in the last hour (limit gateway.messagesPerHour = ${perHour}). Do not retry now; include it in your reply instead.`,
+      `Not sent: Garnet already sent ${sent} messages or files on its own in the last hour (limit gateway.messagesPerHour = ${perHour}). Do not retry now; include it in your reply instead.`,
     );
   }
   return sent;
 }
 
 /**
- * `send_message`: messages a paired chat on Ruby's own initiative (capability
+ * `send_message`: messages a paired chat on Garnet's own initiative (capability
  * `message.send`, ask by default). Only private chats of paired identities can
  * be targeted, sends are rate-limited per hour, and each message is recorded
  * in the target chat's conversation. Delivery is durable (the outbox).
@@ -86,7 +86,7 @@ export function sendMessageTool(deps: SendMessageDeps): ToolDefinition<SendInput
       const deliveryId = deps.notify(target, input.text, { from: 'send_message', skipSession: ctx.sessionId, ...(ctx.taint?.sources.length ? { taint: ctx.taint.sources } : {}) });
       deps.store.recordSent({ sessionId: ctx.sessionId, channel: target.channel, account: target.account, chatId: target.chatId, deliveryId });
       return {
-        content: `Queued for ${ChatDirectory.label(target)}${sameChat ? ' (this chat)' : ''}; it is delivered by the running Ruby service. ${deps.perHour - sent - 1} more message(s) allowed this hour.`,
+        content: `Queued for ${ChatDirectory.label(target)}${sameChat ? ' (this chat)' : ''}; it is delivered by the running Garnet service. ${deps.perHour - sent - 1} more message(s) allowed this hour.`,
         data: { deliveryId, channel: target.channel, chatId: target.chatId },
       };
     },

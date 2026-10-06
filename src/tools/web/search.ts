@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RubyError, type ToolDefinition } from '../../contracts/index.ts';
+import { GarnetError, type ToolDefinition } from '../../contracts/index.ts';
 import type { FetchResponse, WebFetcher } from './fetcher.ts';
 import { decodeEntities, stripInvisible } from './html.ts';
 
@@ -27,7 +27,7 @@ export function searchBackend(config: SearchConfig, secret: SecretFn): SearchBac
     case 'duckduckgo':
       return duckDuckGo();
     case 'searxng':
-      if (!config.searxngUrl) throw new RubyError('config', 'web.search.backend is searxng but web.search.searxngUrl is not set.');
+      if (!config.searxngUrl) throw new GarnetError('config', 'web.search.backend is searxng but web.search.searxngUrl is not set.');
       return searxng(config.searxngUrl);
     case 'brave':
       return brave(() => key(secret, config.apiKeyEnv ?? 'BRAVE_API_KEY', 'Brave Search'));
@@ -39,7 +39,7 @@ export function searchBackend(config: SearchConfig, secret: SecretFn): SearchBac
 /** Resolved at call time, so a key stored after startup works and never sits in the tool definition. */
 function key(secret: SecretFn, name: string, provider: string): string {
   const k = secret(name);
-  if (!k) throw new RubyError('config', `${provider} search needs an API key in ${name} (environment, or \`ruby secrets set ${name}\`). Tell the owner; do not retry.`);
+  if (!k) throw new GarnetError('config', `${provider} search needs an API key in ${name} (environment, or \`garnet secrets set ${name}\`). Tell the owner; do not retry.`);
   return k;
 }
 
@@ -58,7 +58,7 @@ export function duckDuckGo(): SearchBackend {
       const res = await fetcher.fetch(`${endpoint}?${new URLSearchParams({ q: query })}`, { signal, headers: { accept: 'text/html' } });
       const html = res.body.toString('utf8');
       if (res.status === 202 || /anomaly-modal|captcha|challenge-form/i.test(html)) {
-        throw new RubyError('provider_transient', 'DuckDuckGo refused this automated search (it asked for a CAPTCHA). Try again later, or ask the owner to set web.search.backend to searxng, brave or tavily.');
+        throw new GarnetError('provider_transient', 'DuckDuckGo refused this automated search (it asked for a CAPTCHA). Try again later, or ask the owner to set web.search.backend to searxng, brave or tavily.');
       }
       expectOk(res, 'DuckDuckGo', false);
       return parseDuckDuckGo(html).slice(0, max);
@@ -115,7 +115,7 @@ export function searxng(baseUrl: string): SearchBackend {
     endpoint,
     async search(query, max, fetcher, signal) {
       const res = await fetcher.fetch(`${endpoint}?${new URLSearchParams({ q: query, format: 'json' })}`, { signal, trustedOrigin: base, headers: { accept: 'application/json' } });
-      if (res.status === 403) throw new RubyError('config', 'The SearXNG instance refused format=json. Enable it in its settings.yml (search: formats: [html, json]). Tell the owner.');
+      if (res.status === 403) throw new GarnetError('config', 'The SearXNG instance refused format=json. Enable it in its settings.yml (search: formats: [html, json]). Tell the owner.');
       expectOk(res, 'SearXNG', false);
       const data = json(res, 'SearXNG') as { results?: { title?: string; url?: string; content?: string }[] };
       return (data.results ?? []).flatMap((r) => (r.url ? [{ title: plain(r.title ?? ''), url: r.url, snippet: plain(r.content ?? '') }] : [])).slice(0, max);
@@ -166,17 +166,17 @@ export function tavily(apiKey: () => string): SearchBackend {
 }
 
 function expectOk(res: FetchResponse, provider: string, keyed: boolean): void {
-  if (keyed && (res.status === 401 || res.status === 403)) throw new RubyError('config', `${provider} rejected the API key (HTTP ${res.status}). Tell the owner; do not retry.`);
-  if (res.status === 401 || res.status === 403) throw new RubyError('tool_failed', `${provider} refused the request (HTTP ${res.status}). It may block automated searches from this network; tell the owner.`);
-  if (res.status === 429) throw new RubyError('provider_transient', `${provider} is rate limiting searches (HTTP 429). Try again later.`);
-  if (res.status >= 400) throw new RubyError('tool_failed', `${provider} answered HTTP ${res.status}.`);
+  if (keyed && (res.status === 401 || res.status === 403)) throw new GarnetError('config', `${provider} rejected the API key (HTTP ${res.status}). Tell the owner; do not retry.`);
+  if (res.status === 401 || res.status === 403) throw new GarnetError('tool_failed', `${provider} refused the request (HTTP ${res.status}). It may block automated searches from this network; tell the owner.`);
+  if (res.status === 429) throw new GarnetError('provider_transient', `${provider} is rate limiting searches (HTTP 429). Try again later.`);
+  if (res.status >= 400) throw new GarnetError('tool_failed', `${provider} answered HTTP ${res.status}.`);
 }
 
 function json(res: FetchResponse, provider: string): unknown {
   try {
     return JSON.parse(res.body.toString('utf8'));
   } catch {
-    throw new RubyError('tool_failed', `${provider} returned something that is not JSON${res.truncated ? ' (the response hit the size limit)' : ''}.`);
+    throw new GarnetError('tool_failed', `${provider} returned something that is not JSON${res.truncated ? ' (the response hit the size limit)' : ''}.`);
   }
 }
 

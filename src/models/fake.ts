@@ -23,7 +23,7 @@ export type FakeStep = {
 export type FakeScript = (FakeStep | ((request: ModelRequest) => FakeStep))[];
 
 /**
- * Deterministic, offline model for tests and `ruby chat --fake`. Plays its
+ * Deterministic, offline model for tests and `garnet chat --fake`. Plays its
  * script one step per call; after the script ends it echoes the last user text.
  */
 export class FakeModel implements ModelAdapter {

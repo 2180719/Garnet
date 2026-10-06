@@ -1,7 +1,7 @@
-// `ruby backup` and `ruby restore`: a plain directory you can inspect, copy or archive.
+// `garnet backup` and `garnet restore`: a plain directory you can inspect, copy or archive.
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { createRuby, VERSION } from '../main.ts';
+import { createGarnet, VERSION } from '../main.ts';
 import { backupDb } from '../store/index.ts';
 import type { Io } from './main.ts';
 
@@ -9,51 +9,55 @@ import type { Io } from './main.ts';
 const DIRS = ['memory', 'skills', 'artifacts', 'media', 'workspace'];
 
 export function backup(args: string[], io: Io): number {
-  const ruby = createRuby({ noModel: true });
+  const garnet = createGarnet({ noModel: true });
   try {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const target = resolve(args[0] ?? join(ruby.paths.home, 'backups', `ruby-${stamp}`));
+    const target = resolve(args[0] ?? join(garnet.paths.home, 'backups', `garnet-${stamp}`));
     if (existsSync(target)) {
       io.err(`${target} already exists.\n`);
       return 1;
     }
     mkdirSync(target, { recursive: true, mode: 0o700 });
-    backupDb(ruby.db, join(target, 'ruby.db'));
-    if (existsSync(ruby.paths.configFile)) cpSync(ruby.paths.configFile, join(target, 'config.json'));
+    backupDb(garnet.db, join(target, 'garnet.db'));
+    if (existsSync(garnet.paths.configFile)) cpSync(garnet.paths.configFile, join(target, 'config.json'));
     // The encrypted store is safe to copy; its passphrase or key file is not included.
-    if (ruby.secrets.exists()) cpSync(ruby.secrets.file, join(target, 'secrets'));
+    if (garnet.secrets.exists()) cpSync(garnet.secrets.file, join(target, 'secrets'));
     for (const dir of DIRS) {
-      const from = dir === 'workspace' ? ruby.paths.workspace : join(ruby.paths.home, dir);
+      const from = dir === 'workspace' ? garnet.paths.workspace : join(garnet.paths.home, dir);
       if (existsSync(from)) cpSync(from, join(target, dir), { recursive: true, verbatimSymlinks: true });
     }
     writeFileSync(join(target, 'BACKUP.json'), JSON.stringify({ version: VERSION, createdAt: new Date().toISOString() }, null, 2));
-    const encrypted = ruby.secrets.exists() ? ' The encrypted secret store is included; its passphrase or key file is not.' : '';
-    io.out(`Backed up to ${target}\nNot included: the env file with your secrets (${ruby.paths.home}/env). Keep a copy somewhere safe.${encrypted}\n`);
+    const encrypted = garnet.secrets.exists() ? ' The encrypted secret store is included; its passphrase or key file is not.' : '';
+    io.out(`Backed up to ${target}\nNot included: the env file with your secrets (${garnet.paths.home}/env). Keep a copy somewhere safe.${encrypted}\n`);
     return 0;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }
 
 export function restore(args: string[], io: Io): number {
   const from = args[0] && resolve(args[0]);
-  if (!from || !existsSync(join(from, 'BACKUP.json')) || !existsSync(join(from, 'ruby.db'))) {
-    io.err('Usage: ruby restore <backup-dir>   (stop Ruby first; the current data is moved aside, not deleted)\n');
+  // Backups made before the rename hold ruby.db.
+  const dbFile = from ? ['garnet.db', 'ruby.db'].find((n) => existsSync(join(from, n))) : undefined;
+  if (!from || !dbFile || !existsSync(join(from, 'BACKUP.json'))) {
+    io.err('Usage: garnet restore <backup-dir>   (stop Garnet first; the current data is moved aside, not deleted)\n');
     return 2;
   }
-  const ruby = createRuby({ noModel: true });
-  const home = ruby.paths.home;
-  const workspace = ruby.paths.workspace;
-  ruby.close();
+  const garnet = createGarnet({ noModel: true });
+  const home = garnet.paths.home;
+  const workspace = garnet.paths.workspace;
+  garnet.close();
   const aside = join(home, `pre-restore-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   mkdirSync(aside, { recursive: true, mode: 0o700 });
-  for (const name of ['ruby.db', 'ruby.db-wal', 'ruby.db-shm', 'config.json', 'secrets', 'memory', 'skills', 'artifacts', 'media']) {
+  // Both database names move aside: the app opens garnet.db when present, so a leftover ruby.db must not linger beside a restored one.
+  for (const name of ['garnet.db', 'garnet.db-wal', 'garnet.db-shm', 'ruby.db', 'ruby.db-wal', 'ruby.db-shm', 'config.json', 'secrets', 'memory', 'skills', 'artifacts', 'media']) {
     if (existsSync(join(home, name))) renameSync(join(home, name), join(aside, name));
   }
   if (existsSync(workspace)) renameSync(workspace, join(aside, 'workspace'));
   for (const name of readdirSync(from)) {
-    if (name === 'BACKUP.json') continue;
-    const dest = name === 'workspace' ? workspace : join(home, name);
+    if (name === 'BACKUP.json' || (name === 'ruby.db' && dbFile === 'garnet.db')) continue;
+    // A pre-rename backup's ruby.db is restored as garnet.db: that is the file the app opens first, and any ruby.db in this home was moved aside above.
+    const dest = name === 'workspace' ? workspace : join(home, name === 'ruby.db' ? 'garnet.db' : name);
     cpSync(join(from, name), dest, { recursive: true, verbatimSymlinks: true });
   }
   io.out(`Restored from ${from}. Your previous data was moved to ${aside}.\n`);

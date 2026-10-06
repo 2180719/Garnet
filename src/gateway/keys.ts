@@ -1,12 +1,13 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import type { ApiKeyRow, KeyStore } from '../store/index.ts';
 
 export const SCOPES = ['chat', 'read', 'admin'] as const;
 export type Scope = (typeof SCOPES)[number];
 
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
-const KEY_SHAPE = /^ruby_([A-Za-z0-9]{8})_([A-Za-z0-9]{32})$/;
+/** `ruby_` is the prefix keys had before the rename to Garnet; they keep working. */
+const KEY_SHAPE = /^(?:garnet|ruby)_([A-Za-z0-9]{8})_([A-Za-z0-9]{32})$/;
 
 function base62(length: number): string {
   // Rejection sampling keeps the distribution uniform.
@@ -39,11 +40,11 @@ export class ApiKeys {
 
   /** Creates a key. The full key is returned once and never stored. */
   create(name: string, scopes: Scope[], expiresInDays?: number): CreatedKey {
-    if (!name.trim() || name.length > 64) throw new RubyError('invalid_input', 'Key name must be 1-64 characters.');
+    if (!name.trim() || name.length > 64) throw new GarnetError('invalid_input', 'Key name must be 1-64 characters.');
     const unknown = scopes.filter((s) => !SCOPES.includes(s));
-    if (scopes.length === 0 || unknown.length) throw new RubyError('invalid_input', `Scopes must be some of: ${SCOPES.join(', ')}.`);
+    if (scopes.length === 0 || unknown.length) throw new GarnetError('invalid_input', `Scopes must be some of: ${SCOPES.join(', ')}.`);
     if (expiresInDays !== undefined && !(Number.isFinite(expiresInDays) && expiresInDays > 0 && expiresInDays <= 3650)) {
-      throw new RubyError('invalid_input', 'Expiry must be a number of days from 1 to 3650 (omit it for a key that does not expire).');
+      throw new GarnetError('invalid_input', 'Expiry must be a number of days from 1 to 3650 (omit it for a key that does not expire).');
     }
     const id = base62(8);
     const secret = base62(32);
@@ -51,7 +52,7 @@ export class ApiKeys {
     const expiresAt = expiresInDays ? new Date(Date.now() + expiresInDays * 86_400_000).toISOString() : null;
     const unique = [...new Set(scopes)];
     this.store.insert({ id, name: name.trim(), salt, hash: digest(salt, secret), scopes: unique, createdAt: new Date().toISOString(), expiresAt });
-    return { id, key: `ruby_${id}_${secret}`, name: name.trim(), scopes: unique, expiresAt };
+    return { id, key: `garnet_${id}_${secret}`, name: name.trim(), scopes: unique, expiresAt };
   }
 
   /** Returns the key record when `presented` is a valid, active key. Constant-time comparison. */

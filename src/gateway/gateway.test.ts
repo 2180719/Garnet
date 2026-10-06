@@ -26,7 +26,7 @@ test('unknown senders get one pairing code; approval greets them', async () => {
   await settle(t);
   assert.equal(t.model.requests.length, 0, 'unpaired messages never reach the model');
   assert.equal(t.channel.sent.length, 1);
-  const code = /ruby pair approve ([A-Z0-9]{6})/.exec(t.channel.sent[0]!.text)?.[1];
+  const code = /garnet pair approve ([A-Z0-9]{6})/.exec(t.channel.sent[0]!.text)?.[1];
   assert.ok(code);
   assert.equal(approvePairing(t.store, 'nope'), null);
   assert.ok(approvePairing(t.store, code!.toLowerCase()));
@@ -104,7 +104,7 @@ test('delivery retries transient failures and gives up on permanent ones', async
 });
 
 test('restart recovery never replays interrupted work', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const first = setup([], { db: openDb(file) });
   first.store.addIdentity('fake', 'u1', 'Ada');
   // Simulate a crash mid-task and mid-send.
@@ -220,7 +220,7 @@ test('/stop cancels a task started through chat() (API, dashboard)', async () =>
 });
 
 test('after a restart the inbox backlog runs before messages that arrive during channel start', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const first = setup([], { db: openDb(file) });
   first.store.addIdentity('fake', 'u1', 'Ada');
   first.store.receive(msg('older'));
@@ -306,7 +306,7 @@ test('files from unpaired senders are never downloaded; oversize files are refus
   await t.channel.sink!(msg('', { attachments: [{ kind: 'video', ref: 'big', name: 'clip.mp4', size: 50_000_000 }] }));
   await settle(t);
   assert.deepEqual(t.channel.fetched, []);
-  assert.match(t.channel.sent[0]!.text, /ruby pair approve/);
+  assert.match(t.channel.sent[0]!.text, /garnet pair approve/);
   assert.match(t.channel.sent[1]!.text, /couldn't receive your video "clip.mp4": it is 47.7 MB, over the 0.1 MB limit/);
   assert.equal(t.model.requests.length, 0);
   await t.gateway.stop(0);
@@ -360,7 +360,7 @@ test('an unpaired sender of a photo gets the pairing prompt, not the media reply
   await t.channel.sink!(msg('', { unsupported: 'photo' }));
   await settle(t);
   assert.equal(t.channel.sent.length, 1);
-  assert.match(t.channel.sent[0]!.text, /ruby pair approve/);
+  assert.match(t.channel.sent[0]!.text, /garnet pair approve/);
   await t.gateway.stop(0);
 });
 

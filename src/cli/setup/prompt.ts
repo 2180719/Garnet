@@ -1,7 +1,7 @@
-// Prompts for `ruby setup`, behind one interface so the wizard runs the same
+// Prompts for `garnet setup`, behind one interface so the wizard runs the same
 // way on a terminal, from command-line flags (non-interactive) and in tests.
 import { createInterface } from 'node:readline';
-import { RubyError } from '../../contracts/index.ts';
+import { GarnetError } from '../../contracts/index.ts';
 
 export type Choice<T extends string> = { value: T; label: string; hint?: string };
 
@@ -70,7 +70,7 @@ export class AnswerPrompter implements Prompter {
   }
 
   private missing(q: Ask): never {
-    throw new RubyError('invalid_input', `Missing an answer for "${q.message.replace(/[?:]\s*$/, '')}": pass --${q.id} <value>.`);
+    throw new GarnetError('invalid_input', `Missing an answer for "${q.message.replace(/[?:]\s*$/, '')}": pass --${q.id} <value>.`);
   }
 
   async text(q: TextAsk): Promise<string> {
@@ -78,7 +78,7 @@ export class AnswerPrompter implements Prompter {
     const value = given !== undefined ? String(given) : (q.auto ?? q.default);
     if (value === undefined) this.missing(q);
     const problem = q.validate?.(value);
-    if (problem) throw new RubyError('invalid_input', `--${q.id}: ${problem}`);
+    if (problem) throw new GarnetError('invalid_input', `--${q.id}: ${problem}`);
     return value;
   }
 
@@ -94,7 +94,7 @@ export class AnswerPrompter implements Prompter {
     const value = given !== undefined ? String(given) : (q.auto ?? q.default);
     if (value === undefined) this.missing(q);
     const choice = q.choices.find((c) => c.value === value);
-    if (!choice) throw new RubyError('invalid_input', `--${q.id} must be one of ${q.choices.map((c) => c.value).join(', ')} (got "${value}").`);
+    if (!choice) throw new GarnetError('invalid_input', `--${q.id} must be one of ${q.choices.map((c) => c.value).join(', ')} (got "${value}").`);
     return choice.value;
   }
 
@@ -117,7 +117,7 @@ export type Style = {
 const paint = (code: string) => (s: string) => `\x1b[${code}m${s}\x1b[0m`;
 const plain = (s: string) => s;
 
-/** Ruby's terminal palette (docs/DESIGN.md), or no styling when color is off. */
+/** Garnet's terminal palette (docs/DESIGN.md), or no styling when color is off. */
 export function makeStyle(color: boolean): Style {
   if (!color) return { accent: plain, muted: plain, bold: plain, ok: plain, warn: plain, bad: plain };
   return {
@@ -135,7 +135,7 @@ export function wantsColor(stream: { isTTY?: boolean }, env: NodeJS.ProcessEnv =
   return Boolean(stream.isTTY) && !('NO_COLOR' in env) && env.TERM !== 'dumb';
 }
 
-const cancelled = () => new RubyError('cancelled', 'Setup cancelled.');
+const cancelled = () => new GarnetError('cancelled', 'Setup cancelled.');
 
 /**
  * Removes terminal key sequences (arrows, Home, F-keys, bracketed-paste

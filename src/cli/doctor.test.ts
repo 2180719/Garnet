@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { defaultConfig, writeConfig, type RubyConfig } from '../config/index.ts';
+import { defaultConfig, writeConfig, type GarnetConfig } from '../config/index.ts';
 import { PASSPHRASE_ENV, openSecretStore } from '../secrets/index.ts';
 import { planService } from '../service/index.ts';
 import { diagnose, doctor, formatFindings, nodeOk, type DoctorDeps, type Finding } from './doctor.ts';
@@ -13,10 +13,10 @@ import { makeStyle } from './setup/prompt.ts';
 const KEY = 'sk-ant-NEVER-PRINT-THIS-0123456789';
 
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps & { commands: string[][]; sandboxChecks: number } {
-  const install = tempDir('ruby-install-');
+  const install = tempDir('garnet-install-');
   const commands: string[][] = [];
   const d = {
-    home: join(tempDir(), 'ruby'),
+    home: join(tempDir(), 'garnet'),
     env: { PATH: '' } as NodeJS.ProcessEnv,
     platform: 'linux' as NodeJS.Platform,
     nodeVersion: '22.18.0',
@@ -41,7 +41,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps & { commands: string[]
 
 const find = (fs: Finding[], area: string) => fs.filter((f) => f.area === area);
 
-function configure(home: string, edit: (c: RubyConfig) => void = () => {}) {
+function configure(home: string, edit: (c: GarnetConfig) => void = () => {}) {
   const c = defaultConfig();
   edit(c);
   writeConfig(home, c);
@@ -62,7 +62,7 @@ test('a fresh machine: old node, no home; each problem says how to fix it', asyn
   assert.match(find(fs, 'node')[0]!.fix!, /nodejs\.org/);
   assert.equal(find(fs, 'sqlite')[0]!.status, 'fail');
   assert.equal(find(fs, 'home')[0]!.status, 'fail');
-  assert.equal(find(fs, 'home')[0]!.fix, 'Run `ruby setup`.');
+  assert.equal(find(fs, 'home')[0]!.fix, 'Run `garnet setup`.');
   assert.equal(find(fs, 'path')[0]!.status, 'warn');
   // Stops after home: nothing else can be checked.
   assert.equal(find(fs, 'config').length, 0);
@@ -87,12 +87,12 @@ test('a healthy setup: key from the env file, channels, service running', async 
   assert.match(find(fs, 'model')[0]!.message, /key ANTHROPIC_API_KEY \(.*\/env\)/);
   assert.match(find(fs, 'channels')[0]!.message, /telegram · token TELEGRAM_BOT_TOKEN \(environment\)/);
   assert.equal(find(fs, 'service')[0]!.status, 'ok');
-  assert.deepEqual(d.commands, [['systemctl', '--user', 'status', 'ruby.service', '--no-pager']]);
+  assert.deepEqual(d.commands, [['systemctl', '--user', 'status', 'garnet.service', '--no-pager']]);
   assert.equal(d.sandboxChecks, 0, 'exec is denied by default, so docker is not probed');
   assert.equal(JSON.stringify(fs).includes(KEY), false);
 });
 
-test('a named instance (`service install --name`) is found by its RUBY_HOME; another home on the default name is not ours', async () => {
+test('a named instance (`service install --name`) is found by its GARNET_HOME; another home on the default name is not ours', async () => {
   const d = deps();
   configure(d.home);
   const unit = (name: string | undefined, home: string) => {
@@ -104,16 +104,16 @@ test('a named instance (`service install --name`) is found by its RUBY_HOME; ano
   unit(undefined, '/somewhere/else');
   let fs = await diagnose(d);
   assert.equal(find(fs, 'service')[0]!.status, 'info');
-  assert.match(find(fs, 'service')[0]!.message, /not installed for this RUBY_HOME \(1 other Ruby instance installed/);
+  assert.match(find(fs, 'service')[0]!.message, /not installed for this GARNET_HOME \(1 other Garnet instance installed/);
   assert.match(find(fs, 'service')[0]!.fix!, /--name <name>/);
   unit('work', d.home);
   fs = await diagnose(d);
   assert.equal(find(fs, 'service')[0]!.status, 'ok');
-  assert.match(find(fs, 'service')[0]!.message, /ruby-work\.service/);
-  assert.deepEqual(d.commands.at(-1), ['systemctl', '--user', 'status', 'ruby-work.service', '--no-pager']);
+  assert.match(find(fs, 'service')[0]!.message, /garnet-work\.service/);
+  assert.deepEqual(d.commands.at(-1), ['systemctl', '--user', 'status', 'garnet-work.service', '--no-pager']);
   d.run = async () => ({ code: 3, stdout: '', stderr: 'inactive' });
   fs = await diagnose(d);
-  assert.match(find(fs, 'service')[0]!.fix!, /journalctl --user -u ruby-work\.service -e.*ruby service restart --name work/);
+  assert.match(find(fs, 'service')[0]!.fix!, /journalctl --user -u garnet-work\.service -e.*garnet service restart --name work/);
 });
 
 test('problems: invalid config, missing key, open env file, locked store, stale service, sandbox down', async () => {
@@ -139,7 +139,7 @@ test('problems: invalid config, missing key, open env file, locked store, stale 
   fs = await diagnose(d);
   assert.equal(find(fs, 'env')[0]!.status, 'fail');
   assert.equal(find(fs, 'secrets')[0]!.status, 'fail');
-  assert.match(find(fs, 'secrets')[0]!.message, /locked|RUBY_SECRETS/);
+  assert.match(find(fs, 'secrets')[0]!.message, /locked|GARNET_SECRETS/);
   assert.equal(find(fs, 'model')[0]!.status, 'fail');
   assert.match(find(fs, 'model')[0]!.fix!, /Unlock the store/);
   assert.equal(find(fs, 'service')[0]!.status, 'warn');
@@ -164,43 +164,43 @@ test('openai-compatible: warns before an Anthropic key would be sent to another 
   assert.match(find(fs, 'model')[0]!.message, /no key/);
 });
 
-test('PATH: finds this install’s shim, and warns when another `ruby` (the language) shadows it', async () => {
+test('PATH: finds this install’s shim, and warns when another `garnet` shadows it', async () => {
   const d = deps();
   const other = tempDir();
   const ours = tempDir();
-  writeFileSync(join(other, 'ruby'), '#!/bin/sh\necho ruby 3.3\n', { mode: 0o755 });
-  writeFileSync(join(ours, 'ruby'), `#!/bin/sh\nexec node ${d.entry} "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(other, 'garnet'), '#!/bin/sh\necho garnet 3.3\n', { mode: 0o755 });
+  writeFileSync(join(ours, 'garnet'), `#!/bin/sh\nexec node ${d.entry} "$@"\n`, { mode: 0o755 });
   d.env.PATH = `${ours}:${other}`;
   let f = find(await diagnose(d), 'path')[0]!;
   assert.equal(f.status, 'ok');
   d.env.PATH = `${other}:${ours}`;
   f = find(await diagnose(d), 'path')[0]!;
   assert.equal(f.status, 'warn');
-  assert.match(f.message, /programming language/);
+  assert.match(f.message, /different program/);
   assert.equal(f.fix, `Put ${ours} earlier in PATH.`);
 });
 
 test('PATH: an install under another command name (install.sh --name) is checked by that name', async () => {
   const d = deps();
   const ours = tempDir();
-  writeFileSync(join(ours, 'rubyagent'), `#!/bin/sh\nexec node ${d.entry} "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(ours, 'garnet-agent'), `#!/bin/sh\nexec node ${d.entry} "$@"\n`, { mode: 0o755 });
   d.env.PATH = ours;
-  d.env.RUBY_COMMAND_NAME = 'rubyagent';
+  d.env.GARNET_COMMAND_NAME = 'garnet-agent';
   const f = find(await diagnose(d), 'path')[0]!;
   assert.equal(f.status, 'ok');
-  assert.match(f.message, /`rubyagent` on PATH is this install/);
+  assert.match(f.message, /`garnet-agent` on PATH is this install/);
 });
 
 test('formatting and exit code: symbols plus words, fixes indented, 1 when anything fails', async () => {
   const text = formatFindings(
     [
       { area: 'node', status: 'ok', message: 'Node.js 22.18.0' },
-      { area: 'config', status: 'fail', message: 'broken', fix: 'Run `ruby setup`.' },
+      { area: 'config', status: 'fail', message: 'broken', fix: 'Run `garnet setup`.' },
       { area: 'path', status: 'warn', message: 'shadowed' },
     ],
     makeStyle(false),
   );
-  assert.match(text, /✓ node +Node\.js 22\.18\.0\n {2}✗ config +broken\n {6}→ Run `ruby setup`\.\n {2}! path +shadowed\n\n1 problem, 1 warning\.\n$/);
+  assert.match(text, /✓ node +Node\.js 22\.18\.0\n {2}✗ config +broken\n {6}→ Run `garnet setup`\.\n {2}! path +shadowed\n\n1 problem, 1 warning\.\n$/);
   let out = '';
   const io: Io = { out: (t) => (out += t), err: (t) => (out += t) };
   const d = deps();
@@ -221,8 +221,22 @@ test('a workspace containing home fails; an API bound beyond loopback is a warni
     c.api.host = '0.0.0.0';
   });
   const fs = await diagnose(d);
-  assert.match(find(fs, 'workspace')[0]!.message, /contains Ruby's home/);
+  assert.match(find(fs, 'workspace')[0]!.message, /contains Garnet's home/);
   assert.equal(find(fs, 'workspace')[0]!.status, 'fail');
   assert.equal(find(fs, 'api')[0]!.status, 'warn');
   assert.match(find(fs, 'api')[0]!.message, /0\.0\.0\.0/);
+});
+
+test('deprecated RUBY_* variables, a legacy ~/.ruby home and a leftover ruby.service are reported', async () => {
+  const userHome = tempDir();
+  const home = join(userHome, '.ruby');
+  const unitDir = join(userHome, '.config', 'systemd', 'user');
+  mkdirSync(unitDir, { recursive: true });
+  writeFileSync(join(unitDir, 'ruby.service'), `[Unit]\nDescription=Ruby personal agent\n[Service]\nEnvironment="RUBY_HOME=${home}"\n`);
+  const d = deps({ home, userHome });
+  d.env.RUBY_NODE = '/usr/bin/node';
+  const fs = await diagnose(d);
+  assert.ok(find(fs, 'env').some((f) => f.status === 'warn' && f.message === 'RUBY_NODE is deprecated, rename to GARNET_NODE'));
+  assert.ok(find(fs, 'home').some((f) => /legacy data directory/.test(f.message) && /mv .*\.ruby .*\.garnet/.test(f.fix ?? '')));
+  assert.ok(find(fs, 'service').some((f) => f.status === 'warn' && /legacy service/.test(f.message)));
 });

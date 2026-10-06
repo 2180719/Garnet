@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
-import { loadConfig, loadEnvFile, redact, rubyHome, writeConfig, configSchema } from '../config/index.ts';
-import { errorMessage, isRubyError } from '../contracts/index.ts';
-import { createRuby, VERSION } from '../main.ts';
+import { loadConfig, loadEnvFile, redact, garnetHome, writeConfig, configSchema } from '../config/index.ts';
+import { errorMessage, isGarnetError } from '../contracts/index.ts';
+import { createGarnet, VERSION } from '../main.ts';
 import { sparkle } from './sparkle.ts';
 import { Achievements } from '../achievements/index.ts';
 import { api, dashboard, jobs, pair, service, start } from './admin.ts';
@@ -15,59 +15,59 @@ import { doctor } from './doctor.ts';
 import { init, setup } from './setup/command.ts';
 import { chat } from './chat/index.ts';
 
-const HELP = `ruby — a persistent personal agent you can actually read
+const HELP = `garnet — a persistent personal agent you can actually read
 
 Usage:
-  ruby setup                Guided setup: model, key, persona, channels, service
-                            (re-run any time; \`ruby setup --help\` for script flags)
-  ruby doctor [--json]      Check the install and setup, with fixes
-  ruby init [--defaults]    Create ~/.ruby (offers \`ruby setup\` on a terminal)
-  ruby chat [--fake] [--session <id>] [--plain]
+  garnet setup                Guided setup: model, key, persona, channels, service
+                            (re-run any time; \`garnet setup --help\` for script flags)
+  garnet doctor [--json]      Check the install and setup, with fixes
+  garnet init [--defaults]    Create ~/.garnet (offers \`garnet setup\` on a terminal)
+  garnet chat [--fake] [--session <id>] [--plain]
                             Chat in the terminal (--fake uses an offline model;
                             /help inside lists commands and keys)
-  ruby config check         Validate the config file
-  ruby config show          Print the effective config (secrets redacted)
-  ruby config explain       Describe every setting
-  ruby sessions             List recent sessions
-  ruby start                Run the service (channels, gateway, API) in the foreground
-  ruby pair list|approve <code>|revoke <channel> <id>
-  ruby pair add <telegram|discord|signal> <id> [--name <name>]
-                            Manage who may talk to Ruby (add: without a code)
-  ruby api status|enable|disable
-  ruby api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
-  ruby api key list|revoke <id>
+  garnet config check         Validate the config file
+  garnet config show          Print the effective config (secrets redacted)
+  garnet config explain       Describe every setting
+  garnet sessions             List recent sessions
+  garnet start                Run the service (channels, gateway, API) in the foreground
+  garnet pair list|approve <code>|revoke <channel> <id>
+  garnet pair add <telegram|discord|signal> <id> [--name <name>]
+                            Manage who may talk to Garnet (add: without a code)
+  garnet api status|enable|disable
+  garnet api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
+  garnet api key list|revoke <id>
                             Opt-in HTTP API and its keys
-  ruby dashboard            Enable the dashboard and print a login link
-  ruby jobs list|show|history|run|pause|resume|delete|edit|add
+  garnet dashboard            Enable the dashboard and print a login link
+  garnet jobs list|show|history|run|pause|resume|delete|edit|add
                             Scheduled jobs, reminders and script jobs (config.json,
-                            created in chat, or added here; \`ruby jobs help\`)
-  ruby memory show|edit|history|rollback
-                            Inspect and correct what Ruby remembers
-  ruby skills list|show|proposal|accept|reject|archive|stale
-                            Review skills Ruby has learned
-  ruby import <openclaw|hermes> [--from <dir>] [--apply] [--raise-caps] [--pairings]
+                            created in chat, or added here; \`garnet jobs help\`)
+  garnet memory show|edit|history|rollback
+                            Inspect and correct what Garnet remembers
+  garnet skills list|show|proposal|accept|reject|archive|stale
+                            Review skills Garnet has learned
+  garnet import <openclaw|hermes> [--from <dir>] [--apply] [--raise-caps] [--pairings]
               [--persona keep|merge|replace] [--no-jobs]
                             Bring memory, persona, skills, jobs (disabled) and
                             allowlists over (dry run unless --apply)
-  ruby secrets list|set <NAME>|rm <NAME>|import-env [NAME...] [--keep]|keygen <path>
+  garnet secrets list|set <NAME>|rm <NAME>|import-env [NAME...] [--keep]|keygen <path>
                             Encrypted secret store (values from stdin, never argv)
-  ruby backup [dir]         Copy the database, config, memory, skills, artifacts
+  garnet backup [dir]         Copy the database, config, memory, skills, artifacts
                             and workspace
-  ruby restore <dir>        Restore a backup (stop Ruby first)
-  ruby service install|uninstall|status|restart|show|list [--name <name>]
-                            Run Ruby as a background service (systemd/launchd);
-                            --name lets several RUBY_HOMEs run side by side
-  ruby help                 Show this help
+  garnet restore <dir>        Restore a backup (stop Garnet first)
+  garnet service install|uninstall|status|restart|show|list [--name <name>]
+                            Run Garnet as a background service (systemd/launchd);
+                            --name lets several GARNET_HOMEs run side by side
+  garnet help                 Show this help
 
 Environment:
-  RUBY_HOME                 Data directory (default ~/.ruby)
+  GARNET_HOME                 Data directory (default ~/.garnet)
   ANTHROPIC_API_KEY         Provider key (name configurable via model.apiKeyEnv)
   TELEGRAM_BOT_TOKEN        Telegram bot token (when channels.telegram.enabled)
-  RUBY_SECRETS_KEY_FILE     Key file (mode 0600, outside RUBY_HOME) that unlocks the secret store
-  RUBY_SECRETS_PASSPHRASE   Or a passphrase that unlocks it
+  GARNET_SECRETS_KEY_FILE     Key file (mode 0600, outside GARNET_HOME) that unlocks the secret store
+  GARNET_SECRETS_PASSPHRASE   Or a passphrase that unlocks it
   Secrets are looked up in the environment first, then in the encrypted store
-  (<RUBY_HOME>/secrets). Service installs also read <RUBY_HOME>/env (KEY=value
-  lines, mode 0600); \`ruby secrets import-env\` moves secrets from it into the store.
+  (<GARNET_HOME>/secrets). Service installs also read <GARNET_HOME>/env (KEY=value
+  lines, mode 0600); \`garnet secrets import-env\` moves secrets from it into the store.
 `;
 
 export type Io = {
@@ -85,9 +85,9 @@ const stdio: Io = {
 export async function main(argv: string[], io: Io = stdio): Promise<number> {
   const [command = 'help', ...rest] = argv;
   try {
-    const { warning, loaded } = loadEnvFile(rubyHome());
+    const { warning, loaded } = loadEnvFile(garnetHome());
     if (warning) io.err(`Warning: ${warning}\n`);
-    for (const w of unlockWarnings(rubyHome(), process.env, loaded)) io.err(`Warning: ${w}\n`);
+    for (const w of unlockWarnings(garnetHome(), process.env, loaded)) io.err(`Warning: ${w}\n`);
     switch (command) {
       case 'init':
         return await init(rest, io);
@@ -117,20 +117,20 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
       case 'dashboard':
         return dashboard(io);
       case 'import': {
-        const ruby = createRuby({ noModel: true });
+        const garnet = createGarnet({ noModel: true });
         try {
-          let config = ruby.config;
+          let config = garnet.config;
           const save = (c: typeof config) => {
             config = c;
-            writeConfig(ruby.paths.home, c);
+            writeConfig(garnet.paths.home, c);
           };
           return await runImport(
             rest,
             io,
-            importDeps(ruby, { getConfig: () => config, setConfig: save, getPersona: () => config.persona, setPersona: (persona) => save({ ...config, persona }) }),
+            importDeps(garnet, { getConfig: () => config, setConfig: save, getPersona: () => config.persona, setPersona: (persona) => save({ ...config, persona }) }),
           );
         } finally {
-          ruby.close();
+          garnet.close();
         }
       }
       case 'secrets':
@@ -143,9 +143,9 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return skills(rest, io);
       case '--sparkle': {
         io.out(sparkle());
-        const ruby = createRuby({ noModel: true });
-        new Achievements(ruby.db).unlockEasterEgg('sparkle');
-        ruby.close();
+        const garnet = createGarnet({ noModel: true });
+        new Achievements(garnet.db).unlockEasterEgg('sparkle');
+        garnet.close();
         return 0;
       }
       case 'help':
@@ -160,10 +160,10 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
   } catch (e) {
     // node:util parseArgs rejects unknown or malformed flags: that is a usage error, not a crash.
     if (String((e as NodeJS.ErrnoException).code).startsWith('ERR_PARSE_ARGS')) {
-      io.err(`${errorMessage(e)}\nRun \`ruby help\` for usage.\n`);
+      io.err(`${errorMessage(e)}\nRun \`garnet help\` for usage.\n`);
       return 2;
     }
-    io.err(`${isRubyError(e) ? '' : 'Unexpected error: '}${errorMessage(e)}\n`);
+    io.err(`${isGarnetError(e) ? '' : 'Unexpected error: '}${errorMessage(e)}\n`);
     return 1;
   }
 }
@@ -204,13 +204,13 @@ function explain(schema: JsonSchema, prefix: string): string[] {
 }
 
 function sessions(io: Io): number {
-  const ruby = createRuby({ noModel: true });
+  const garnet = createGarnet({ noModel: true });
   try {
-    const rows = ruby.store.listSessions(20);
-    if (rows.length === 0) io.out('No sessions yet. Start one with `ruby chat`.\n');
+    const rows = garnet.store.listSessions(20);
+    if (rows.length === 0) io.out('No sessions yet. Start one with `garnet chat`.\n');
     for (const s of rows) io.out(`${s.id}  ${s.updatedAt}  ${s.title ?? ''}\n`);
     return 0;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }
