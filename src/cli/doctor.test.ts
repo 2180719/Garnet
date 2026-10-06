@@ -241,6 +241,17 @@ test('deprecated RUBY_* variables, a legacy ~/.ruby home and a leftover ruby.ser
   assert.ok(find(fs, 'service').some((f) => f.status === 'warn' && /legacy service/.test(f.message)));
 });
 
+test('a GARNET_* variable nothing reads is flagged: settings live in config.json', async () => {
+  const d = deps();
+  d.env.GARNET_MODEL = 'claude-opus-4-1';
+  d.env.GARNET_HOME = d.home;
+  const fs = await diagnose(d);
+  const hits = find(fs, 'env').filter((f) => f.status === 'warn' && /GARNET_MODEL/.test(f.message));
+  assert.equal(hits.length, 1);
+  assert.match(hits[0]!.fix ?? '', /garnet config set/);
+  assert.ok(!find(fs, 'env').some((f) => /GARNET_HOME/.test(f.message)));
+});
+
 test('media checks: transcription command on PATH, openai-compatible key, PDF text command', async () => {
   const d = deps();
   mkdirSync(d.home, { recursive: true, mode: 0o700 });

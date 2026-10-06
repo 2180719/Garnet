@@ -20,6 +20,17 @@ export function deprecatedEnvVars(env: NodeJS.ProcessEnv): { old: string; name: 
   return out;
 }
 
+/** Every GARNET_* name Garnet or its installer reads. Settings live in config.json, so any other GARNET_* variable is ignored. */
+const KNOWN_GARNET_ENV = new Set([
+  ...LEGACY_ENV_SUFFIXES.map((s) => `GARNET_${s}`),
+  'GARNET_INSTALL_DIR', 'GARNET_BIN_DIR', 'GARNET_BIN_NAME', 'GARNET_REPO', 'GARNET_REF', // install.sh only
+]);
+
+/** `GARNET_*` variables that are set but that nothing reads (a setting someone tried to put in the environment). */
+export function unknownGarnetEnv(env: NodeJS.ProcessEnv): string[] {
+  return Object.keys(env).filter((k) => k.startsWith('GARNET_') && !KNOWN_GARNET_ENV.has(k)).sort();
+}
+
 const LINE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 
 /** Parses KEY=value lines (`#` comments, optional `export`, optional matching quotes). The first line for a name wins. */

@@ -7,13 +7,13 @@ const permission = z.enum(['allow', 'ask', 'deny']);
 
 // Every field has a description: the dashboard and `garnet config explain` render them.
 const capabilityGrant = z.object({
-  'fs.read': permission.default('allow'),
-  'fs.write': permission.default('deny'),
-  'net.fetch': permission.default('deny'),
-  exec: permission.default('deny'),
-  'message.send': permission.default('deny'),
-  'memory.write': permission.default('deny'),
-  'schedule.edit': permission.default('deny'),
+  'fs.read': permission.default('allow').describe('Read files in the workspace.'),
+  'fs.write': permission.default('deny').describe('Create or change files in the workspace.'),
+  'net.fetch': permission.default('deny').describe('Fetch web pages and search the web.'),
+  exec: permission.default('deny').describe('Run shell commands (in the sandbox).'),
+  'message.send': permission.default('deny').describe('Send messages to paired chats.'),
+  'memory.write': permission.default('deny').describe('Edit MEMORY.md and USER.md.'),
+  'schedule.edit': permission.default('deny').describe('Create, change or delete scheduled jobs and reminders.'),
 });
 
 /** Channels a job or `send_message` can deliver to (paired chats only). */
@@ -51,10 +51,15 @@ export const jobSchema = z
         maxTokensPerRun: z.number().int().min(1000).default(100_000).describe('Token cap for one run.'),
         maxTokensPerDay: z.number().int().min(1000).default(500_000).describe('Token cap across all runs in 24 hours.'),
       })
-      .prefault({}),
+      .prefault({})
+      .describe('Token caps for this job.'),
     timeoutMinutes: z.number().int().min(1).max(240).default(10).describe('Runs are cancelled after this long.'),
     notify: z
-      .object({ channel: z.string(), chatId: z.string(), account: z.string().default('default') })
+      .object({
+        channel: z.string().describe('telegram, signal or discord.'),
+        chatId: z.string().describe('The paired chat to send to.'),
+        account: z.string().default('default').describe('Which configured account of that channel sends it.'),
+      })
       .optional()
       .describe('Where to send results. Without it, results are only kept in run history.'),
     notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Garnet has something worth reporting (script jobs: when the output changed).'),
@@ -244,13 +249,13 @@ export const configSchema = z
       .describe('Where run_command executes. Only used when the exec permission is allow or ask.'),
     permissions: z
       .object({
-        'fs.read': permission.default('allow'),
-        'fs.write': permission.default('ask'),
-        'net.fetch': permission.default('ask'),
-        exec: permission.default('deny'),
-        'message.send': permission.default('ask'),
-        'memory.write': permission.default('allow'),
-        'schedule.edit': permission.default('ask'),
+        'fs.read': permission.default('allow').describe('Read files in the workspace.'),
+        'fs.write': permission.default('ask').describe('Create or change files in the workspace.'),
+        'net.fetch': permission.default('ask').describe('Fetch web pages and search the web.'),
+        exec: permission.default('deny').describe('Run shell commands (in the sandbox).'),
+        'message.send': permission.default('ask').describe('Send messages to paired chats.'),
+        'memory.write': permission.default('allow').describe('Edit MEMORY.md and USER.md.'),
+        'schedule.edit': permission.default('ask').describe('Create, change or delete scheduled jobs and reminders.'),
       })
       .prefault({})
       .describe('Default permission for each capability: allow, ask (owner approval) or deny.'),
@@ -377,10 +382,12 @@ export const configSchema = z
       .array(
         z
           .object({
-            match: z.object({
-              channel: z.string().describe('Channel name, e.g. telegram.'),
-              chatId: z.string().optional().describe('Specific chat; omit to match every chat on the channel.'),
-            }),
+            match: z
+              .object({
+                channel: z.string().describe('Channel name, e.g. telegram.'),
+                chatId: z.string().optional().describe('Specific chat; omit to match every chat on the channel.'),
+              })
+              .describe('Which chats this rule applies to.'),
             conversation: z
               .string()
               .regex(/^[a-z0-9-]{1,40}$/)

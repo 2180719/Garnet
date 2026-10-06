@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { loadConfig, loadEnvFile, redact, garnetHome, writeConfig, configSchema } from '../config/index.ts';
+import { loadConfig, loadEnvFile, redact, garnetHome, writeConfig, configSchema, changeConfig, getConfigValue, parseConfigValue, showConfigValue } from '../config/index.ts';
 import { errorMessage, isGarnetError } from '../contracts/index.ts';
 import { createGarnet, VERSION } from '../main.ts';
 import { sparkle } from './sparkle.ts';
@@ -28,6 +28,11 @@ Usage:
   garnet config check         Validate the config file
   garnet config show          Print the effective config (secrets redacted)
   garnet config explain       Describe every setting
+  garnet config get <path>    Print one setting (for example model.name)
+  garnet config set <path> <value>
+                            Change one setting, validated, saved atomically
+                            (values are JSON when they parse: true, 42, ["a"])
+  garnet config unset <path>  Reset a setting to its default
   garnet sessions             List recent sessions
   garnet start                Run the service (channels, gateway, API) in the foreground
   garnet pair list|approve <code>|revoke <channel> <id>
@@ -170,7 +175,8 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
 
 function configCommand(args: string[], io: Io): number {
   const sub = args[0] ?? 'check';
-  const { config, paths, migrated } = loadConfig();
+  const home = garnetHome();
+  const { config, paths, migrated } = loadConfig(home);
   if (sub === 'check') {
     io.out(`Config OK (${existsSync(paths.configFile) ? paths.configFile : 'defaults; no config file yet'}).${migrated ? ' Migrated to the current version; a backup was kept.' : ''}\n`);
     return 0;
@@ -183,7 +189,53 @@ function configCommand(args: string[], io: Io): number {
     io.out(explain(configSchema.toJSONSchema() as JsonSchema, '').join('\n') + '\n');
     return 0;
   }
-  io.err(`Unknown config subcommand "${sub}". Use check, show or explain.\n`);
+  if (sub === 'get') {
+    const path = args[1];
+    if (!path || args.length > 2) {
+      io.err('Usage: garnet config get <path>\n');
+      return 2;
+    }
+    const value = getConfigValue(config, path);
+    if (value === undefined) {
+      io.err(`${path} is not set (or is not a setting). \`garnet config explain\` lists every setting.\n`);
+      return 1;
+    }
+    const leaf = path.split('.').pop()!;
+    io.out(JSON.stringify((redact({ [leaf]: value }) as Record<string, unknown>)[leaf], null, 2) + '\n');
+    return 0;
+  }
+  if (sub === 'set' || sub === 'unset') {
+    const path = args[1];
+    const text = args[2];
+    if (!path || (sub === 'set' ? text === undefined || args.length > 3 : args.length > 2)) {
+      io.err(sub === 'set' ? 'Usage: garnet config set <path> <value>   (JSON values such as true, 42, ["a"] are understood; anything else is text)\n' : 'Usage: garnet config unset <path>\n');
+      return 2;
+    }
+    let change;
+    if (sub === 'unset') change = changeConfig(config, path, undefined, true);
+    else {
+      const parsed = parseConfigValue(text!);
+      try {
+        change = changeConfig(config, path, parsed);
+      } catch (e) {
+        // `config set persona.name 123` means the text "123" when a number is not accepted.
+        if (typeof parsed === 'string') throw e;
+        try {
+          change = changeConfig(config, path, text!);
+        } catch {
+          throw e;
+        }
+      }
+    }
+    if (JSON.stringify(change.after) === JSON.stringify(change.before)) {
+      io.out(`${path} is already ${showConfigValue(path, change.after)}; nothing changed.\n`);
+      return 0;
+    }
+    writeConfig(home, change.config);
+    io.out(`${path}: ${showConfigValue(path, change.before)} -> ${showConfigValue(path, change.after)}\nSaved to ${paths.configFile}. Restart Garnet (\`garnet service restart\`) for it to take effect.\n`);
+    return 0;
+  }
+  io.err(`Unknown config subcommand "${sub}". Use check, show, explain, get, set or unset.\n`);
   return 2;
 }
 
