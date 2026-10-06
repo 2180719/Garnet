@@ -7,7 +7,7 @@ import { assistantName, projectInstructionsSection } from './context/index.ts';
 import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
-import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
+import { AnthropicModel, FakeModel, OpenAICompatibleModel, onboardingScript } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue, sessionTaint } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, StatsStore, type Db } from './store/index.ts';
@@ -119,7 +119,9 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   };
   const registry = new ToolRegistry();
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
-  if (options.onboarding) registry.register(profileTool(paths.home));
+  // Like the other optional tools, set_profile exists only when its permission is not deny (the tool set is fixed per session).
+  const onboarding = Boolean(options.onboarding) && config.permissions['memory.write'] !== 'deny';
+  if (onboarding) registry.register(profileTool(paths.home));
   // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
   if (config.permissions['schedule.edit'] !== 'deny') {
     const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
@@ -178,7 +180,8 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   const trustedEndpoints = registerWebTools(registry, config, secret);
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
-  const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, secret));
+  // The demo provider has no real model: the wake-up conversation plays its offline script instead of echoing.
+  const model = options.model ?? (options.noModel ? new FakeModel() : onboarding && config.model.provider === 'fake' ? new FakeModel(onboardingScript()) : createModel(config, secret));
   const media = mediaStore
     ? new MediaIngest({
         store: mediaStore,
@@ -224,7 +227,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
         skills.index(),
         importedArchiveSection(paths.workspace),
         // The wake-up instructions belong to the onboarding session only, never to other sessions.
-        options.onboarding && store.getSession(sessionId)?.title === ONBOARDING_TITLE ? bootstrapPrompt() : '',
+        onboarding && store.getSession(sessionId)?.title === ONBOARDING_TITLE ? bootstrapPrompt() : '',
       ],
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
