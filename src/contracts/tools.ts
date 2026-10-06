@@ -25,6 +25,12 @@ export type ToolContext = {
 
 export type ToolOutput = {
   content: string;
+  /**
+   * Set when the tool ran but the operation did not succeed (for example, a
+   * command that timed out), so the content is still useful but must reach
+   * the model as an error result, never as a success.
+   */
+  error?: ErrorCategory;
   /** Short structured data for programmatic consumers (not sent to the model). */
   data?: unknown;
 };

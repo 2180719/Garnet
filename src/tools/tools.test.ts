@@ -38,6 +38,38 @@ test('unknown tools and invalid arguments return actionable errors', async () =>
   assert.match(invalid.content, /path/);
 });
 
+test('unknown arguments are rejected, not silently dropped', async () => {
+  const { call, workspace } = setup({ perms: { 'fs.write': 'allow' } });
+  // `append` does not exist: dropping it would overwrite where the model meant to append.
+  const r = await call('write_file', { path: 'a.txt', content: 'x', append: true });
+  assert.equal(r.status === 'error' && r.category, 'invalid_input');
+  assert.match(r.content, /unknown argument "append"/);
+  assert.match(r.content, /Allowed: path, content, overwrite/);
+  assert.equal(existsSync(join(workspace, 'a.txt')), false, 'nothing ran');
+});
+
+test('a tool that reports a failed operation is an error result, never a success', async () => {
+  const { registry, call } = setup();
+  registry.register({
+    name: 'half', version: 1, description: 'd', input: z.object({}), capability: 'fs.read', idempotent: true, maxOutputChars: 10,
+    run: async () => ({ content: 'y'.repeat(50), error: 'timeout' }),
+  });
+  const r = await call('half', {});
+  assert.equal(r.status === 'error' && r.category, 'timeout');
+  assert.match(r.content, /showing 10 of 50/, 'output limits still apply');
+});
+
+test('an approver that throws becomes an error result', async () => {
+  const workspace = tempDir();
+  const registry = new ToolRegistry();
+  for (const t of fileTools) registry.register(t);
+  const executor = new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => { throw new Error('db locked'); } });
+  const r = await executor.execute({ type: 'tool_call', id: 'c', name: 'write_file', input: { path: 'a', content: 'b' } }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal });
+  assert.equal(r.status === 'error' && r.category, 'internal');
+  assert.match(r.content, /db locked/);
+  assert.equal(existsSync(join(workspace, 'a')), false);
+});
+
 test('write asks for approval and respects the answer', async () => {
   const approved = setup({ decision: 'approved' });
   const ok = await approved.call('write_file', { path: 'notes/a.txt', content: 'hi' });
@@ -159,6 +191,48 @@ test('file tools never write or read through symlinks that leave the workspace',
   const r = await call('read_file', { path: 'out/secret' });
   assert.equal(r.status === 'error' && r.category, 'denied');
   assert.equal((await call('list_files', { path: 'out' })).status, 'error');
+});
+
+test('list_files shows workspace-relative paths when the workspace path goes through a symlink', async () => {
+  const real = tempDir();
+  mkdirSync(join(real, 'src'));
+  writeFileSync(join(real, 'src', 'a.ts'), '');
+  const linked = join(tempDir(), 'ws-link');
+  symlinkSync(real, linked);
+  const registry = new ToolRegistry();
+  for (const t of fileTools) registry.register(t);
+  const executor = new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'approved' });
+  const r = await executor.execute({ type: 'tool_call', id: 'c', name: 'list_files', input: {} }, { sessionId: 's', workspace: linked, memoryNamespace: 'default', signal: new AbortController().signal });
+  assert.equal(r.content, 'src/\nsrc/a.ts');
+});
+
+test('file tools explain missing paths and wrong kinds without host paths', async () => {
+  const { call, workspace } = setup();
+  writeFileSync(join(workspace, 'f.txt'), 'x');
+  const missing = await call('list_files', { path: 'nope' });
+  assert.equal(missing.status === 'error' && missing.category, 'invalid_input');
+  assert.match(missing.content, /"nope" does not exist/);
+  assert.ok(!missing.content.includes(workspace), 'no absolute host path');
+  const file = await call('list_files', { path: 'f.txt' });
+  assert.equal(file.status === 'error' && file.category, 'invalid_input');
+  assert.match(file.content, /is a file/);
+});
+
+test('read_file pages through a file line by line', async () => {
+  const { call, workspace } = setup();
+  writeFileSync(join(workspace, 'big.txt'), Array.from({ length: 5000 }, (_, i) => `line ${i + 1}`).join('\n') + '\n');
+  const r = await call('read_file', { path: 'big.txt', offset: 4999, limit: 10 });
+  assert.equal(r.content, ' 4999  line 4999\n 5000  line 5000');
+  const head = await call('read_file', { path: 'big.txt', limit: 2 });
+  assert.equal(head.content, '    1  line 1\n    2  line 2\n[lines 1-2 of 5000; use offset=3 for more]');
+  writeFileSync(join(workspace, 'crlf.txt'), 'a\r\nb');
+  assert.equal((await call('read_file', { path: 'crlf.txt' })).content, '    1  a\n    2  b');
+  writeFileSync(join(workspace, 'empty.txt'), '');
+  assert.equal((await call('read_file', { path: 'empty.txt' })).content, '(empty file)');
+  const past = await call('read_file', { path: 'crlf.txt', offset: 9 });
+  assert.match(past.content, /only 2 lines/);
+  writeFileSync(join(workspace, 'bin'), Buffer.from([0x41, 0x00, 0x42]));
+  assert.match((await call('read_file', { path: 'bin' })).content, /binary/);
 });
 
 test('a registered tool absent from the frozen tool list is refused', async () => {

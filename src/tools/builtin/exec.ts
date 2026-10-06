@@ -11,12 +11,15 @@ export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
   // Verified on first use (and again after a failure) so an unavailable backend is a clear error, never a fallback.
   let ready: Promise<void> | null = null;
   const ensureReady = (): Promise<void> => {
-    ready ??= sandbox.check().then((status) => {
-      if (!status.ok) {
-        ready = null;
-        throw new RubyError('config', `The command sandbox is unavailable: ${status.detail} Do not retry; tell the owner.`);
-      }
-    });
+    ready ??= sandbox
+      .check()
+      .then((status) => {
+        if (!status.ok) throw new RubyError('config', `The command sandbox is unavailable: ${status.detail} Do not retry; tell the owner.`);
+      })
+      .catch((e: unknown) => {
+        ready = null; // check again next time
+        throw e;
+      });
     return ready;
   };
 
@@ -46,6 +49,8 @@ export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
       const result = await sandbox.run({ command: input.command, cwd: input.cwd, timeoutMs: input.timeout_seconds * 1000, signal: ctx.signal });
       return {
         content: formatResult(result, input.timeout_seconds, sandbox.isolated),
+        // A non-zero exit is an ordinary result (its code is the first line); a timeout is not.
+        ...(result.timedOut ? { error: 'timeout' as const } : result.cancelled ? { error: 'cancelled' as const } : {}),
         data: { exitCode: result.exitCode, timedOut: result.timedOut, cancelled: result.cancelled, truncated: result.truncated },
       };
     },
