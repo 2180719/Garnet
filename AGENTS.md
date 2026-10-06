@@ -9,6 +9,7 @@ Garnet is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run dire
 | `npm run check` | lint + typecheck + tests. Run before every commit. |
 | `npm test` | Offline, deterministic tests (`node:test`). |
 | `npm run garnet -- chat --fake` | Chat with the offline fake model. |
+| `npm run garnet -- wake --fake` | The first-run wake-up conversation with the scripted offline model. |
 | `npm run garnet -- help` | All CLI commands. |
 | `npm run garnet -- setup` / `doctor` | Guided setup (re-runnable, `-y` for scripts) and install diagnosis. |
 | `sh -n install.sh` | Syntax-check the one-line installer (POSIX sh, no bashisms). |
@@ -40,7 +41,8 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/secrets/` | Optional encrypted secret store (`<GARNET_HOME>/secrets`, scrypt + AES-256-GCM) and secret-name resolution: environment first, then the store. |
 | `src/achievements/` | Local achievements and easter eggs for the dashboard. |
 | `src/backend.ts` | Composition-root implementation of the dashboard/admin API. |
-| `src/cli/` | The `garnet` command, including `garnet setup` (`setup/`) and `garnet doctor`. |
+| `src/onboarding/` | First-run wake-up: the versioned bootstrap prompt, the `set_profile` tool, `applyProfile`, and `OnboardingWatch` (tool check and fallback decision). |
+| `src/cli/` | The `garnet` command, including `garnet setup` (`setup/`), `garnet doctor` and `garnet wake`. |
 | `install.sh` | One-line installer: clone or update into `~/.local/share/garnet`, `npm ci --omit=dev`, a `garnet` shim in `~/.local/bin`. |
 | `dashboard/` | Opt-in dashboard: static files served by the API server under a strict CSP. |
 | `src/main.ts` | Composition root: the only place modules are wired together. |

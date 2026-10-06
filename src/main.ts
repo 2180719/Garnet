@@ -14,6 +14,7 @@ import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb,
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
+import { ONBOARDING_TITLE, bootstrapPrompt, profileTool } from './onboarding/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
@@ -82,6 +83,8 @@ export type CreateOptions = {
   memoryDb?: boolean;
   /** Skip creating the model (admin commands that never call it). */
   noModel?: boolean;
+  /** First-run wake-up: registers `set_profile` and adds the bootstrap prompt to sessions titled `ONBOARDING_TITLE` only. */
+  onboarding?: boolean;
 };
 
 export function createGarnet(options: CreateOptions = {}): Garnet {
@@ -116,6 +119,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   };
   const registry = new ToolRegistry();
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
+  if (options.onboarding) registry.register(profileTool(paths.home));
   // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
   if (config.permissions['schedule.edit'] !== 'deny') {
     const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
@@ -214,7 +218,14 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       recordSpend: (usage) => stats.recordSpend(usage),
       workspace: paths.workspace,
       persona: config.persona,
-      promptSections: (ns) => [projectInstructionsSection(paths.workspace), memory.snapshot(ns), skills.index(), importedArchiveSection(paths.workspace)],
+      promptSections: (ns, sessionId) => [
+        projectInstructionsSection(paths.workspace),
+        memory.snapshot(ns),
+        skills.index(),
+        importedArchiveSection(paths.workspace),
+        // The wake-up instructions belong to the onboarding session only, never to other sessions.
+        options.onboarding && store.getSession(sessionId)?.title === ONBOARDING_TITLE ? bootstrapPrompt() : '',
+      ],
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       maxOutputTokens: config.model.maxOutputTokens,

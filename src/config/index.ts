@@ -5,3 +5,4 @@ export { redact } from './redact.ts';
 export { envVar, deprecatedEnvVars, unknownGarnetEnv, loadEnvFile, parseEnv, removeFromEnvFile, setInEnvFile, secretNames } from './env.ts';
 export { changeConfig, getConfigValue, parseConfigValue, showConfigValue, isSecretNamePath, type ConfigChange } from './edit.ts';
 export { PROTECTED_CONFIG_PATHS, isProtectedConfigPath, changedProtectedPaths } from './protected.ts';
+export { DEFAULT_NAME, PERSONA_MAX, readPersona, writePersona, validBasic, type PersonaBasics } from './persona.ts';

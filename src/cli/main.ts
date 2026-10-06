@@ -22,9 +22,11 @@ Usage:
                             (re-run any time; \`garnet setup --help\` for script flags)
   garnet doctor [--json]      Check the install and setup, with fixes
   garnet init [--defaults]    Create ~/.garnet (offers \`garnet setup\` on a terminal)
-  garnet chat [--fake] [--session <id>] [--plain]
+  garnet chat [--fake] [--session <id>] [--plain] [--onboard]
                             Chat in the terminal (--fake uses an offline model;
                             /help inside lists commands and keys)
+  garnet wake [--fake]        Wake-up chat: Garnet introduces itself and sets up its name and
+                            your preferences by talking (same as chat --onboard)
   garnet config check         Validate the config file
   garnet config show          Print the effective config (secrets redacted)
   garnet config explain       Describe every setting
@@ -100,6 +102,9 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return await setup(rest, io);
       case 'doctor':
         return await doctor(rest, io, { version: VERSION });
+      case 'wake':
+        // First-run wake-up: the agent introduces itself and asks to set up its name and your preferences.
+        return await chat(['--onboard', ...rest], { ...io, stdin: process.stdin, stdout: io === stdio ? process.stdout : null, env: process.env });
       case 'chat':
         // The full terminal UI only when writing to the real terminal; otherwise plain lines through io.
         return await chat(rest, { ...io, stdin: process.stdin, stdout: io === stdio ? process.stdout : null, env: process.env });

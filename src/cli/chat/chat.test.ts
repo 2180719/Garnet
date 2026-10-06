@@ -10,6 +10,9 @@ import { VirtualTerminal } from '../../../test/vt.ts';
 import type { ModelAdapter, ModelEvent, ModelRequest } from '../../contracts/index.ts';
 import { createGarnet } from '../../main.ts';
 import { FakeModel, type FakeScript } from '../../models/index.ts';
+import { loadConfig, readPersona } from '../../config/index.ts';
+import { onboardingScript } from '../../models/index.ts';
+import { AnswerPrompter, type Prompter } from '../setup/prompt.ts';
 import { chat } from './index.ts';
 
 class FakeStdin extends PassThrough {
@@ -62,7 +65,7 @@ type Started = {
   type: (keys: string) => Promise<void>;
 };
 
-function start(model: ModelAdapter, options: { home?: string; args?: string[]; env?: NodeJS.ProcessEnv; columns?: number } = {}): Started {
+function start(model: ModelAdapter, options: { home?: string; args?: string[]; env?: NodeJS.ProcessEnv; columns?: number; formPrompter?: Prompter } = {}): Started {
   const home = options.home ?? tempDir();
   const stdin = new FakeStdin();
   const stdout = new FakeStdout(options.columns ?? 80);
@@ -70,7 +73,7 @@ function start(model: ModelAdapter, options: { home?: string; args?: string[]; e
   const done = chat(
     options.args ?? [],
     { out: () => {}, err: (t) => err.push(t), stdin, stdout, env: { TERM: 'xterm-256color', COLORTERM: 'truecolor', ...options.env } },
-    { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }), processHooks: false },
+    { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }), processHooks: false, ...(options.formPrompter ? { formPrompter: options.formPrompter } : {}) },
   );
   const text = () => stdout.vt.text();
   const until = async (check: (t: string) => boolean, what: string) => {
@@ -358,4 +361,49 @@ test('plain chat: an "always" answer does not cover a call made after the sessio
   stdin.end('first\na\nsecond\nn\n');
   assert.equal(await done, 0);
   assert.equal((err.join('').match(/\? write_file wants fs\.write/g) ?? []).length, 2, 'the second call prompts again');
+});
+
+test('wake-up in the terminal UI: the agent speaks first, the tool calls are on screen, and the answers are saved', async () => {
+  const c = start(new FakeModel(onboardingScript()), { args: ['--onboard'] });
+  await c.until((t) => t.includes('I have just woken up'), 'the first message, before the owner typed anything');
+  assert.doesNotMatch(c.text(), /\(The owner has just opened this chat/, 'the kickoff is not shown as if the owner typed it');
+  for (const a of ['Ruby', 'call me Sam', 'Brief answers', 'Europe/Lisbon']) {
+    await c.type(`${a}\r`);
+    await c.until((t) => t.includes(`› ${a}`), `the answer ${a}`);
+  }
+  await c.type('planning my week\r');
+  await c.until((t) => t.includes('Tool check passed'), 'the tool check');
+  const t = c.text();
+  assert.match(t, /✓ set_profile/);
+  assert.match(t, /✓ memory/);
+  assert.match(t, /Tool check passed: the model used real tools \(set_profile, memory\)/);
+  await c.type('/exit\r');
+  assert.equal(await c.done, 0);
+  assert.deepEqual(readPersona(loadConfig(c.home).config.persona), { name: 'Ruby', owner: 'Sam', notes: 'Brief answers' });
+});
+
+test('wake-up in the terminal UI: failing tools end the chat and the same questions are asked as a form', async () => {
+  const form = new AnswerPrompter({ name: 'Opal', owner: 'Alex', notes: 'Be brief' }, { interactive: true });
+  const c = start(new FakeModel(onboardingScript('broken-tools')), { args: ['--onboard'], formPrompter: form });
+  await c.until((t) => t.includes('I have just woken up'), 'the first message');
+  for (const a of ['Ruby', 'Sam', 'Brief', 'Lisbon', 'planning']) {
+    await c.type(`${a}\r`);
+    await c.until((t) => t.includes(`› ${a}`), `the answer ${a}`);
+  }
+  assert.equal(await c.done, 0, 'the chat ended by itself');
+  assert.match(c.text(), /Setup chat is stopping because saving kept failing/);
+  assert.deepEqual(form.asked, ['name', 'owner', 'notes']);
+  assert.deepEqual(readPersona(loadConfig(c.home).config.persona), { name: 'Opal', owner: 'Alex', notes: 'Be brief' });
+  assert.equal(c.stdin.raw, false, 'the terminal was restored before the form');
+});
+
+test('garnet chat --onboard --fake runs the offline scripted wake-up with no other setup', async () => {
+  const home = tempDir();
+  const stdin = new PassThrough();
+  const err: string[] = [];
+  const done = chat(['--onboard', '--fake'], { out: () => {}, err: (t) => err.push(t), stdin, stdout: null, env: {} }, { createGarnet: (o) => createGarnet({ ...o, home, env: {} }) });
+  stdin.end('Ruby\nSam\nBrief\nskip\nwriting\n/exit\n');
+  assert.equal(await done, 0);
+  assert.match(err.join(''), /Tool check passed/);
+  assert.deepEqual(readPersona(loadConfig(home).config.persona), { name: 'Ruby', owner: 'Sam', notes: 'Brief' });
 });

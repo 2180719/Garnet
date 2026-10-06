@@ -1,12 +1,13 @@
 // Interactive terminal chat: wires keys, the editor, the runtime and the screen.
 // Rendering decisions live in render.ts/markdown.ts; this file owns state and I/O.
 
-import type { TaskRecord, ToolCallBlock, ToolResult } from '../../contracts/index.ts';
+import type { TaskRecord, TaskStatus, ToolCallBlock, ToolResult } from '../../contracts/index.ts';
 import { errorMessage } from '../../contracts/index.ts';
 import type { Garnet } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
 import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
+import type { OnboardFlow } from './flow.ts';
 import { complete, matchingCommands, messageText, parseSlash } from './commands.ts';
 import { applyKey, emptyEditor, layoutEditor, type EditorState } from './editor.ts';
 import type { InputHistory } from './history.ts';
@@ -33,6 +34,8 @@ export type InteractiveOptions = {
   history: InputHistory;
   /** Install process signal handlers (SIGTERM, SIGHUP, SIGCONT) and the exit hook. Off in tests. */
   processHooks?: boolean;
+  /** First-run wake-up (see `flow.ts`). */
+  onboard?: OnboardFlow;
 };
 
 type Running = {
@@ -79,6 +82,8 @@ export class InteractiveChat {
   private escapeTimer: NodeJS.Timeout | null = null;
   private finished: ((code: number) => void) | null = null;
   private exiting = false;
+  /** Set when the onboarding check gave up on the conversation; the caller then asks the form questions. */
+  fallbackReason: string | null = null;
   private readonly cleanups: (() => void)[] = [];
 
   constructor(options: InteractiveOptions) {
@@ -138,6 +143,7 @@ export class InteractiveChat {
     const sessionId = this.sessionId;
     this.drawnColumns = this.screen.columns;
     this.commit((w) => [...banner(this.theme, w, garnet.model.id, sessionId, this.o.resumed), ...transcriptRows(events, this.theme, w)]);
+    if (this.o.onboard) void this.kick(this.o.onboard);
     return done;
   }
 
@@ -286,7 +292,10 @@ export class InteractiveChat {
       await this.command(slash);
     } else {
       const text = messageText(raw).trim();
-      if (text) await this.turn(text);
+      if (text) {
+        const status = await this.turn(text);
+        if (status && (await this.checkOnboarding(status))) return;
+      }
     }
     const next = this.queue.shift();
     if (next !== undefined && !this.exiting) return this.process(next);
@@ -316,11 +325,35 @@ export class InteractiveChat {
       });
   }
 
-  private turn(text: string): Promise<void> {
+  /** The wake-up chat opens with a message from the CLI, so the agent speaks first. */
+  private async kick(flow: OnboardFlow): Promise<void> {
+    const status = await this.turn(flow.kickoff, false);
+    if (status && (await this.checkOnboarding(status))) return;
+    this.render();
+  }
+
+  /** True when the chat was ended in favour of the form. */
+  private async checkOnboarding(status: TaskStatus): Promise<boolean> {
+    const flow = this.o.onboard;
+    if (!flow || this.exiting) return false;
+    const v = flow.check(status);
+    if (v.next === 'continue') {
+      const note = v.note;
+      if (note) this.commit((w) => ['', ...hangingRows(`  ${this.theme.ok('✓')} `, sanitize(note), w)]);
+      return false;
+    }
+    this.fallbackReason = v.reason;
+    this.commit((w) => ['', ...hangingRows(`  ${this.theme.warn('!')} `, `Setup chat is stopping because ${sanitize(v.reason)}. A short form comes next; your replies stay in this session.`, w)]);
+    await this.exit(0);
+    return true;
+  }
+
+  private async turn(text: string, echo = true): Promise<TaskStatus | null> {
     const files = this.attachments.splice(0);
     const names = files.map((f) => f.name).join(', ');
-    this.commit((w) => [...userBlock(text, this.theme, w), ...(files.length ? wrapText(this.theme.muted(`  + ${sanitize(names)}`), w) : [])]);
-    return this.busy(files.length ? 'reading files' : 'thinking', async (signal) => {
+    if (echo) this.commit((w) => [...userBlock(text, this.theme, w), ...(files.length ? wrapText(this.theme.muted(`  + ${sanitize(names)}`), w) : [])]);
+    let status = null as TaskStatus | null;
+    await this.busy(files.length ? 'reading files' : 'thinking', async (signal) => {
       const started = Date.now();
       const prepared = await prepareTurn(this.o.garnet, this.sessionId, text, files, signal);
       if ('reply' in prepared) {
@@ -332,7 +365,10 @@ export class InteractiveChat {
       this.refreshTotals();
       const elapsed = Date.now() - started;
       this.commit((w) => turnSummary(task, elapsed, this.theme, w, this.o.garnet.pricing));
+      status = task.status;
     });
+    // A turn that threw (busy reports the error on screen) counts as failed for the onboarding check.
+    return status ?? (this.o.onboard ? 'failed' : null);
   }
 
   private onEvent(e: RuntimeEvent): void {
