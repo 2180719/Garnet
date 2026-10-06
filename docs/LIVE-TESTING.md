@@ -146,7 +146,7 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 
 ### 8. Dashboard
 
-1. `ruby dashboard`, open the printed link. The key is in the URL fragment.
+1. `ruby dashboard`, open the printed link within 15 minutes. It works once: the dashboard trades the key in the URL fragment for a session key and revokes it, so opening the same link again shows "expired or already used".
 2. Visit every page: overview, chat, approvals, memory, skills, schedules, channels and pairing, API keys, usage, settings, sessions, logs, routing, achievements. Note any page that errors or renders empty with real data.
 3. Settings: protected fields (permissions, sandbox, model provider, base URL, key names, API host/port/proxy, demo origins, workspace, channel token names, Signal URL) must be read-only; saving a change to one over the API must fail. Changing a normal field must show a review step before saving and report that a restart is required.
 4. Keyboard navigation: not yet checked by hand. Tab through each page, operate every control without a mouse, check visible focus and that dialogs trap focus and close on Escape. Record failures.
