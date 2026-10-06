@@ -155,6 +155,21 @@ test('a summary cut off at the output limit is not used as a checkpoint', async 
   assert.ok(!t.store.events(t.session.id).some((e) => e.type === 'checkpoint'));
 });
 
+test('manual compaction respects the daily spending cap: at the cap, no model call is made', async () => {
+  let capped = false;
+  const t = setup([{ text: 'one' }, { text: 'two' }, { text: 'three' }, { text: '<summary>Said one, two, three.</summary>' }], { refuse: () => (capped ? 'Daily spending cap reached.' : null) });
+  for (const m of ['a', 'b', 'c']) await t.run(m);
+  const calls = t.model.requests.length;
+  capped = true;
+  const outcome = await t.agent.compact(t.session.id);
+  assert.equal(outcome.status, 'refused');
+  assert.match(outcome.reason ?? '', /Daily spending cap reached/);
+  assert.equal(t.model.requests.length, calls, 'no model call was made');
+  assert.ok(!t.store.events(t.session.id).some((e) => e.type === 'checkpoint'));
+  capped = false;
+  assert.equal((await t.agent.compact(t.session.id)).status, 'compacted', 'under the cap it compacts');
+});
+
 test('lanes serialize per key and run different keys concurrently', async () => {
   const lanes = new LaneQueue(4);
   const log: string[] = [];

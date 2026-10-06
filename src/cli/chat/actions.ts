@@ -171,6 +171,7 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
         compacted: `${t.ok('✓')} Compacted older turns into a summary; the next message starts from it.`,
         nothing_to_compact: `${t.muted('·')} Nothing to compact yet: only the most recent turns are in the history.`,
         failed: `${t.error('✗')} Compaction failed; the full history is kept.`,
+        refused: `${t.error('✗')} Compaction refused: ${sanitize(outcome.reason ?? 'the daily spending cap applies')}`,
       }[outcome.status];
       return { rows: (w: number) => ['', ...wrapText(`  ${msg}`, w), ''] };
     }

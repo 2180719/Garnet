@@ -63,7 +63,10 @@ export class StatsStore {
    * Cost since `sinceIso`: `known` sums the records whose cost is known (null when none is), `unknown` counts
    * finished model-calling tasks and spend records whose cost cannot be known (never counted as $0).
    * Running tasks are in `known` when priced but never in `unknown` (their usage is still arriving).
-   * Counts task usage plus `model_spend` (compaction outside a task). Model calls still not counted:
+   * Counts task usage plus `model_spend` (compaction outside a task). A task that started before `sinceIso`
+   * and was still running at or after it (it crossed midnight) is accounted by model-call time: only the
+   * usage events (assistant messages, checkpoints) stamped at or after `sinceIso` count, each one its own record.
+   * Not attributed to the later day: calls that failed and so left no usage event. Model calls still not counted:
    * the media describer and transcription, which report no usage to the store.
    */
   costSince(sinceIso: string, pricing: Pricing | undefined): { known: number | null; unknown: number } {
@@ -76,6 +79,14 @@ export class StatsStore {
       } else known = (known ?? 0) + c;
     };
     for (const r of this.db.prepare('SELECT usage, ended_at FROM tasks WHERE started_at >= ? AND model_calls > 0').all(sinceIso) as { usage: string; ended_at: string | null }[]) add(r.usage, r.ended_at !== null);
+    const crossing = this.db.prepare('SELECT id, session_id, started_at, ended_at FROM tasks WHERE started_at < ? AND (ended_at IS NULL OR ended_at >= ?)').all(sinceIso, sinceIso) as { session_id: string; started_at: string; ended_at: string | null }[];
+    const events = this.db.prepare("SELECT payload FROM events WHERE session_id = ? AND type IN ('assistant_message', 'checkpoint') AND at >= ? AND at >= ? AND (? IS NULL OR at <= ?)");
+    for (const t of crossing) {
+      for (const e of events.all(t.session_id, sinceIso, t.started_at, t.ended_at, t.ended_at) as { payload: string }[]) {
+        const usage = (JSON.parse(e.payload) as { usage?: Usage }).usage;
+        if (usage) add(JSON.stringify(usage), t.ended_at !== null);
+      }
+    }
     for (const r of this.db.prepare('SELECT usage FROM model_spend WHERE at >= ?').all(sinceIso) as { usage: string }[]) add(r.usage, true);
     return { known, unknown };
   }

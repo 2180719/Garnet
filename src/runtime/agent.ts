@@ -77,7 +77,9 @@ export type AgentDeps = {
 };
 
 export type CompactionOutcome = {
-  status: 'compacted' | 'nothing_to_compact' | 'failed';
+  status: 'compacted' | 'nothing_to_compact' | 'failed' | 'refused';
+  /** Why the compaction was refused (the daily spending cap); set with `status: 'refused'`. */
+  reason?: string;
   /** Usage of the summarizing call; null when no call was made or the provider did not report it. */
   usage: Usage | null;
   modelCalls: number;
@@ -313,6 +315,9 @@ export class Agent {
   private async compactNow(sessionId: string, signal: AbortSignal, emit: (e: RuntimeEvent) => void, deadline = Infinity): Promise<CompactionOutcome> {
     const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2, { timeZone: this.deps.timeZone });
     if (!plan) return { status: 'nothing_to_compact', usage: null, modelCalls: 0 };
+    // Compaction is a model call like any other: the daily spending cap applies before it is made.
+    const refused = this.deps.refuse?.();
+    if (refused) return { status: 'refused', reason: refused, usage: null, modelCalls: 0 };
     emit({ type: 'compacting' });
     // Summarize with the current frozen prefix so the request can hit the cache.
     const { system, tools } = this.frozenFor(sessionId);

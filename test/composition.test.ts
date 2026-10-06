@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from './helpers.ts';
-import { isGarnetError, startOfDayIso } from '../src/contracts/index.ts';
+import { isGarnetError, startOfDayIso, type Usage } from '../src/contracts/index.ts';
 import { StatsStore } from '../src/store/index.ts';
 import { createGarnet } from '../src/main.ts';
 
@@ -159,6 +159,42 @@ test('daily cap uses the owner time zone for "today"', async () => {
     const task = await garnet.agent.run(session.id, 'hello');
     assert.equal(task.status, 'budget_exhausted');
     assert.match(task.reason ?? '', /Pacific\/Kiritimati/);
+  } finally {
+    garnet.close();
+  }
+});
+
+test('daily cap: a task that crossed midnight counts the model calls made today, by call time', async () => {
+  const tz = 'UTC';
+  const midnight = new Date(startOfDayIso(tz)).getTime();
+  const garnet = cappedGarnet({ timezone: tz, model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 1 } });
+  try {
+    const session = garnet.store.createSession();
+    const t = garnet.store.createTask(session.id, used(200_000)); // $2.00 in all: $1.00 yesterday, $1.00 today
+    t.modelCalls = 2;
+    garnet.store.updateTask(t);
+    const call = (usage: Usage, atMs: number) => {
+      const seq = garnet.store.append(session.id, { type: 'assistant_message', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] }, stopReason: 'end_turn', usage, model: 'm' } as never);
+      garnet.db.prepare('UPDATE events SET at = ? WHERE session_id = ? AND seq = (SELECT MAX(seq) FROM events WHERE session_id = ?)').run(new Date(atMs).toISOString(), session.id, session.id);
+      return seq;
+    };
+    garnet.db.prepare('UPDATE tasks SET started_at = ? WHERE id = ?').run(new Date(midnight - 3_600_000).toISOString(), t.id);
+    call(used(100_000), midnight - 1_800_000);
+    const stats = new StatsStore(garnet.db);
+    assert.equal(stats.costSince(new Date(midnight).toISOString(), { input: 10, output: 10 } as never).known, null, 'only yesterday so far');
+    call(used(100_000), midnight + 60_000);
+    const pricing = { input: 10, output: 10 } as never;
+    assert.equal(stats.costSince(new Date(midnight).toISOString(), pricing).known, 1, "today's call counts, yesterday's does not");
+    const refused = await garnet.agent.run(session.id, 'hello');
+    assert.equal(refused.status, 'budget_exhausted');
+    assert.match(refused.reason ?? '', /Daily spending cap reached: \$1\.00 spent today/);
+
+    // An unknown-cost call made today is unknown for the fail-safe once the task has finished.
+    t.endedAt = new Date().toISOString();
+    t.status = 'completed';
+    garnet.store.updateTask(t);
+    call({ inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null }, midnight + 120_000);
+    assert.equal(stats.costSince(new Date(midnight).toISOString(), pricing).unknown, 1);
   } finally {
     garnet.close();
   }
