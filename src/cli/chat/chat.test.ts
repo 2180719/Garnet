@@ -382,17 +382,47 @@ test('wake-up in the terminal UI: the agent speaks first, the tool calls are on 
   assert.deepEqual(readPersona(loadConfig(c.home).config.persona), { name: 'Ruby', owner: 'Sam', notes: 'Brief answers' });
 });
 
+test('wake-up in the terminal UI: an answer typed while the agent is still greeting is sent, not left in the queue', async () => {
+  // The first model call is slow; the owner types the first answer before the greeting is done.
+  const c = start(new SlowModel(onboardingScript(), 400), { args: ['--onboard'] });
+  await c.until((t) => t.includes('I have just woken up'), 'the greeting');
+  await c.type('Ruby\r');
+  await c.until((t) => t.includes('↳ queued: Ruby'), 'the answer waiting behind the greeting');
+  await c.until((t) => t.includes('And what should I call you?') || t.includes('what should I call you?'), 'the second question, so the queued answer was sent');
+  assert.match(c.text(), /› Ruby/);
+  await c.type('/exit\r');
+  assert.equal(await c.done, 0);
+});
+
+test('wake-up in the terminal UI: /new and /resume are refused, so there is only the one onboarding session', async () => {
+  const c = start(new FakeModel(onboardingScript()), { args: ['--onboard'] });
+  await c.until((t) => t.includes('I have just woken up'), 'the greeting');
+  await c.until((t) => !t.includes('thinking'), 'the greeting is done');
+  await c.type('/new\r');
+  await c.until((t) => t.includes('/new is not available in the wake-up chat'), 'the refusal');
+  await c.type('/resume nothing\r');
+  await c.until((t) => t.includes('/resume is not available in the wake-up chat'), 'the refusal');
+  await c.type('/exit\r');
+  assert.equal(await c.done, 0);
+  const g = createGarnet({ home: c.home, env: {}, noModel: true });
+  try {
+    assert.deepEqual(g.store.listSessions().map((s) => s.title), ['Wake-up']);
+  } finally {
+    g.close();
+  }
+});
+
 test('wake-up in the terminal UI: failing tools end the chat and the same questions are asked as a form', async () => {
   const form = new AnswerPrompter({ name: 'Opal', owner: 'Alex', notes: 'Be brief' }, { interactive: true });
   const c = start(new FakeModel(onboardingScript('broken-tools')), { args: ['--onboard'], formPrompter: form });
   await c.until((t) => t.includes('I have just woken up'), 'the first message');
-  for (const a of ['Ruby', 'Sam', 'Brief', 'Lisbon', 'planning']) {
+  for (const a of ['Ruby', 'Sam', 'Brief', 'Lisbon', 'planning', 'try again']) {
     await c.type(`${a}\r`);
     await c.until((t) => t.includes(`› ${a}`), `the answer ${a}`);
   }
   assert.equal(await c.done, 0, 'the chat ended by itself');
   assert.match(c.text(), /Setup chat is stopping because saving kept failing/);
-  assert.deepEqual(form.asked, ['name', 'owner', 'notes']);
+  assert.deepEqual(form.asked, ['name', 'owner', 'notes', 'timezone']);
   assert.deepEqual(readPersona(loadConfig(c.home).config.persona), { name: 'Opal', owner: 'Alex', notes: 'Be brief' });
   assert.equal(c.stdin.raw, false, 'the terminal was restored before the form');
 });
