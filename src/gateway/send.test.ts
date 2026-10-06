@@ -39,16 +39,17 @@ test('targets resolve to real chat ids of paired identities only', async () => {
 test('send_message queues durably, records the text in the target chat, and is rate-limited', async () => {
   const t = await paired();
   let now = new Date();
-  const tool = sendMessageTool({ directory: t.directory, store: t.store, perHour: 2, now: () => now });
+  const tool = sendMessageTool({ directory: t.directory, store: t.store, perHour: 2, now: () => now, notify: (to, text, rec) => t.gateway.notify(to, text, rec) });
   const ctx = { sessionId: 'cli-session', callId: 'c', workspace: '/tmp', memoryNamespace: 'default', signal: new AbortController().signal };
   const r = await tool.run({ text: 'The build finished.', to: 'fake:u1' }, ctx);
   assert.match(r.content, /Queued for fake \(Ada\)/);
   await t.gateway.deliver();
   assert.deepEqual(t.channel.sent.filter((m) => m.chatId === 'dm-ada').map((m) => m.text).at(-1), 'The build finished.');
   // Ada's conversation now shows what Ruby sent, so "tell me more" has context.
+  await t.lanes.idle();
   const last = t.sessions.events(t.adaSession).at(-1)!;
   assert.equal(last.type, 'user_message');
-  assert.match(last.type === 'user_message' ? textOf(last.message) : '', /Ruby sent this message.*not written by the owner.*\nThe build finished\./s);
+  assert.match(last.type === 'user_message' ? textOf(last.message) : '', /not written by your owner: you sent them this message from send_message.*\nThe build finished\./s);
   await tool.run({ text: 'Second.' }, ctx);
   await assert.rejects(tool.run({ text: 'Third.' }, ctx), /already sent 2 messages.*messagesPerHour/);
   now = new Date(now.getTime() + 3_601_000);
@@ -59,7 +60,7 @@ test('send_message queues durably, records the text in the target chat, and is r
 test('send_message goes through policy: denied, or shown in full for approval', async () => {
   const t = await paired();
   const registry = new ToolRegistry();
-  registry.register(sendMessageTool({ directory: t.directory, store: t.store, perHour: 5 }));
+  registry.register(sendMessageTool({ directory: t.directory, store: t.store, perHour: 5, notify: (to, text, rec) => t.gateway.notify(to, text, rec) }));
   const ctx = { sessionId: t.adaSession, workspace: '/tmp', memoryNamespace: 'default', signal: new AbortController().signal };
   const call = { type: 'tool_call' as const, id: 'c1', name: 'send_message', input: { text: 'Hello Bob, Ada asked me to say hi.', to: 'fake:u2' } };
 
@@ -78,14 +79,16 @@ test('send_message goes through policy: denied, or shown in full for approval', 
 
 test('gateway.notify with a source records job results in the chat conversation', async () => {
   const t = await paired();
-  t.gateway.notify({ channel: 'fake', account: 'default', chatId: 'dm-ada' }, '[news] Three new posts.', 'scheduled job "news"');
+  t.gateway.notify({ channel: 'fake', account: 'default', chatId: 'dm-ada' }, '[news] Three new posts.', { from: 'scheduled job "news"' });
   await t.gateway.deliver();
   assert.equal(t.channel.sent.at(-1)?.text, '[news] Three new posts.');
+  await t.lanes.idle();
   const last = t.sessions.events(t.adaSession).at(-1)!;
   assert.match(last.type === 'user_message' ? textOf(last.message) : '', /scheduled job "news"/);
   assert.equal(last.type === 'user_message' && last.source, 'notification');
   // A chat that never wrote to Ruby gets a conversation on first notice.
-  t.gateway.notify({ channel: 'fake', account: 'default', chatId: 'new-chat' }, 'Hi', 'scheduled job "x"');
+  t.gateway.notify({ channel: 'fake', account: 'default', chatId: 'new-chat' }, 'Hi', { from: 'scheduled job "x"' });
+  await t.lanes.idle();
   assert.ok(t.store.conversation('fake:default:new-chat'));
   await t.gateway.stop(0);
 });

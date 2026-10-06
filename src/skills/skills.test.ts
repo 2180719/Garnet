@@ -180,6 +180,17 @@ test('quoted values parse and unknown frontmatter keys survive rewrites', () => 
   assert.match(read('b'), /x-custom: keep me/);
 });
 
+test('create keeps extra single-line frontmatter and refuses unsafe keys', () => {
+  const { store, read } = setup();
+  store.create('imp', 'Imported', 'Body', 'user', { metadata: '{"openclaw":{"requires":{"bins":["gh"]}}}', requires: '{"bins":["gh"]}' });
+  assert.match(read('imp'), /^metadata: \{"openclaw":\{"requires":\{"bins":\["gh"\]\}\}\}\nrequires: \{"bins":\["gh"\]\}\n---/m);
+  assert.equal(store.read('imp').description, 'Imported');
+  assert.equal(store.problems().length, 0);
+  assert.throws(() => store.create('x1', 'd', 'b', 'user', { name: 'evil' }), /Invalid frontmatter key/);
+  assert.throws(() => store.create('x2', 'd', 'b', 'user', { k: 'a\nname: evil' }), /Invalid frontmatter key/);
+  assert.throws(() => store.create('x3', 'd', 'b', 'user', { 'bad key': 'v' }), /Invalid frontmatter key/);
+});
+
 test('tools validate input and run end to end', async () => {
   const { store, read, file } = setup();
   const [view, create, update] = skillTools(store) as [any, any, any];

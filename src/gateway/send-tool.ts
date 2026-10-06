@@ -8,10 +8,27 @@ type SendInput = { text: string; to?: string | undefined };
 export type SendMessageDeps = {
   directory: ChatDirectory;
   store: GatewayStore;
+  /** Queues the message and records it in the target chat's conversation (`Gateway.notify`, late-bound). Returns the delivery ID. */
+  notify: (target: { channel: string; account: string; chatId: string }, text: string, record: { from: string; skipSession?: string }) => string;
   /** Messages per rolling hour across all chats (`gateway.messagesPerHour`). */
   perHour: number;
   now?: () => Date;
 };
+
+/**
+ * Throws when Ruby already sent `perHour` messages or files on its own in the
+ * last hour (shared by send_message and send_file). Returns how many it sent.
+ */
+export function assertSendAllowed(store: GatewayStore, perHour: number, now: Date): number {
+  const sent = store.sentSince(new Date(now.getTime() - 3_600_000).toISOString());
+  if (sent >= perHour) {
+    throw new RubyError(
+      'budget_exhausted',
+      `Not sent: Ruby already sent ${sent} messages or files on its own in the last hour (limit gateway.messagesPerHour = ${perHour}). Do not retry now; include it in your reply instead.`,
+    );
+  }
+  return sent;
+}
 
 /**
  * `send_message`: messages a paired chat on Ruby's own initiative (capability
@@ -50,17 +67,10 @@ export function sendMessageTool(deps: SendMessageDeps): ToolDefinition<SendInput
     },
     async run(input, ctx) {
       const target = deps.directory.resolve(input.to, ctx.sessionId);
-      const hourAgo = new Date(now().getTime() - 3_600_000).toISOString();
-      const sent = deps.store.sentSince(hourAgo);
-      if (sent >= deps.perHour) {
-        throw new RubyError(
-          'budget_exhausted',
-          `Not sent: Ruby already sent ${sent} messages on its own in the last hour (limit gateway.messagesPerHour = ${deps.perHour}). Do not retry now; include it in your reply instead.`,
-        );
-      }
+      const sent = assertSendAllowed(deps.store, deps.perHour, now());
       const here = deps.directory.origin(ctx.sessionId).chat;
       const sameChat = !!here && here.channel === target.channel && here.account === target.account && here.chatId === target.chatId;
-      const deliveryId = deps.directory.send(target, input.text, { from: 'send_message', skipSession: ctx.sessionId });
+      const deliveryId = deps.notify(target, input.text, { from: 'send_message', skipSession: ctx.sessionId });
       deps.store.recordSent({ sessionId: ctx.sessionId, channel: target.channel, account: target.account, chatId: target.chatId, deliveryId });
       return {
         content: `Queued for ${ChatDirectory.label(target)}${sameChat ? ' (this chat)' : ''}; it is delivered by the running Ruby service. ${deps.perHour - sent - 1} more message(s) allowed this hour.`,

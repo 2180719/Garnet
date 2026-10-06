@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { defaultEntry, installService, planService, restartService, serviceStatus, shellQuote, uninstallService } from './index.ts';
+import { defaultEntry, installedServices, installService, planService, resolveService, restartService, serviceHomeOf, serviceStatus, shellQuote, uninstallService } from './index.ts';
 import type { CommandResult, ServicePlan } from './index.ts';
 
 const base = {
@@ -235,4 +235,63 @@ test('restart uses systemctl restart or launchctl kickstart -k', async () => {
   assert.deepEqual(calls, ['systemctl --user restart ruby.service']);
   const mac = plan({ ...base, platform: 'darwin', uid: 501 });
   assert.deepEqual(mac.commands.restart, [['launchctl', 'kickstart', '-k', 'gui/501/dev.ruby.agent']]);
+});
+
+test('named instances get their own unit and label, and reject unsafe names', () => {
+  const p = plan({ ...base, platform: 'linux', name: 'work', home: '/home/me/.ruby-work' });
+  assert.equal(p.path, '/home/me/.config/systemd/user/ruby-work.service');
+  assert.ok(p.contents.includes('Description=Ruby personal agent (work)'));
+  assert.ok(p.contents.includes('Environment="RUBY_HOME=/home/me/.ruby-work"'));
+  assert.deepEqual(p.commands.restart, [['systemctl', '--user', 'restart', 'ruby-work.service']]);
+  assert.ok(p.notes.some((n) => n.includes('journalctl --user -u ruby-work.service')));
+  const mac = plan({ ...base, platform: 'darwin', uid: 501, name: 'work' });
+  assert.equal(mac.path, '/home/me/Library/LaunchAgents/dev.ruby.agent.work.plist');
+  assert.ok(mac.contents.includes('<string>dev.ruby.agent.work</string>'));
+  assert.deepEqual(mac.commands.status, [['launchctl', 'print', 'gui/501/dev.ruby.agent.work']]);
+  // "ruby" and empty mean the default instance
+  assert.equal(plan({ ...base, platform: 'linux', name: 'ruby' }).path, '/home/me/.config/systemd/user/ruby.service');
+  for (const bad of ['Work', '../x', 'a b', '-x', 'x'.repeat(33)]) assert.throws(() => planService({ ...base, platform: 'linux', name: bad }), /Invalid service name/);
+});
+
+test('serviceHomeOf reads RUBY_HOME back from units and plists, escapes included', () => {
+  for (const home of ['/home/me/.ruby', '/h/a"b%c$d', '/h/x&y<z>']) {
+    assert.equal(serviceHomeOf(plan({ ...base, platform: 'linux', home }).contents), home);
+    assert.equal(serviceHomeOf(plan({ ...base, platform: 'darwin', home, uid: 1 }).contents), home);
+  }
+  assert.equal(serviceHomeOf('[Service]\nExecStart=x\n'), null);
+});
+
+test('resolveService finds the instance for this RUBY_HOME and refuses to take over another', () => {
+  const files: Record<string, string> = {};
+  const dir = '/home/me/.config/systemd/user';
+  const deps = { list: (d: string) => (d === dir ? Object.keys(files) : []), read: (p: string) => files[p.slice(dir.length + 1)]! };
+  const install = (name: string | undefined, home: string) => {
+    const p = plan({ ...base, platform: 'linux', name, home });
+    files[p.path.slice(dir.length + 1)] = p.contents;
+  };
+  const resolve = (home: string, name?: string) => {
+    const r = resolveService({ ...base, platform: 'linux', home, ...(name !== undefined ? { name } : {}) }, deps);
+    assert.ok(!('unsupported' in r));
+    return r;
+  };
+  // Nothing installed: the default, no conflict.
+  assert.equal(resolve('/a').plan.path, `${dir}/ruby.service`);
+  assert.equal(resolve('/a').conflict, null);
+  install(undefined, '/a');
+  files['other.service'] = 'x';
+  // Another home without --name would take over ruby.service: conflict.
+  assert.match(resolve('/b').conflict!, /already runs RUBY_HOME=\/a.*--name/);
+  assert.equal(resolve('/b', 'work').conflict, null);
+  install('work', '/b');
+  // Without --name, /b now resolves to its own instance; /a still to the default.
+  assert.equal(resolve('/b').plan.path, `${dir}/ruby-work.service`);
+  assert.equal(resolve('/a').plan.path, `${dir}/ruby.service`);
+  assert.deepEqual(
+    installedServices({ platform: 'linux', userHome: '/home/me' }, deps).map((s) => [s.name, s.home]),
+    [
+      ['work', '/b'],
+      [undefined, '/a'],
+    ],
+  );
+  assert.deepEqual(installedServices({ platform: 'win32', userHome: '/home/me' }, deps), []);
 });

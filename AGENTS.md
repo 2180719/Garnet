@@ -23,18 +23,19 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/contracts/` | Shared types: messages, model/tool/session contracts, errors, IDs. Everyone may import it. |
 | `src/config/` | Config schema (every field documented), loading, migrations, redaction. |
 | `src/store/` | SQLite: schema migrations, sessions, append-only event log, tasks, gateway tables, API keys and audit log. |
-| `src/policy/` | Capability permissions, approvals, workspace path containment. |
-| `src/tools/` | Tool registry, executor (repair → validate → authorize → run with limits), artifacts for large outputs, built-in tools. |
+| `src/policy/` | Capability permissions, host scopes, untrusted-content containment (taint escalates allow to ask), approvals, workspace path containment. |
+| `src/tools/` | Tool registry, executor (repair → validate → authorize → run with limits), artifacts for large outputs, built-in tools, `web_fetch`/`web_search` with an SSRF-guarded HTTP client (`web/`). |
 | `src/models/` | Model adapters: `fake` (tests), `anthropic`, and `openai-compatible` (OpenRouter, local servers). |
 | `src/context/` | Frozen per-session system prompt, model-facing history derived from events, keep-tail compaction planning. |
 | `src/memory/` | Bounded `MEMORY.md`/`USER.md` per namespace with versioning, and the `memory` tool. |
 | `src/skills/` | `SKILL.md` skills (agentskills.io format) with provenance, owner-edit locks and proposals. |
-| `src/runtime/` | Agent loop, budgets, cancellation, retries, per-session lanes. |
+| `src/runtime/` | Agent loop, budgets, cancellation, retries, per-session lanes, session taint tracking. |
 | `src/gateway/` | Identity and pairing, chat approvals (`/approve`, `/deny`), conversation routing, durable inbox/outbox delivery, restart recovery, API keys, HTTP API. |
 | `src/channels/` | Messaging adapters (Telegram, Signal via signal-cli, Discord). Normalize a platform; no routing or persistence. |
 | `src/scheduler/` | Cron jobs and heartbeats with pre-checks, budgets, catch-up and failure pausing; runs go through the gateway. |
 | `src/service/` | systemd/launchd service definitions and install. |
 | `src/migrate/` | `ruby import openclaw|hermes`: memory, persona and skills from other harnesses (dry run by default, never secrets). |
+| `src/media/` | Attachments: content-addressed file store, type sniffing, voice-note transcription (OpenAI-compatible endpoint or local command), text extraction, the `send_file` tool. |
 | `src/sandbox/` | Command execution: Docker (isolated, non-root, no network by default) or local (not a boundary). |
 | `src/secrets/` | Optional encrypted secret store (`<RUBY_HOME>/secrets`, scrypt + AES-256-GCM) and secret-name resolution: environment first, then the store. |
 | `src/achievements/` | Local achievements and easter eggs for the dashboard. |

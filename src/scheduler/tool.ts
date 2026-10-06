@@ -181,9 +181,12 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
         return { content: `${i.action === 'pause' ? 'Paused' : 'Resumed'} "${id}".\n${describe(e)}` };
       }
       const p = plan(i, ctx);
-      const by: JobOrigin = { by: 'agent', sessionId: ctx.sessionId, conversation: origin.conversation, at: t.toISOString() };
-      const entry = i.action === 'create' ? deps.book.create(p.job, by as Exclude<JobOrigin, { by: 'config' }>) : deps.book.update(p.existing!.job.id, p.job as Partial<JobConfig>, 'agent');
+      // A job made by a conversation that read untrusted content keeps that taint on every run.
+      const taint = [...(ctx.taint?.sources ?? [])];
+      const by: JobOrigin = { by: 'agent', sessionId: ctx.sessionId, conversation: origin.conversation, at: t.toISOString(), ...(taint.length ? { taint } : {}) };
+      const entry = i.action === 'create' ? deps.book.create(p.job, by as Exclude<JobOrigin, { by: 'config' }>) : deps.book.update(p.existing!.job.id, p.job as Partial<JobConfig>, 'agent', taint);
       const lines = [`${i.action === 'create' ? 'Created' : 'Updated'} job "${entry.job.id}".`, describe(entry), ...p.notes];
+      if (taint.length && entry.job.instructions !== undefined) lines.push('This conversation has read untrusted content, so its runs will ask the owner before consequential actions.');
       if (entry.next) lines.push(`Next run: ${describeNext(entry.next, entry.zone, t)}.`);
       return { content: lines.join('\n'), data: { id: entry.job.id, next: entry.next?.toISOString() ?? null } };
     },

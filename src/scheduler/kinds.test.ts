@@ -20,7 +20,7 @@ function setup(opts: { runScript?: RunScript | null; run?: (job: JobConfig, sign
   const runs: string[] = [];
   const notes: string[] = [];
   const scheduler = new Scheduler({
-    jobs: () => book.jobs(), store, workspace: tempDir(), tickSeconds: 30, now: () => now, timezone: 'Europe/London',
+    jobs: () => book.jobs(), store, workspace: tempDir(), tickSeconds: 30, now: () => now, timeZone: 'Europe/London',
     run: async (job, text, signal) => {
       runs.push(text);
       return opts.run ? opts.run(job, signal) : { task: task(), text: 'Done it.' };

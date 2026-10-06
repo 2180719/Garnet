@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { tempDir } from '../../test/helpers.ts';
 import { RubyError, type InboundMessage } from '../contracts/index.ts';
 import { SignalChannel } from './index.ts';
 
@@ -97,7 +100,7 @@ test('rejects malformed account numbers', () => {
   const ch = new SignalChannel({ account: ACCOUNT });
   assert.equal(ch.channel, 'signal');
   assert.equal(ch.account, ACCOUNT);
-  assert.deepEqual(ch.capabilities, { maxMessageChars: 4000, dedupesSends: false, typingIndicator: true });
+  assert.deepEqual(ch.capabilities, { maxMessageChars: 4000, dedupesSends: false, typingIndicator: true, maxUploadBytes: 100 * 1024 * 1024 });
 });
 
 test('refuses non-loopback http baseUrl but allows loopback and https', () => {
@@ -391,4 +394,43 @@ test('health reports lastSuccessAt and reflects a down stream', async () => {
   assert.equal(channel.health().ok, true);
   assert.ok(channel.health().lastSuccessAt);
   await channel.stop();
+});
+
+test('attachments carry a getAttachment reference; downloads decode base64 and enforce the limit', async () => {
+  const d = fakeDaemon({
+    rpc: (c) => Response.json({ jsonrpc: '2.0', result: c.method === 'getAttachment' ? { data: Buffer.from('voice!').toString('base64') } : {}, id: c.id }),
+  });
+  const { channel, got } = await started(d);
+  const env = (dataMessage: object) => notification({ source: '+15559998888', sourceNumber: '+15559998888', sourceUuid: 'uuid-1', timestamp: 1700000000001, dataMessage });
+  d.feeds[0]!.push(env({ message: null, attachments: [{ id: 'att1.m4a', contentType: 'audio/aac', size: 6, voiceNote: true }] }));
+  d.feeds[0]!.push(notification({ sourceNumber: '+15559998888', sourceUuid: 'uuid-1', timestamp: 1700000000002, dataMessage: { message: 'pic', groupInfo: { groupId: 'G1' }, attachments: [{ id: 'att2.jpg', contentType: 'image/jpeg', filename: 'cat.jpg', size: 3 }] } }));
+  await until(() => got.length === 2, 'two messages');
+  assert.deepEqual(got[0]!.attachments, [{ kind: 'audio', ref: JSON.stringify({ id: 'att1.m4a', recipient: '+15559998888' }), name: 'voice.m4a', mimeType: 'audio/aac', size: 6 }]);
+  assert.equal(got[0]!.text, '');
+  assert.equal(JSON.parse(got[1]!.attachments![0]!.ref).groupId, 'G1');
+  const file = await channel.fetchAttachment(got[0]!.attachments![0]!.ref, { maxBytes: 100, signal: new AbortController().signal });
+  assert.equal(Buffer.from(file.data).toString(), 'voice!');
+  assert.deepEqual(d.rpcs.at(-1)!.params, { id: 'att1.m4a', recipient: '+15559998888' });
+  await assert.rejects(channel.fetchAttachment(got[0]!.attachments![0]!.ref, { maxBytes: 2, signal: new AbortController().signal }), /too large/);
+  await assert.rejects(channel.fetchAttachment('not json', { maxBytes: 2, signal: new AbortController().signal }), /not a Signal attachment/);
+  await channel.stop();
+});
+
+test('send with a file uses a data URI attachment, with the text in the same message', async () => {
+  const d = fakeDaemon();
+  const { channel } = setup(d);
+  const path = join(tempDir(), 'a.png');
+  writeFileSync(path, Buffer.from([1, 2, 3]));
+  const r = await channel.send({ deliveryId: 'd', channel: 'signal', account: ACCOUNT, chatId: '+15559998888', text: 'see', attachments: [{ path, name: 'my chart;v2.png', mimeType: 'image/png', kind: 'image', size: 3 }] });
+  assert.equal(r.status, 'sent');
+  const call = d.rpcs.at(-1)!;
+  assert.equal(call.method, 'send');
+  assert.deepEqual(call.params, { recipient: ['+15559998888'], message: 'see', attachments: ['data:image/png;filename=my_chart_v2.png;base64,AQID'] });
+});
+
+test('send strips markdown, since Signal shows the markers literally', async () => {
+  const d = fakeDaemon();
+  const { channel } = setup(d);
+  await channel.send({ deliveryId: 'x', channel: 'signal', account: ACCOUNT, chatId: '+15559998888', text: '**Saved** `notes.txt`:\n- one' });
+  assert.equal((d.rpcs.at(-1)!.params as { message: string }).message, 'Saved notes.txt:\n• one');
 });

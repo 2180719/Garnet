@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export type ServicePlan = {
@@ -29,6 +29,11 @@ export type PlanOptions = {
   entry: string;
   /** launchd only: numeric user id for the gui/<uid> domain. Defaults to process.getuid(). */
   uid?: number;
+  /**
+   * Instance name, so several Ruby homes can run side by side: `ruby-<name>.service` /
+   * `dev.ruby.agent.<name>`. Omitted (or "ruby"): the default `ruby.service` / `dev.ruby.agent`.
+   */
+  name?: string | undefined;
 };
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
@@ -39,6 +44,9 @@ export type ServiceDeps = {
   exists: (path: string) => boolean;
   remove: (path: string) => void | Promise<void>;
   run: (cmd: string[]) => Promise<CommandResult>;
+  /** File names in a directory ([] when it does not exist). */
+  list: (dir: string) => string[];
+  read: (path: string) => string;
 };
 
 export type ServiceResult = {
@@ -52,6 +60,20 @@ export type ServiceResult = {
 
 const SYSTEMD_UNIT = 'ruby.service';
 const LAUNCHD_LABEL = 'dev.ruby.agent';
+/** Instance names: short, lowercase, safe in unit names, labels and file names. */
+export const SERVICE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** Throws on an invalid instance name; returns the normalized one (undefined = default). */
+export function checkServiceName(name: string | undefined): string | undefined {
+  if (name === undefined || name === '' || name === 'ruby') return undefined;
+  if (!SERVICE_NAME_RE.test(name)) throw new Error(`Invalid service name "${name}": use 1-32 lowercase letters, digits and hyphens.`);
+  return name;
+}
+
+/** The systemd unit file name for an instance. */
+export const systemdUnit = (name?: string): string => (checkServiceName(name) ? `ruby-${name}.service` : SYSTEMD_UNIT);
+/** The launchd label for an instance. */
+export const launchdLabel = (name?: string): string => (checkServiceName(name) ? `${LAUNCHD_LABEL}.${name}` : LAUNCHD_LABEL);
 const NODE_FLAGS = ['--disable-warning=ExperimentalWarning'];
 /**
  * Seconds the service manager waits after SIGTERM before killing Ruby. Shutdown closes the API
@@ -87,9 +109,10 @@ const systemdPath = (s: string): string => s.replace(/%/g, '%%');
 const repoRoot = (entry: string): string => dirname(dirname(dirname(entry)));
 
 function planSystemd(o: PlanOptions): ServicePlan {
+  const unit = systemdUnit(o.name);
   const exec = [o.nodePath, ...NODE_FLAGS, o.entry, 'start'].map(systemdQuote).join(' ');
   const contents = `[Unit]
-Description=Ruby personal agent
+Description=Ruby personal agent${checkServiceName(o.name) ? ` (${o.name})` : ''}
 After=network-online.target
 Wants=network-online.target
 
@@ -112,31 +135,32 @@ WantedBy=default.target
   return {
     platform: 'systemd',
     home: o.home,
-    path: join(o.userHome, '.config', 'systemd', 'user', SYSTEMD_UNIT),
+    path: join(o.userHome, '.config', 'systemd', 'user', unit),
     contents,
     commands: {
       prepare: [],
       install: [
         ['systemctl', '--user', 'daemon-reload'],
-        ['systemctl', '--user', 'enable', SYSTEMD_UNIT],
+        ['systemctl', '--user', 'enable', unit],
         // restart, not start: an already running service must pick up the new unit and code.
-        ['systemctl', '--user', 'restart', SYSTEMD_UNIT],
+        ['systemctl', '--user', 'restart', unit],
       ],
-      uninstall: [['systemctl', '--user', 'disable', '--now', SYSTEMD_UNIT]],
-      status: [['systemctl', '--user', 'status', SYSTEMD_UNIT, '--no-pager']],
-      restart: [['systemctl', '--user', 'restart', SYSTEMD_UNIT]],
+      uninstall: [['systemctl', '--user', 'disable', '--now', unit]],
+      status: [['systemctl', '--user', 'status', unit, '--no-pager']],
+      restart: [['systemctl', '--user', 'restart', unit]],
     },
     notes: [
       `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`ruby secrets set\` and put only RUBY_SECRETS_KEY_FILE=<path> there.`,
       'To keep Ruby running without an active login, run: loginctl enable-linger $USER',
-      `Logs: journalctl --user -u ${SYSTEMD_UNIT} -f`,
+      `Logs: journalctl --user -u ${unit} -f`,
     ],
   };
 }
 
 function planLaunchd(o: PlanOptions): ServicePlan {
   const uid = o.uid ?? process.getuid?.() ?? 0;
-  const path = join(o.userHome, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+  const label = launchdLabel(o.name);
+  const path = join(o.userHome, 'Library', 'LaunchAgents', `${label}.plist`);
   // launchd cannot read an env file, so a small sh wrapper sources it before exec'ing node.
   const script =
     'set -a; [ -f "$RUBY_HOME/env" ] && . "$RUBY_HOME/env"; set +a; exec ' +
@@ -150,7 +174,7 @@ function planLaunchd(o: PlanOptions): ServicePlan {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LAUNCHD_LABEL}</string>
+  <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
 ${args}
@@ -180,7 +204,7 @@ ${args}
 </dict>
 </plist>
 `;
-  const target = `gui/${uid}/${LAUNCHD_LABEL}`;
+  const target = `gui/${uid}/${label}`;
   return {
     platform: 'launchd',
     home: o.home,
@@ -199,6 +223,65 @@ ${args}
       `Logs: ${join(o.home, 'logs')}`,
     ],
   };
+}
+
+/** The RUBY_HOME a unit file or plist runs, or null when it names none. */
+export function serviceHomeOf(contents: string): string | null {
+  const unit = /^Environment="RUBY_HOME=((?:[^"\\]|\\.)*)"$/m.exec(contents);
+  if (unit) return unit[1]!.replace(/\\(.)/g, '$1').replace(/\$\$/g, '$').replace(/%%/g, '%');
+  const plist = /<key>RUBY_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(contents);
+  if (plist) return plist[1]!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  return null;
+}
+
+export type InstalledService = { name: string | undefined; path: string; home: string | null };
+
+/** Ruby services installed for this user (any instance name), with the RUBY_HOME each runs. */
+export function installedServices(opts: { platform: NodeJS.Platform; userHome: string }, deps: Partial<Pick<ServiceDeps, 'list' | 'read'>> = {}): InstalledService[] {
+  const list = deps.list ?? defaultDeps.list;
+  const read = deps.read ?? defaultDeps.read;
+  const where =
+    opts.platform === 'linux'
+      ? { dir: join(opts.userHome, '.config', 'systemd', 'user'), re: /^ruby(?:-([a-z0-9][a-z0-9-]{0,31}))?\.service$/ }
+      : opts.platform === 'darwin'
+        ? { dir: join(opts.userHome, 'Library', 'LaunchAgents'), re: /^dev\.ruby\.agent(?:\.([a-z0-9][a-z0-9-]{0,31}))?\.plist$/ }
+        : null;
+  if (!where) return [];
+  const out: InstalledService[] = [];
+  for (const file of list(where.dir).sort()) {
+    const m = where.re.exec(file);
+    if (!m) continue;
+    let home: string | null = null;
+    try {
+      home = serviceHomeOf(read(join(where.dir, file)));
+    } catch {
+      /* unreadable: home unknown */
+    }
+    out.push({ name: m[1], path: join(where.dir, file), home });
+  }
+  return out;
+}
+
+/**
+ * Picks the service for this RUBY_HOME: the given name, else the instance already installed for
+ * this home, else the default. `conflict` is set when that service file already runs another home
+ * (installing would take it over).
+ */
+export function resolveService(
+  opts: PlanOptions,
+  deps: Partial<Pick<ServiceDeps, 'list' | 'read'>> = {},
+): { plan: ServicePlan; conflict: string | null } | { unsupported: string } {
+  checkServiceName(opts.name);
+  const installed = installedServices(opts, deps);
+  const mine = installed.find((s) => s.home === opts.home);
+  const plan = planService({ ...opts, name: opts.name !== undefined ? opts.name : mine?.name });
+  if ('unsupported' in plan) return plan;
+  const existing = installed.find((s) => s.path === plan.path);
+  const conflict =
+    existing && existing.home !== null && existing.home !== opts.home
+      ? `${plan.path} already runs RUBY_HOME=${existing.home}. Give this instance its own name: \`ruby service install --name <name>\`.`
+      : null;
+  return { plan, conflict };
 }
 
 /** Pure: decides what the service looks like on this platform. No I/O. */
@@ -237,6 +320,14 @@ const defaultDeps: ServiceDeps = {
   exists: (path) => existsSync(path),
   remove: (path) => rmSync(path, { force: true }),
   run: execCommand,
+  list: (dir) => {
+    try {
+      return readdirSync(dir);
+    } catch {
+      return [];
+    }
+  },
+  read: (path) => readFileSync(path, 'utf8'),
 };
 
 const ENV_TEMPLATE =

@@ -48,10 +48,22 @@ export type SetupDeps = {
   } | null;
   /** OpenClaw / Hermes installs found on this machine. */
   importSources: () => ImportSource[];
-  /** Runs `ruby import` with the persona read from and written to the draft. */
-  runImport: (args: string[], persona: { get: () => string | undefined; set: (p: string) => void }) => number;
+  /**
+   * Runs `ruby import` against the draft: persona and config changes (raised memory caps, imported
+   * jobs) land in the draft and are saved with the rest of setup; `ask` puts the import's questions
+   * to the owner.
+   */
+  runImport: (args: string[], draft: ImportDraft) => number | Promise<number>;
   /** Pending pairing requests in Ruby's database (written by the running service). */
   pairing: () => { pending: () => Pairing[]; approve: (code: string) => Pairing | null; close: () => void };
+};
+
+export type ImportDraft = {
+  get: () => string | undefined;
+  set: (persona: string) => void;
+  config: () => RubyConfig;
+  setConfig: (config: RubyConfig) => void;
+  ask: Prompter;
 };
 
 type Storage = 'encrypted' | 'env-file' | 'env';
@@ -202,19 +214,25 @@ async function importStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Prom
     const name = source === 'openclaw' ? 'OpenClaw' : 'Hermes';
     const look = await p.confirm({ id: 'import', message: `Found ${name} at ${dir}. Preview what Ruby can import?`, help: 'Memory, persona and skills. Secrets are never copied.', default: true, auto: false });
     if (!look) continue;
-    const persona = { get: () => st.config.persona, set: (v: string) => void (st.config.persona = v) };
+    const draft: ImportDraft = {
+      get: () => st.config.persona,
+      set: (v: string) => void (st.config.persona = v),
+      config: () => st.config,
+      setConfig: (c: RubyConfig) => void (st.config = c),
+      ask: p,
+    };
     // An import is optional: a failure is reported and setup carries on.
-    const run = (args: string[]): number => {
+    const run = async (args: string[]): Promise<number> => {
       try {
-        return deps.runImport(args, persona);
+        return await deps.runImport(args, draft);
       } catch (e) {
         io.err(`  ${deps.style.bad('✗')} Import failed: ${errorMessage(e)}\n`);
         return 1;
       }
     };
-    if (run([source, '--from', dir]) !== 0) continue;
-    if (await p.confirm({ id: 'import-apply', message: `Import from ${name} now?`, help: 'Memory and skills are written right away; the persona is saved with the rest of setup.', default: true })) {
-      run([source, '--from', dir, '--apply']);
+    if ((await run([source, '--from', dir])) !== 0) continue;
+    if (await p.confirm({ id: 'import-apply', message: `Import from ${name} now?`, help: 'Memory, skills and pairings are written right away; the persona, memory caps and (disabled) jobs are saved with the rest of setup.', default: true })) {
+      await run([source, '--from', dir, '--apply']);
       st.changed = true;
     }
   }

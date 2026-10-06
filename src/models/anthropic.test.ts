@@ -109,3 +109,32 @@ test('foreign provider blocks and empty text blocks are not sent', async () => {
   assert.deepEqual(messages[1].content, [{ type: 'text', text: 'hello' }]);
   assert.deepEqual(messages.map((m: { role: string }) => m.role), ['user', 'assistant', 'user', 'user'], 'an assistant turn with nothing to send is left out');
 });
+
+test('images and PDFs with bytes become image and document blocks; others are described in text', async () => {
+  const seen: any[] = [];
+  const m = model(() => new Response(stream, { headers: { 'content-type': 'text/event-stream' } }), seen);
+  assert.deepEqual(m.capabilities.media, { images: true, pdf: true, maxImageBytes: 3_750_000, maxPdfBytes: 20 * 1024 * 1024 });
+  const img = { id: 'med_1', kind: 'image' as const, mimeType: 'image/png', size: 3, name: 'p.png' };
+  const pdf = { id: 'med_2', kind: 'document' as const, mimeType: 'application/pdf', size: 3, name: 'r.pdf' };
+  const voice = { id: 'med_3', kind: 'audio' as const, mimeType: 'audio/ogg', size: 3 };
+  await collect(m, [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'see' },
+        { type: 'attachment', attachment: img, data: 'iVBO' },
+        { type: 'attachment', attachment: pdf, data: 'JVBE' },
+        { type: 'attachment', attachment: voice, text: 'Transcript:\nhi' },
+      ],
+    },
+  ] as never);
+  assert.deepEqual(seen[0].messages[0].content, [
+    { type: 'text', text: 'see' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBO' } },
+    { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBE' }, title: 'r.pdf' },
+    { type: 'text', text: '[Audio attached: audio/ogg, 3 B; id med_3]\nTranscript:\nhi' },
+  ]);
+  const off = new AnthropicModel({ apiKey: 'k', model: 'x', vision: false, pdf: false });
+  assert.equal(off.capabilities.media.images, false);
+  assert.equal(off.capabilities.media.pdf, false);
+});

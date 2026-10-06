@@ -2,7 +2,7 @@
 // results): which chat a session belongs to, which chats belong to paired
 // identities, and recording a sent message in the target chat's conversation.
 import { RubyError } from '../contracts/index.ts';
-import type { ChatRef, GatewayStore, SessionStore } from '../store/index.ts';
+import type { GatewayStore, SessionStore } from '../store/index.ts';
 import type { Route } from './gateway.ts';
 
 /** A chat Ruby can message: always a private chat of a paired identity. */
@@ -61,7 +61,7 @@ export class ChatDirectory {
     if (direct) return { conversation: key, chat: this.known(direct), isJob: false };
     if (key.startsWith('route:')) {
       // A shared conversation: answer the chat that wrote into it most recently.
-      const last: ChatRef | undefined = this.deps.store.chatForSession(sessionId);
+      const last = this.deps.store.lastChatForSession(sessionId);
       return { conversation: key, chat: last ? this.known(last) : null, isJob: false };
     }
     return { conversation: key, chat: null, isJob: false };
@@ -107,29 +107,27 @@ export class ChatDirectory {
     return t.name ? `${t.channel} (${t.name})` : `${t.channel} chat ${t.chatId}`;
   }
 
+
   /**
-   * Queues a proactive message and, when `note` is given, records it in the
-   * target chat's conversation, so a reply ("tell me more") has context. The
-   * record is a new event (the log stays append-only), marked as not written
-   * by the owner. Returns the delivery ID.
+   * Records a message Ruby sent on its own in the target chat's conversation
+   * (creating it if needed), so a reply ("tell me more") has context. A new
+   * event, marked as not written by the owner; the log stays append-only.
+   * Callers that may race a running turn go through the conversation's lane
+   * (`Gateway.notify`). Skipped when the target is `skipSession` (the sender's
+   * own conversation already has the tool call).
    */
-  send(target: { channel: string; account: string; chatId: string }, text: string, note?: { from: string; skipSession?: string }): string {
-    const out = this.deps.store.enqueue({ channel: target.channel, account: target.account, chatId: target.chatId, text });
-    if (note) {
-      const key = conversationKeyFor(this.deps.routes ?? [], target);
-      let sessionId = this.deps.store.conversation(key);
-      if (!sessionId) {
-        sessionId = this.deps.sessions.createSession(`${target.channel} chat`).id;
-        this.deps.store.bindConversation(key, sessionId);
-      }
-      if (sessionId !== note.skipSession) {
-        this.deps.sessions.append(sessionId, {
-          type: 'user_message',
-          message: { role: 'user', content: [{ type: 'text', text: `[Ruby sent this message to the chat (${note.from}); it was not written by the owner.]\n${text}` }] },
-          source: 'notification',
-        });
-      }
+  record(target: { channel: string; account: string; chatId: string }, text: string, note: { from: string; skipSession?: string }): void {
+    const key = conversationKeyFor(this.deps.routes ?? [], target);
+    let sessionId = this.deps.store.conversation(key);
+    if (!sessionId) {
+      sessionId = this.deps.sessions.createSession(`${target.channel} chat`).id;
+      this.deps.store.bindConversation(key, sessionId);
     }
-    return out.deliveryId;
+    if (sessionId === note.skipSession) return;
+    this.deps.sessions.append(sessionId, {
+      type: 'user_message',
+      message: { role: 'user', content: [{ type: 'text', text: `[Context note, not written by your owner: you sent them this message from ${note.from}.]\n${text}` }] },
+      source: 'notification',
+    });
   }
 }

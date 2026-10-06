@@ -27,6 +27,16 @@ test('invalid config lists every problem', () => {
   }
 });
 
+test('timezone and api.corsOrigins are validated; CORS is off by default', () => {
+  assert.deepEqual(defaultConfig().api.corsOrigins, []);
+  assert.equal(defaultConfig().timezone, undefined);
+  const c = parseConfig({ version: CONFIG_VERSION, timezone: 'Europe/London', api: { corsOrigins: ['https://chat.example.com', 'http://localhost:3000'] } });
+  assert.equal(c.timezone, 'Europe/London');
+  for (const bad of [{ timezone: 'Mars/Olympus' }, { api: { corsOrigins: ['*'] } }, { api: { corsOrigins: ['https://chat.example.com/app'] } }]) {
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, ...bad }), (e) => isRubyError(e, 'config'));
+  }
+});
+
 test('config without a version is migrated and backed up', () => {
   const home = tempDir();
   writeFileSync(join(home, 'config.json'), JSON.stringify({ persona: 'Be brief.' }));
@@ -110,7 +120,7 @@ test('setInEnvFile replaces, de-duplicates and appends, keeps other lines, quote
 
 test('owner timezone, one-shot, message and script jobs validate', () => {
   assert.equal(parseConfig({ version: CONFIG_VERSION, timezone: 'Europe/London' }).timezone, 'Europe/London');
-  assert.throws(() => parseConfig({ version: CONFIG_VERSION, timezone: 'Mars/Olympus' }), /timezone: Unknown IANA time zone/);
+  assert.throws(() => parseConfig({ version: CONFIG_VERSION, timezone: 'Mars/Olympus' }), /timezone: Unknown time zone/);
   const c = defaultConfig();
   assert.equal(c.timezone, undefined, 'unset means the host zone');
   assert.equal(c.scheduler.maxAgentJobs, 25);
@@ -123,4 +133,31 @@ test('owner timezone, one-shot, message and script jobs validate', () => {
   assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30 }), /exactly one of instructions, message or script/);
   assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30, message: 'a', instructions: 'b' }), /exactly one of/);
   assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30, message: 'a', notify: { channel: 'irc', chatId: '1' } }), /notify.channel must be/);
+});
+
+test('media: safe defaults, transcription validation, protected host commands, secret names', async () => {
+  const { isProtectedConfigPath, secretNames } = await import('./index.ts');
+  const c = defaultConfig();
+  assert.equal(c.media.enabled, true);
+  assert.equal(c.media.transcription.backend, 'none');
+  assert.equal(c.media.pdfText.command, undefined);
+  assert.equal(c.media.maxBytes, 20 * 1024 * 1024);
+  assert.equal(c.model.vision, undefined, 'decided per provider');
+  const bad = (media: object) => {
+    try {
+      parseConfig({ version: CONFIG_VERSION, media });
+      return [];
+    } catch (e) {
+      return (e as { detail?: { problems?: string[] } }).detail?.problems ?? [];
+    }
+  };
+  assert.ok(bad({ transcription: { backend: 'openai-compatible' } }).some((p) => p.startsWith('media.transcription.baseUrl')));
+  assert.ok(bad({ transcription: { backend: 'command' } }).some((p) => p.startsWith('media.transcription.command')));
+  assert.ok(bad({ transcription: { backend: 'none', path: 'no-slash' } }).some((p) => p.startsWith('media.transcription.path')));
+  assert.deepEqual(bad({ transcription: { backend: 'command', command: ['whisper-cli', '-f', '{input}'] } }), []);
+  for (const p of ['media.transcription.command', 'media.transcription.baseUrl', 'media.transcription.apiKeyEnv', 'media.pdfText.command']) assert.ok(isProtectedConfigPath(p), p);
+  assert.ok(!isProtectedConfigPath('media.maxInContext'));
+  const withKey = parseConfig({ version: CONFIG_VERSION, media: { transcription: { backend: 'openai-compatible', baseUrl: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY' } } });
+  assert.ok(secretNames(withKey).includes('GROQ_API_KEY'));
+  assert.ok(!secretNames(c).includes('GROQ_API_KEY'));
 });

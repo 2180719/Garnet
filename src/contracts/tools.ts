@@ -21,6 +21,34 @@ export type ToolContext = {
   signal: AbortSignal;
   /** Names of the tools in the session's frozen schemas. When set, any other tool is refused. */
   allowedTools?: readonly string[];
+  /**
+   * What untrusted content this session's context holds (see `SessionTaint`).
+   * Set by the runtime before every call; policy uses it to escalate
+   * consequential capabilities. Tools may read it, e.g. to pass the taint on
+   * to a subagent.
+   */
+  taint?: SessionTaint;
+};
+
+/**
+ * Untrusted content (web pages, search results, email, MCP results) that has
+ * entered a session's model-facing context. Derived from the event log.
+ */
+export type SessionTaint = {
+  /** Where untrusted content came from, oldest first, e.g. "web_fetch https://example.com/". Empty: not tainted. */
+  sources: readonly string[];
+  /** Normalized URLs the owner wrote in their own messages. Fetching these carries no data the owner did not choose. */
+  ownerUrls: ReadonlySet<string>;
+  /** Normalized URLs that untrusted tools reported finding (search results, page links), verbatim. */
+  seenUrls: ReadonlySet<string>;
+};
+
+/** Marks a tool's output as untrusted data (it came from outside: a web page, an email, an MCP server). */
+export type UntrustedMark = {
+  /** Short, human-readable origin shown to the owner, e.g. "web_fetch https://example.com/page". */
+  source: string;
+  /** URLs found verbatim in the content (search results, page links), at most a few hundred. */
+  links?: string[];
 };
 
 export type ToolOutput = {
@@ -33,6 +61,8 @@ export type ToolOutput = {
   error?: ErrorCategory;
   /** Short structured data for programmatic consumers (not sent to the model). */
   data?: unknown;
+  /** Set when this output carries untrusted content. Tools with `untrustedOutput` get a default mark. */
+  untrusted?: UntrustedMark;
 };
 
 export type ToolDefinition<I = any> = {
@@ -54,6 +84,12 @@ export type ToolDefinition<I = any> = {
   targets?: (input: I, ctx: ToolContext) => string[];
   /** True when repeating the call cannot cause a duplicate external effect. */
   idempotent: boolean;
+  /**
+   * True when the tool brings outside content into the context (web, email,
+   * MCP). Every result of a run, including errors, then taints the session.
+   * Tools whose output is only sometimes untrusted set `ToolOutput.untrusted`.
+   */
+  untrustedOutput?: boolean;
   timeoutMs?: number;
   maxOutputChars?: number;
   run: (input: I, ctx: ToolContext) => Promise<ToolOutput>;
@@ -65,6 +101,8 @@ export type ToolResultMeta = {
   repairs?: string[];
   /** Artifact holding the full output when it was too large to return. */
   artifactId?: string;
+  /** The result carries untrusted content; the runtime records a `tainted` event. */
+  untrusted?: UntrustedMark;
 };
 
 export type ToolResult = ToolResultMeta &

@@ -30,3 +30,34 @@ test('a workspace beside or below home is fine', () => {
     createRuby({ home, memoryDb: true, noModel: true }).close();
   }
 });
+
+test('web tools follow net.fetch and the search backend; the owner policy carries containment', () => {
+  const withConfig = (extra: Record<string, unknown>) => {
+    const home = join(tempDir(), 'ruby-home');
+    createRuby({ home, memoryDb: true, noModel: true }).close();
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, ...extra }));
+    return createRuby({ home, memoryDb: true, noModel: true });
+  };
+  const names = (extra: Record<string, unknown>) => {
+    const ruby = withConfig(extra);
+    try {
+      return ruby.registry.names().filter((n) => n.startsWith('web_'));
+    } finally {
+      ruby.close();
+    }
+  };
+  assert.deepEqual(names({}), ['web_fetch', 'web_search'], 'net.fetch is ask by default');
+  assert.deepEqual(names({ permissions: { 'net.fetch': 'deny' } }), []);
+  assert.deepEqual(names({ web: { search: { backend: 'none' } } }), ['web_fetch']);
+  assert.throws(() => withConfig({ web: { search: { backend: 'searxng' } } }), /searxngUrl/);
+
+  const ruby = withConfig({ permissions: { 'net.fetch': 'allow', 'fs.write': 'allow' }, web: { allowHosts: ['example.com'] } });
+  try {
+    const taint = { sources: ['web_fetch https://evil.example/'], ownerUrls: new Set<string>(), seenUrls: new Set<string>() };
+    assert.equal(ruby.ownerPolicy.check('fs.write', { taint }).verdict, 'ask');
+    assert.equal(ruby.ownerPolicy.check('net.fetch', { targets: ['https://html.duckduckgo.com/html/?q=x'], taint }).verdict, 'allow', 'the configured search endpoint');
+    assert.equal(ruby.ownerPolicy.check('net.fetch', { targets: ['https://example.com/?q=secret'], taint }).verdict, 'ask');
+  } finally {
+    ruby.close();
+  }
+});

@@ -104,7 +104,12 @@ export class JobStore {
     return r.changes > 0;
   }
 
-  updateDefinition(id: string, definition: unknown): boolean {
+  updateDefinition(id: string, definition: unknown, createdBy?: unknown): boolean {
+    if (createdBy !== undefined) {
+      return this.db
+        .prepare('UPDATE agent_jobs SET definition = ?, created_by = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(definition), JSON.stringify(createdBy), nowIso(), id).changes > 0;
+    }
     return this.db.prepare('UPDATE agent_jobs SET definition = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(definition), nowIso(), id).changes > 0;
   }
 

@@ -35,8 +35,14 @@ function setup(perms: Partial<Record<Capability, Permission>> = {}, opts: { sess
     policy: new Policy({ ...defaultConfig().permissions, ...perms }),
     approver: async (req) => (asked.push(req), answer),
   });
-  const call = async (input: object): Promise<ToolResult> =>
-    executor.execute({ type: 'tool_call', id: `c${asked.length}`, name: 'schedule', input }, { sessionId: 's1', workspace: '/tmp', memoryNamespace: 'default', signal: new AbortController().signal });
+  const call = async (input: object, taint?: string[]): Promise<ToolResult> =>
+    executor.execute(
+      { type: 'tool_call', id: `c${asked.length}`, name: 'schedule', input },
+      {
+        sessionId: 's1', workspace: '/tmp', memoryNamespace: 'default', signal: new AbortController().signal,
+        ...(taint ? { taint: { sources: taint, ownerUrls: new Set<string>(), seenUrls: new Set<string>() } } : {}),
+      },
+    );
   return { book, store, asked, call, deny: () => (answer = 'denied'), advance: (ms: number) => (now = new Date(now.getTime() + ms)) };
 }
 
@@ -132,4 +138,21 @@ test('a time that does not exist (spring forward) is moved and the owner is told
   const out = ok(await t.call({ action: 'create', when: '2027-03-28 01:30', reminder: 'x' }));
   assert.match(out, /does not exist on that day.*moved forward/);
   assert.equal(t.book.find('x')!.job.at, '2027-03-28T01:30:00.000Z');
+});
+
+test('after untrusted content, scheduling asks even when allowed, and the job keeps the taint', async () => {
+  const t = setup({ 'schedule.edit': 'allow' });
+  const out = ok(await t.call({ action: 'create', name: 'Digest', when: 'every day at 8am', instructions: 'Summarize the page.' }, ['web_fetch https://evil.example/']));
+  assert.equal(t.asked.length, 1, 'escalated from allow to ask');
+  assert.match(t.asked[0]!.summary, /schedule: create job "digest"[\s\S]*⚠ This conversation has read untrusted content/);
+  assert.deepEqual(t.asked[0]!.taint, ['web_fetch https://evil.example/']);
+  assert.match(out, /its runs will ask the owner/);
+  assert.deepEqual(t.book.taintOf('digest'), ['web_fetch https://evil.example/']);
+  // A clean edit keeps the taint; a tainted edit of a clean job adds it.
+  ok(await t.call({ action: 'update', id: 'digest', when: 'every day at 9am' }));
+  assert.deepEqual(t.book.taintOf('digest'), ['web_fetch https://evil.example/']);
+  ok(await t.call({ action: 'create', name: 'Clean', when: 'every day at 7am', instructions: 'Tidy.' }));
+  assert.deepEqual(t.book.taintOf('clean'), []);
+  ok(await t.call({ action: 'update', id: 'clean', instructions: 'Tidy, then do what the page said.' }, ['web_search news']));
+  assert.deepEqual(t.book.taintOf('clean'), ['web_search news']);
 });

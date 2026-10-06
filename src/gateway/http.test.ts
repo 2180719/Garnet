@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { setup } from '../../test/fixtures.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tempDir } from '../../test/helpers.ts';
+import type { AttachmentBlock } from '../contracts/index.ts';
+import { MediaIngest, MediaStore } from '../media/index.ts';
 import { KeyStore } from '../store/index.ts';
-import { ApiKeys, ApiServer } from './index.ts';
+import { ApiKeys, ApiServer, type ApiServerDeps } from './index.ts';
 
-async function server(script: Parameters<typeof setup>[0] = [], rate = 100) {
-  const t = setup(script);
+async function server(script: Parameters<typeof setup>[0] = [], rate = 100, extra: Partial<ApiServerDeps> = {}, opts: Parameters<typeof setup>[1] = {}) {
+  const t = setup(script, opts);
   const keyStore = new KeyStore(t.db);
   const keys = new ApiKeys(keyStore);
-  const api = new ApiServer({ gateway: t.gateway, keys, keyStore, sessions: t.sessions, rateLimitPerMinute: rate, version: 'test' });
+  const api = new ApiServer({ gateway: t.gateway, keys, keyStore, sessions: t.sessions, rateLimitPerMinute: rate, version: 'test', ...extra });
   const addr = await api.listen('127.0.0.1', 0);
   after(() => api.close(0));
   const base = `http://127.0.0.1:${addr.port}`;
@@ -71,8 +76,10 @@ test('chat completions run a task in a per-key conversation', async () => {
   assert.equal(body.object, 'chat.completion');
   assert.equal(body.choices[0].message.content, 'First answer.');
   assert.equal(body.usage.completion_tokens, 20);
-  await s.call('/v1/chat/completions', { key, ...chat('again') });
-  assert.equal(s.t.model.requests[1]!.messages.length, 3, 'server-side history continues');
+  await s.call('/v1/chat/completions', { key, ...chat('again'), headers: { 'x-ruby-conversation': 'notes' } });
+  await s.call('/v1/chat/completions', { key, ...chat('more'), headers: { 'x-ruby-conversation': 'notes' } });
+  assert.equal(s.t.model.requests[1]!.messages.length, 1, 'a named conversation is separate');
+  assert.equal(s.t.model.requests[2]!.messages.length, 3, 'server-side history continues in a named conversation');
   const bad = await s.call('/v1/chat/completions', { key, ...chat('x'), headers: { 'x-ruby-conversation': 'Bad Name!' } });
   assert.equal(bad.status, 400);
 });
@@ -261,4 +268,198 @@ test('a conflict (job already running) is a 409, not a 500', async () => {
   const res = await fetch(`http://127.0.0.1:${port}/api/jobs/tea/run`, { method: 'POST', headers: { authorization: `Bearer ${key}` } });
   assert.equal(res.status, 409);
   assert.match(((await res.json()) as any).error.message, /already running/);
+});
+
+async function mediaServer(script: Parameters<typeof setup>[0], images: boolean) {
+  const store = new MediaStore(join(tempDir(), 'media'), 100_000);
+  const media = new MediaIngest({ store, maxTextChars: 10_000, modelMedia: { images, pdf: false, maxImageBytes: 5_000_000, maxPdfBytes: 0 } });
+  const t = setup(script, { gateway: { media }, agent: { loadAttachment: (r) => store.read(r.id) } });
+  const keyStore = new KeyStore(t.db);
+  const keys = new ApiKeys(keyStore);
+  const api = new ApiServer({ gateway: t.gateway, keys, keyStore, sessions: t.sessions, rateLimitPerMinute: 100, version: 'test', maxChatBodyBytes: 200_000 });
+  const addr = await api.listen('127.0.0.1', 0);
+  after(() => api.close(0));
+  const { key } = keys.create('k', ['chat']);
+  const post = (content: unknown, extra: object = {}) =>
+    fetch(`http://127.0.0.1:${addr.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: 'ruby', messages: [{ role: 'user', content }], ...extra }),
+    });
+  return { t, post };
+}
+
+const PNG = readFileSync(join(import.meta.dirname, '..', '..', 'test', 'media', 'pixel.png')).toString('base64');
+
+test('chat completions accept image_url parts as data URLs and pass the image to the model', async () => {
+  const s = await mediaServer([{ text: 'A pixel.' }], true);
+  const res = await s.post([{ type: 'text', text: 'what is it?' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}`, detail: 'auto' } }]);
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as any).choices[0].message.content, 'A pixel.');
+  const native = s.t.model.requests[0]!.messages.at(-1)!.content.find((b) => b.type === 'attachment') as AttachmentBlock;
+  assert.equal(native.data, PNG);
+  const imageOnly = await s.post([{ type: 'image_url', image_url: `data:image/png;base64,${PNG}` }]);
+  assert.equal(imageOnly.status, 200, 'an image alone is a valid message');
+});
+
+test('remote image URLs, unknown parts and oversize bodies are refused; text-only models say so', async () => {
+  const s = await mediaServer([], true);
+  const remote = await s.post([{ type: 'image_url', image_url: { url: 'http://169.254.169.254/latest/meta-data' } }]);
+  assert.equal(remote.status, 400);
+  assert.match(((await remote.json()) as any).error.message, /URLs are not fetched; send the image inline as a base64 data URL/);
+  const audio = await s.post([{ type: 'input_audio', input_audio: { data: 'AAAA', format: 'wav' } }]);
+  assert.equal(audio.status, 400);
+  assert.match(((await audio.json()) as any).error.message, /unsupported_content_type: "input_audio"/);
+  const big = await s.post([{ type: 'image_url', image_url: { url: `data:image/png;base64,${'A'.repeat(1_200_000)}` } }]);
+  assert.equal(big.status, 413);
+  assert.equal(s.t.model.requests.length, 0);
+
+  const blind = await mediaServer([], false);
+  const res = await blind.post([{ type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}` } }]);
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as any).error.message, /can't view images/);
+  const streamed = await blind.post([{ type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}` } }], { stream: true });
+  assert.equal(streamed.status, 200);
+  assert.match(await streamed.text(), /can't view images[\s\S]*\[DONE\]/);
+  assert.equal(blind.t.model.requests.length, 0);
+});
+
+const post = (messages: unknown[], extra: object = {}) => ({ method: 'POST', body: JSON.stringify({ model: 'ruby', messages, ...extra }) });
+const turnText = (s: { t: { model: { requests: { messages: { content: { type: string; text?: string }[] }[] }[] } } }, i: number) =>
+  s.t.model.requests[i]!.messages.map((m) => m.content.map((b) => b.text ?? '').join('')).join('\n');
+
+test('stateless clients get one conversation per chat, keyed by its first message', async () => {
+  const s = await server([{ text: 'A1' }, { text: 'B1' }, { text: 'A2' }]);
+  const { key } = s.keys.create('webui', ['chat']);
+  await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'Plan a trip' }]) });
+  await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'Fix my bike' }]) });
+  // Chat A continues: the client resends its history; Ruby uses only the newest message.
+  await s.call('/v1/chat/completions', {
+    key,
+    ...post([{ role: 'system', content: 'Be brief.' }, { role: 'user', content: 'Plan a trip' }, { role: 'assistant', content: 'A1' }, { role: 'user', content: 'To Rome' }]),
+  });
+  assert.equal(s.t.model.requests[1]!.messages.length, 1, 'chat B did not see chat A');
+  assert.equal(s.t.model.requests[2]!.messages.length, 3, 'chat A continued its own history');
+  assert.doesNotMatch(turnText(s, 2), /bike/);
+  const keys = s.t.store.keyForSession(s.t.sessions.listSessions(10)[0]!.id);
+  assert.match(keys!, /^api:[^:]+:chat-[0-9a-f]{20}$/);
+});
+
+test('the user field scopes chats but does not merge them; X-OpenWebUI-Chat-Id names the chat', async () => {
+  const s = await server([{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }]);
+  const { key } = s.keys.create('webui', ['chat']);
+  await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'hi' }], { user: 'ada' }) });
+  await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'hi' }], { user: 'bob' }) });
+  assert.equal(s.t.model.requests[1]!.messages.length, 1, 'same first message, different user: separate');
+  const h = { 'x-openwebui-chat-id': '8a1c0f5e-1111-4222-8333-944455556666' };
+  await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'hello' }]), headers: h });
+  await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: 'edited first message' }, { role: 'assistant', content: '3' }, { role: 'user', content: 'next' }]), headers: h });
+  assert.equal(s.t.model.requests[3]!.messages.length, 3, 'the chat id wins over the first message');
+});
+
+test('an unseen chat with history replays the earlier messages once', async () => {
+  const s = await server([{ text: 'ok' }, { text: 'ok2' }]);
+  const { key } = s.keys.create('webui', ['chat']);
+  const history = [{ role: 'user', content: 'My cat is Tom.' }, { role: 'assistant', content: null, tool_calls: [{ id: 'x' }] }, { role: 'assistant', content: 'Noted.' }];
+  const r = await s.call('/v1/chat/completions', { key, ...post([...history, { role: 'user', content: "What's my cat called?" }]) });
+  assert.equal(r.status, 200, 'content: null in history is accepted');
+  assert.match(turnText(s, 0), /Earlier messages in this chat[\s\S]*Owner: My cat is Tom\.[\s\S]*Assistant: Noted\.[\s\S]*What's my cat called\?/);
+  await s.call('/v1/chat/completions', { key, ...post([...history, { role: 'user', content: "What's my cat called?" }, { role: 'assistant', content: 'ok' }, { role: 'user', content: 'Thanks' }]) });
+  assert.doesNotMatch(turnText(s, 1).split('\n').at(-1)!, /Earlier messages/, 'not replayed again');
+});
+
+test('content parts: text parts are read; images need media handling and a valid data URL', async () => {
+  const s = await server([{ text: 'seen' }]);
+  const { key } = s.keys.create('app', ['chat']);
+  const parts = [{ type: 'text', text: 'Describe' }, { type: 'text', text: 'please' }];
+  const ok = await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: parts }]) });
+  assert.equal(ok.status, 200);
+  assert.match(turnText(s, 0), /Describe\nplease/);
+  const malformed = await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:,' } }] }]) });
+  assert.equal(malformed.status, 400);
+  assert.match(((await malformed.json()) as any).error.message, /Malformed image data URL/);
+  const png = `data:image/png;base64,${readFileSync(join(import.meta.dirname, '..', '..', 'test', 'media', 'pixel.png')).toString('base64')}`;
+  const off = await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: [{ type: 'image_url', image_url: { url: png } }] }]) });
+  assert.equal(off.status, 400, 'this server has no media ingest (media.enabled false)');
+  assert.match(((await off.json()) as any).error.message, /media handling is off/);
+  const empty = await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: null }]) });
+  assert.equal(empty.status, 400);
+});
+
+test("Open WebUI's title, tag and follow-up tasks are answered without a model call or a conversation", async () => {
+  const s = await server();
+  const { key } = s.keys.create('webui', ['chat']);
+  const task = (output: string) =>
+    `### Task:\nGenerate something.\n### Output:\nJSON format: ${output}\n### Chat History:\n<chat_history>\nUSER: plan a weekend in Lisbon!\nASSISTANT: Sure.\n</chat_history>`;
+  const ask = async (output: string, stream = false) => {
+    const r = await s.call('/v1/chat/completions', { key, ...post([{ role: 'user', content: task(output) }], { stream }) });
+    if (!stream) return ((await r.json()) as any).choices[0].message.content as string;
+    const chunks = (await r.text()).split('\n\n').filter((l) => l.startsWith('data: {')).map((l) => JSON.parse(l.slice(6)));
+    return chunks.map((c) => c.choices[0].delta.content ?? '').join('');
+  };
+  assert.deepEqual(JSON.parse(await ask('{ "title": "your concise title here" }')), { title: 'Plan a weekend in Lisbon' });
+  assert.deepEqual(JSON.parse(await ask('{ "tags": ["tag1"] }')), { tags: ['General'] });
+  assert.deepEqual(JSON.parse(await ask('{ "follow_ups": ["Question 1?"] }', true)), { follow_ups: [] });
+  assert.deepEqual(JSON.parse(await ask('{ "queries": ["query1"] }')), { queries: [] });
+  assert.equal(s.t.model.requests.length, 0);
+  assert.equal(s.t.sessions.listSessions(10).length, 0);
+});
+
+test('streams send keepalive comments while a task runs', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = await server([{ text: 'late' }], 100, { keepaliveMs: 10 });
+  const original = s.t.model.stream.bind(s.t.model);
+  s.t.model.stream = async function* (request) {
+    await gate;
+    yield* original(request);
+  };
+  const { key } = s.keys.create('app', ['chat']);
+  setTimeout(release, 80);
+  const res = await s.call('/v1/chat/completions', { key, ...chat('slow', { stream: true }) });
+  const text = await res.text();
+  assert.ok((text.match(/^: keepalive$/gm) ?? []).length >= 2, text);
+  assert.ok(text.trimEnd().endsWith('data: [DONE]'));
+});
+
+test('CORS is off by default and allows only listed origins on the OpenAI routes', async () => {
+  const off = await server();
+  const pre = await off.call('/v1/chat/completions', { method: 'OPTIONS', headers: { origin: 'https://chat.example.com' } });
+  assert.equal(pre.status, 401);
+  assert.equal(pre.headers.get('access-control-allow-origin'), null);
+
+  const s = await server([], 100, { corsOrigins: ['https://chat.example.com'] });
+  const ok = await s.call('/v1/chat/completions', { method: 'OPTIONS', headers: { origin: 'https://chat.example.com', 'access-control-request-method': 'POST' } });
+  assert.equal(ok.status, 204);
+  assert.equal(ok.headers.get('access-control-allow-origin'), 'https://chat.example.com');
+  assert.match(ok.headers.get('access-control-allow-headers')!, /Authorization/);
+  const other = await s.call('/v1/chat/completions', { method: 'OPTIONS', headers: { origin: 'https://evil.example' } });
+  assert.equal(other.status, 401);
+  assert.equal(other.headers.get('access-control-allow-origin'), null);
+  const admin = await s.call('/api/sessions', { method: 'OPTIONS', headers: { origin: 'https://chat.example.com' } });
+  assert.equal(admin.headers.get('access-control-allow-origin'), null, 'admin routes never get CORS');
+  const { key } = s.keys.create('app', ['chat']);
+  const models = await s.call('/v1/models', { key, headers: { origin: 'https://chat.example.com' } });
+  assert.equal(models.status, 200);
+  assert.equal(models.headers.get('access-control-allow-origin'), 'https://chat.example.com');
+  const noKey = await s.call('/v1/models', { headers: { origin: 'https://chat.example.com' } });
+  assert.equal(noKey.status, 401, 'CORS never replaces the key');
+});
+
+test('/approve and /deny work in an API chat, only for approvals raised in that conversation', async () => {
+  const write = { name: 'write_file', input: { path: 'note.txt', content: 'hi' } };
+  const s = await server([{ toolCalls: [write] }, { toolCalls: [write] }, { text: 'Saved.' }], 100, {}, { withApprovals: true });
+  const { key } = s.keys.create('webui', ['chat']);
+  const { key: other } = s.keys.create('other', ['chat']);
+  const h = { 'x-ruby-conversation': 'work' };
+  const first = (await (await s.call('/v1/chat/completions', { key, ...chat('save a note'), headers: h })).json()) as any;
+  const code = /\/approve ([A-Z0-9]{5})/.exec(first.choices[0].message.content)?.[1];
+  assert.ok(code, first.choices[0].message.content);
+  const foreign = (await (await s.call('/v1/chat/completions', { key: other, ...chat(`/approve ${code}`), headers: h })).json()) as any;
+  assert.match(foreign.choices[0].message.content, /belongs to another conversation/);
+  const done = (await (await s.call('/v1/chat/completions', { key, ...chat(`/approve ${code}`), headers: h })).json()) as any;
+  assert.equal(done.choices[0].message.content, 'Saved.');
+  assert.ok(s.t.approvals.get(code!)?.usedAt);
+  const again = (await (await s.call('/v1/chat/completions', { key, ...chat(`/deny ${code}`), headers: h })).json()) as any;
+  assert.match(again.choices[0].message.content, /No pending approval/);
 });

@@ -5,12 +5,16 @@ import {
   type ChannelAdapter,
   type ChannelCapabilities,
   type ChannelHealth,
+  type InboundAttachment,
   type InboundMessage,
   type InboundSink,
   type OutboundMessage,
   type SendResult,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
-import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, splitText, type ChunkFailure } from './delivery.ts';
+import { readFile } from 'node:fs/promises';
+import { AMBIGUOUS_STATUSES, abortableSleep, mayHaveReachedServer, sendChunks, sendUnits, splitText, type ChunkFailure } from './delivery.ts';
+import { markdownToPlain } from './markdown.ts';
 
 export type SignalOptions = {
   /** signal-cli daemon base URL. Plain http is only allowed for loopback hosts. */
@@ -40,8 +44,16 @@ type Envelope = {
   sourceUuid?: string | null;
   sourceName?: string | null;
   timestamp?: number;
-  dataMessage?: { message?: string | null; groupInfo?: { groupId?: string } | null } | null;
+  dataMessage?: {
+    message?: string | null;
+    groupInfo?: { groupId?: string } | null;
+    attachments?: { id?: string; contentType?: string; filename?: string | null; size?: number; voiceNote?: boolean }[] | null;
+    sticker?: unknown;
+  } | null;
 };
+
+/** Signal's attachment limit is 100 MiB. */
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function isLoopbackHost(hostname: string): boolean {
   const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
@@ -69,7 +81,7 @@ const UNREACHABLE_HINT = (base: string, account: string) =>
 export class SignalChannel implements ChannelAdapter {
   readonly channel = 'signal';
   readonly account: string;
-  readonly capabilities: ChannelCapabilities = { maxMessageChars: MAX_CHARS, dedupesSends: false, typingIndicator: true };
+  readonly capabilities: ChannelCapabilities = { maxMessageChars: MAX_CHARS, dedupesSends: false, typingIndicator: true, maxUploadBytes: MAX_UPLOAD_BYTES };
 
   #fetch: typeof fetch;
   #base: string;
@@ -158,9 +170,18 @@ export class SignalChannel implements ChannelAdapter {
 
   async send(message: OutboundMessage): Promise<SendResult> {
     return sendChunks(
-      splitText(message.text, MAX_CHARS),
-      async (text) => {
-        const result = (await this.#rpc('send', { ...this.#target(message.chatId), message: text }, AbortSignal.timeout(REQUEST_TIMEOUT_MS))) as
+      // Signal shows markdown markers literally: send plain text (captions too).
+      sendUnits({ ...message, text: markdownToPlain(message.text) }, MAX_CHARS, MAX_CHARS, splitText),
+      async (unit) => {
+        const params: Record<string, unknown> = { ...this.#target(message.chatId), message: unit.kind === 'text' ? unit.text : (unit.caption ?? '') };
+        if (unit.kind === 'file') {
+          if (unit.file.size > MAX_UPLOAD_BYTES) throw new SignalApiError(413, `Signal accepts attachments up to 100 MB; ${unit.file.name} is larger`);
+          // A data URI (RFC 2397 with a filename) works whether or not the daemon shares this filesystem.
+          const data = (await readFile(unit.file.path)).toString('base64');
+          params.attachments = [`data:${unit.file.mimeType};filename=${safeFilename(unit.file.name)};base64,${data}`];
+        }
+        const timeout = AbortSignal.timeout(unit.kind === 'file' ? REQUEST_TIMEOUT_MS * 4 : REQUEST_TIMEOUT_MS);
+        const result = (await this.#rpc('send', params, timeout)) as
           | { timestamp?: number; results?: { type?: string }[] }
           | null;
         // One result per recipient (a group has many). It counts as sent if anyone got it: resending
@@ -176,6 +197,32 @@ export class SignalChannel implements ChannelAdapter {
       (e) => this.#classify(e),
       (ms) => this.#sleep(ms, new AbortController().signal),
     );
+  }
+
+  async fetchAttachment(ref: string, options: { maxBytes: number; signal: AbortSignal }): Promise<{ data: Uint8Array; mimeType?: string }> {
+    let parsed: { id?: unknown; recipient?: unknown; groupId?: unknown };
+    try {
+      parsed = JSON.parse(ref) as typeof parsed;
+    } catch {
+      throw new Error('not a Signal attachment reference');
+    }
+    if (typeof parsed.id !== 'string') throw new Error('not a Signal attachment reference');
+    const params: Record<string, unknown> = { id: parsed.id };
+    if (typeof parsed.groupId === 'string') params.groupId = parsed.groupId;
+    else if (typeof parsed.recipient === 'string') params.recipient = parsed.recipient;
+    let result: unknown;
+    try {
+      result = await this.#rpc('getAttachment', params, AbortSignal.any([options.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4)]));
+    } catch (e) {
+      throw new Error(`signal-cli could not provide the attachment: ${errorMessage(e)}`);
+    }
+    // signal-cli returns the bytes as base64: `{ data }` (or a bare string on some versions).
+    const b64 = typeof result === 'string' ? result : (result as { data?: unknown } | null)?.data;
+    if (typeof b64 !== 'string') throw new Error('signal-cli returned no attachment data');
+    if (Math.floor((b64.length * 3) / 4) > options.maxBytes + 2) throw new Error(`the file is too large (the limit is ${(options.maxBytes / 1048576).toFixed(1)} MB)`);
+    const data = new Uint8Array(Buffer.from(b64, 'base64'));
+    if (data.byteLength > options.maxBytes) throw new Error(`the file is too large (the limit is ${(options.maxBytes / 1048576).toFixed(1)} MB)`);
+    return { data };
   }
 
   #classify(e: unknown): ChunkFailure {
@@ -308,14 +355,30 @@ export class SignalChannel implements ChannelAdapter {
     if (note?.account !== undefined && note.account !== this.account) return null;
     const env = note?.envelope;
     if (!env) return null;
-    const text = env.dataMessage?.message;
-    if (typeof text !== 'string' || text === '') return null;
+    const dm = env.dataMessage;
+    if (!dm) return null;
+    const text = typeof dm.message === 'string' ? dm.message : '';
+    const rawAttachments = Array.isArray(dm.attachments) ? dm.attachments.filter((a) => typeof a?.id === 'string') : [];
+    const unsupported = !text && rawAttachments.length === 0 && dm.sticker ? ('sticker' as UnsupportedContent) : undefined;
+    if (text === '' && rawAttachments.length === 0 && !unsupported) return null;
     const number = env.sourceNumber ?? (env.source && env.source.startsWith('+') ? env.source : undefined) ?? undefined;
     if (number === this.account || env.source === this.account) return null; // never process our own messages
     const senderId = env.sourceUuid ?? number ?? env.source;
     if (!senderId || typeof env.timestamp !== 'number') return null;
     const groupId = env.dataMessage?.groupInfo?.groupId;
     const direct = number ?? env.sourceUuid ?? senderId;
+    const attachments: InboundAttachment[] = rawAttachments.map((a) => {
+      const mime = typeof a.contentType === 'string' ? a.contentType : undefined;
+      const kind: InboundAttachment['kind'] = a.voiceNote || mime?.startsWith('audio/') ? 'audio' : mime?.startsWith('image/') ? 'image' : mime?.startsWith('video/') ? 'video' : mime === 'application/pdf' || mime?.startsWith('text/') ? 'document' : 'file';
+      return {
+        kind,
+        // getAttachment needs the id plus the sender (or the group) it came from.
+        ref: JSON.stringify(groupId ? { id: a.id, groupId } : { id: a.id, recipient: direct }),
+        ...(typeof a.filename === 'string' && a.filename ? { name: a.filename } : a.voiceNote ? { name: 'voice.m4a' } : {}),
+        ...(mime ? { mimeType: mime } : {}),
+        ...(typeof a.size === 'number' ? { size: a.size } : {}),
+      };
+    });
     return {
       channel: this.channel,
       account: this.account,
@@ -323,8 +386,10 @@ export class SignalChannel implements ChannelAdapter {
       externalId: `${senderId}:${env.timestamp}`,
       sender: { id: senderId, ...(env.sourceName ? { displayName: env.sourceName } : {}) },
       text,
+      ...(attachments.length ? { attachments } : {}),
       isPrivate: !groupId,
       receivedAt: new Date(env.timestamp).toISOString(),
+      ...(unsupported ? { unsupported } : {}),
     };
   }
 
@@ -357,4 +422,9 @@ export class SignalChannel implements ChannelAdapter {
     if (!readable) throw new SignalApiError(res.status, `Signal ${method} returned an unreadable response`, undefined, true);
     return payload.result;
   }
+}
+
+/** A filename safe inside a data URI parameter. */
+function safeFilename(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100) || 'file';
 }

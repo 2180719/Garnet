@@ -34,6 +34,15 @@ export type SessionEventPayload =
    * tool sets were frozen.
    */
   | { type: 'context_frozen'; system: string; tools?: ToolSchema[] }
+  /**
+   * Untrusted content entered the model-facing context. From here on the
+   * session is tainted: policy escalates consequential capabilities from
+   * allow to ask (see src/policy). `callId` names the tool call that brought
+   * it in; `inherited` marks taint passed in with the task itself (a
+   * subagent's parent, an untrusted trigger payload), whose user message is
+   * then not treated as the owner's words.
+   */
+  | { type: 'tainted'; source: string; callId?: string; inherited?: boolean }
   /** Compaction: events up to and including `throughSeq` are represented by `summary`. */
   | { type: 'checkpoint'; summary: string; throughSeq: number; usage: Usage };
 

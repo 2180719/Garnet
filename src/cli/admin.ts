@@ -6,7 +6,8 @@ import { RubyError } from '../contracts/index.ts';
 import { approvePairing, ChatDirectory, SCOPES, type Scope } from '../gateway/index.ts';
 import { describeNext, describeSchedule, describeTime, parseWhen, WHEN_HELP } from '../scheduler/index.ts';
 import { buildService, createRuby, startService, VERSION } from '../main.ts';
-import { defaultEntry, installService, planService, serviceStatus, uninstallService, type ServiceResult } from '../service/index.ts';
+import { validSenderId } from '../migrate/index.ts';
+import { defaultEntry, installedServices, installService, resolveService, restartService, serviceStatus, uninstallService, type ServiceResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 
 export async function start(io: Io): Promise<number> {
@@ -56,11 +57,65 @@ export function pair(args: string[], io: Io): number {
       io.out(ok ? `Revoked ${rest[0]} ${rest[1]}.\n` : 'No such identity.\n');
       return ok ? 0 : 1;
     }
-    io.err('Usage: ruby pair list | approve <code> | revoke <channel> <senderId>\n');
+    if (sub === 'add') return pairAdd(rest, ruby, io);
+    io.err(PAIR_USAGE);
     return 2;
   } finally {
     ruby.close();
   }
+}
+
+const PAIR_USAGE = 'Usage: ruby pair list | approve <code> | add <channel> <senderId> [--name <name>] | revoke <channel> <senderId>\n';
+const PAIR_CHANNELS = ['telegram', 'discord', 'signal'] as const;
+const ID_HELP: Record<(typeof PAIR_CHANNELS)[number], string> = {
+  telegram: 'a numeric Telegram user ID (message @userinfobot to find it; @usernames are not stable IDs)',
+  discord: 'a Discord user ID (a 17-20 digit number: Developer Mode, then "Copy User ID")',
+  signal: 'a phone number in +E164 form or the Signal account UUID',
+};
+
+/**
+ * `ruby pair add <channel> <senderId>`: pairs someone without the code round trip (for people you
+ * already know, e.g. from your old assistant's allowlist). A paired identity is an owner: it can
+ * talk to Ruby and approve actions.
+ */
+function pairAdd(args: string[], ruby: ReturnType<typeof createRuby>, io: Io): number {
+  let parsed;
+  try {
+    parsed = parseArgs({ args, allowPositionals: true, options: { name: { type: 'string' } } });
+  } catch (e) {
+    io.err(`${(e as Error).message}\n${PAIR_USAGE}`);
+    return 2;
+  }
+  const [channel, raw, extra] = parsed.positionals;
+  if (!channel || !raw || extra !== undefined) {
+    io.err(PAIR_USAGE);
+    return 2;
+  }
+  if (!(PAIR_CHANNELS as readonly string[]).includes(channel)) {
+    io.err(`Unknown channel "${channel}": use ${PAIR_CHANNELS.join(', ')}.\n`);
+    return 2;
+  }
+  const c = channel as (typeof PAIR_CHANNELS)[number];
+  const senderId = validSenderId(c, raw);
+  if (!senderId) {
+    io.err(`"${raw}" is not ${ID_HELP[c]}.\n`);
+    return 2;
+  }
+  const name = parsed.values.name?.trim() || null;
+  if (name && (name.length > 80 || /[\u0000-\u001f]/.test(name))) {
+    io.err('--name must be one line of at most 80 characters.\n');
+    return 2;
+  }
+  const store = ruby.gatewayStore;
+  if (store.identity(c, senderId)) {
+    io.out(`${c} ${senderId} is already paired.\n`);
+    return 0;
+  }
+  store.addIdentity(c, senderId, name);
+  io.out(`Paired ${c} ${name ? `${name} ` : ''}(${senderId}). They are an owner now: they can message Ruby and approve its actions.\n`);
+  if (!ruby.config.channels[c].enabled) io.out(`Note: the ${c} channel is not enabled yet (\`ruby setup\`).\n`);
+  if (c === 'signal' && senderId.startsWith('+')) io.out('Note: signal-cli usually reports senders by UUID; if messages from this number are not recognized, pair the UUID instead (it shows in `ruby pair list` after they message the bot).\n');
+  return 0;
 }
 
 export function api(args: string[], io: Io): number {
@@ -118,24 +173,64 @@ function apiKey(args: string[], keys: ReturnType<typeof createRuby>['keys'], io:
   return 2;
 }
 
+const SERVICE_USAGE = `Usage: ruby service install | uninstall | status | restart | show | list [--name <name>] [--force]
+  --name <name>   Instance name, so several Ruby homes (RUBY_HOME) can run side by side:
+                  ruby-<name>.service / dev.ruby.agent.<name>. Without it, the service already
+                  installed for this RUBY_HOME is used, else the default ruby.service.
+  --force         install: take over a service file that runs another RUBY_HOME
+`;
+
 export async function service(args: string[], io: Io): Promise<number> {
-  const [sub = 'status'] = args;
+  let parsed;
+  try {
+    parsed = parseArgs({ args, allowPositionals: true, options: { name: { type: 'string' }, force: { type: 'boolean' } } });
+  } catch (e) {
+    io.err(`${(e as Error).message}\n\n${SERVICE_USAGE}`);
+    return 2;
+  }
+  const [sub = 'status', extra] = parsed.positionals;
+  if (extra !== undefined) {
+    io.err(SERVICE_USAGE);
+    return 2;
+  }
   const ruby = createRuby({ noModel: true });
   const home = ruby.paths.home;
   ruby.close();
-  const plan = planService({ platform: process.platform, home, userHome: homedir(), nodePath: process.execPath, entry: defaultEntry() });
-  if ('unsupported' in plan) {
-    io.err(`${plan.unsupported}\n`);
+  const opts = { platform: process.platform, home, userHome: homedir(), nodePath: process.execPath, entry: defaultEntry(), name: parsed.values.name };
+  if (sub === 'list') {
+    const all = installedServices(opts);
+    if (!all.length) io.out('No Ruby services installed.\n');
+    for (const s of all) io.out(`${(s.name ?? '(default)').padEnd(16)} ${s.home ?? '?'}${s.home === home ? '  <- this RUBY_HOME' : ''}\n  ${s.path}\n`);
+    return 0;
+  }
+  let resolved;
+  try {
+    resolved = resolveService(opts);
+  } catch (e) {
+    io.err(`${(e as Error).message}\n`);
+    return 2;
+  }
+  if ('unsupported' in resolved) {
+    io.err(`${resolved.unsupported}\n`);
     return 1;
   }
+  const { plan, conflict } = resolved;
   if (sub === 'show') {
     io.out(`# ${plan.path}\n${plan.contents}\n`);
     return 0;
   }
-  const run = { install: installService, uninstall: uninstallService, status: serviceStatus }[sub as 'install' | 'uninstall' | 'status'];
+  const run = { install: installService, uninstall: uninstallService, status: serviceStatus, restart: restartService }[sub as 'install' | 'uninstall' | 'status' | 'restart'];
   if (!run) {
-    io.err('Usage: ruby service install | uninstall | status | show\n');
+    io.err(SERVICE_USAGE);
     return 2;
+  }
+  if (conflict && sub === 'install' && !parsed.values.force) {
+    io.err(`Not installed: ${conflict}\n(Or pass --force to point that service at this RUBY_HOME instead.)\n`);
+    return 1;
+  }
+  if (conflict && sub !== 'install') {
+    io.err(`${conflict}\n`);
+    return 1;
   }
   const result: ServiceResult = await run(plan);
   for (const f of result.files) io.out(`  file: ${f}\n`);

@@ -1,15 +1,23 @@
 import { randomInt } from 'node:crypto';
 import {
+  addUsage,
+  billedTokens,
   errorMessage,
   RubyError,
   textOf,
+  unknownUsage,
   type ChannelAdapter,
+  type ContentBlock,
+  type InboundAttachment,
   type InboundMessage,
   type OutboundMessage,
   type SendResult,
+  type SessionEvent,
   type TaskRecord,
+  type UnsupportedContent,
 } from '../contracts/index.ts';
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
+import type { FailedFile, MediaIngest, MediaInput } from '../media/index.ts';
 import type { ApprovalStore, GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
 import { ChatDirectory, chatOfKey, conversationKeyFor } from './directory.ts';
 
@@ -37,7 +45,50 @@ export type GatewayDeps = {
   deliveryEnabled?: boolean;
   /** A send still pending after this long is treated as possibly delivered (`uncertain`). Default 60 s. */
   sendTimeoutMs?: number;
+  /** Stores, transcribes and describes inbound files. Without it, files get an honest "can't receive files" reply. */
+  media?: MediaIngest;
+  /** Shown by /status and /usage. */
+  model?: { id: string; contextWindow: number };
 };
+
+export type ChatResult = { task: TaskRecord; text: string; sessionId: string };
+
+/** Chat commands every channel understands (see /help). */
+const HELP = [
+  'Commands:',
+  '/new: start a fresh conversation (memory and settings stay)',
+  '/stop: cancel the running task',
+  '/retry: run your last message again',
+  '/usage: token usage of this conversation (also /cost)',
+  '/status: model, running task, pending approvals, channel health',
+  '/approve CODE, /deny CODE: decide a pending action',
+  '/help: this list',
+].join('\n');
+
+const UNSUPPORTED_REPLY: Record<UnsupportedContent, string> = {
+  voice: "I can't listen to voice notes yet. Could you type it instead?",
+  audio: "I can't listen to audio files yet. Could you type what you need instead?",
+  photo: "I can't see photos yet. Could you describe it, or paste the text you need me to read?",
+  video: "I can't watch videos yet. Could you describe what you need instead?",
+  file: "I can't open files sent in chat yet. Paste the text, or put the file in my workspace and tell me its name.",
+  sticker: "I can't see stickers yet, but I'm here. Send me a text message.",
+  other: "I can only read text messages for now. Could you send that as text?",
+};
+
+/** A turn for a non-channel surface: text plus files already in memory (e.g. data URLs from the HTTP API). */
+export type ChatInput = string | { text: string; files: (MediaInput | FailedFile)[] };
+
+function unsupportedReply(kind: UnsupportedContent, hasCaption: boolean): string {
+  return `${UNSUPPORTED_REPLY[kind]}${hasCaption ? ' (I did not act on the caption either; send it as its own message if it stands alone.)' : ''}`;
+}
+
+/** The reply category for a file when media handling is off. */
+function unsupportedOfFile(f: InboundAttachment): UnsupportedContent {
+  if (f.kind === 'image') return 'photo';
+  if (f.kind === 'video') return 'video';
+  if (f.kind === 'audio') return /voice/i.test(f.name ?? '') || f.mimeType === 'audio/ogg' ? 'voice' : 'audio';
+  return 'file';
+}
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -103,9 +154,37 @@ export class Gateway {
 
   /** Channel sink: persist first, then dispatch. Resolving acknowledges the message to the channel. */
   async receive(message: InboundMessage): Promise<void> {
-    const row = this.deps.store.receive(message);
+    const { unsupported, ...rest } = message;
+    // Keep the caption (or a placeholder) in the inbox so the record shows what arrived.
+    const row = this.deps.store.receive(unsupported ? { ...rest, text: rest.text || `[${unsupported}]` } : rest);
     if (!row) return; // duplicate delivery
+    if (unsupported) return this.answerUnsupported(row, unsupported, message.text.trim() !== '');
     if (this.started && !this.stopping) this.dispatch(row);
+  }
+
+  /**
+   * Content Ruby cannot read yet (voice, photos, files) gets a short honest
+   * reply instead of silence. It never reaches the model: a caption alone
+   * would be answered as if the attachment had been seen.
+   */
+  private answerUnsupported(row: InboxRow, kind: UnsupportedContent, hasCaption: boolean): void {
+    const { store } = this.deps;
+    if (!row.isPrivate) {
+      store.setInbox(row.id, 'ignored');
+      return;
+    }
+    if (!store.identity(row.channel, row.sender.id)) {
+      store.setInbox(row.id, 'ignored');
+      this.offerPairing(row);
+      return;
+    }
+    store.setInbox(row.id, 'done');
+    this.reply(row, unsupportedReply(kind, hasCaption));
+  }
+
+  /** Whether a conversation key already has a session (the API uses it to replay a stateless client's history once). */
+  hasConversation(key: string): boolean {
+    return this.deps.store.conversation(key) !== undefined;
   }
 
   /** Approves a pairing code and greets the newly paired sender. */
@@ -121,9 +200,9 @@ export class Gateway {
    */
   chat(
     conversationKey: string,
-    text: string,
-    options: { signal?: AbortSignal; onEvent?: (e: RuntimeEvent) => void; source: string },
-  ): Promise<{ task: TaskRecord; text: string; sessionId: string }> {
+    input: ChatInput,
+    options: { signal?: AbortSignal; onEvent?: (e: RuntimeEvent) => void; source: string; /** Untrusted sources carried into this task (a job created by a tainted conversation). */ taint?: readonly string[] },
+  ): Promise<ChatResult> {
     return this.deps.lanes.run(conversationKey, async () => {
       const sessionId = this.sessionFor(conversationKey, options.source);
       const before = this.deps.sessions.lastSeq(sessionId);
@@ -135,7 +214,16 @@ export class Gateway {
       else options.signal?.addEventListener('abort', onAbort, { once: true });
       this.active.set(conversationKey, controller);
       try {
-        const task = await agent.run(sessionId, text, { ...options, signal: controller.signal });
+        let turn: string | ContentBlock[] = typeof input === 'string' ? input : input.text;
+        if (typeof input !== 'string' && input.files.length) {
+          const media = this.deps.media;
+          if (!media) throw new RubyError('invalid_input', 'Files are not accepted: media handling is off (media.enabled in config.json).');
+          const blocks = [...(input.text.trim() ? [{ type: 'text' as const, text: input.text }] : []), ...(await media.ingest(input.files, { sessionId, signal: controller.signal }))];
+          const unreadable = media.unreadableReply(blocks);
+          if (unreadable) throw new RubyError('invalid_input', unreadable);
+          turn = blocks;
+        }
+        const task = await agent.run(sessionId, turn, { ...options, signal: controller.signal });
         return { task, text: this.replyText(sessionId, before, task), sessionId };
       } finally {
         options.signal?.removeEventListener('abort', onAbort);
@@ -162,13 +250,50 @@ export class Gateway {
   }
 
   /**
-   * Queues a proactive message (scheduled results, alerts) to a chat. With
-   * `from` (e.g. 'scheduled job "x"'), the message is also recorded in that
-   * chat's conversation so a reply to it has context.
+   * `/approve CODE` or `/deny CODE` typed in a non-channel chat (the HTTP
+   * API). Only approvals raised in that same conversation can be decided
+   * there; others are decided in their own chat or on the dashboard. On
+   * success the task resumes and its result is returned.
    */
-  notify(target: { channel: string; account: string; chatId: string }, text: string, from?: string): void {
-    this.directory.send(target, text, from ? { from } : undefined);
+  async approveInConversation(
+    conversationKey: string,
+    code: string,
+    decision: 'approved' | 'denied',
+    options: { signal?: AbortSignal; onEvent?: (e: RuntimeEvent) => void; source: string },
+  ): Promise<ChatResult | { text: string }> {
+    const approvals = this.deps.approvals;
+    if (!approvals) return { text: 'Approvals are not enabled.' };
+    const pending = approvals.get(code.toUpperCase());
+    if (!pending || pending.status !== 'pending') return { text: 'No pending approval with that code.' };
+    if (this.deps.store.keyForSession(pending.sessionId) !== conversationKey) {
+      return { text: 'That approval belongs to another conversation. Decide it there, or on the dashboard.' };
+    }
+    const decided = approvals.decide(pending.code, decision, this.now().toISOString());
+    if (!decided) return { text: 'That approval already expired or was decided.' };
+    return this.chat(conversationKey, approvalText(decided.code, decided.summary, decision === 'approved'), options);
+  }
+
+  /**
+   * Queues a proactive message (scheduled results, alerts, files) to a chat. With
+   * `record`, the text is also written into that chat's conversation as a
+   * context note, so a reply ("tell me more") has something to refer to. The
+   * note is appended after any running task (append-only, never mid-turn).
+   */
+  notify(
+    target: { channel: string; account: string; chatId: string },
+    text: string,
+    record?: { from: string; skipSession?: string },
+    attachments?: OutboundMessage['attachments'],
+  ): string {
+    const out = this.deps.store.enqueue({ ...target, text, ...(attachments?.length ? { attachments } : {}) });
     void this.deliver();
+    if (!record) return out.deliveryId;
+    const key = this.conversationKeyFor(target.channel, target.account, target.chatId);
+    // On the conversation's lane, so the note never lands in the middle of a running turn.
+    void this.deps.lanes
+      .run(key, async () => this.directory.record(target, text, record))
+      .catch((e) => this.log('warn', `recording a notification in ${key}: ${errorMessage(e)}`));
+    return out.deliveryId;
   }
 
   /** Channel liveness and delivery backlog, for health endpoints. */
@@ -231,10 +356,81 @@ export class Gateway {
     }
     if (command === '/start') {
       store.setInbox(row.id, 'done');
-      this.reply(row, "Hi! I'm Ruby. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task.");
+      this.reply(row, "Hi! I'm Ruby. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task; /help lists every command.");
+      return;
+    }
+    if (command === '/help') {
+      store.setInbox(row.id, 'done');
+      this.reply(row, HELP);
+      return;
+    }
+    if (command === '/usage' || command === '/cost') {
+      store.setInbox(row.id, 'done');
+      this.reply(row, this.usageText(key));
+      return;
+    }
+    if (command === '/status') {
+      store.setInbox(row.id, 'done');
+      this.reply(row, this.statusText(key));
+      return;
+    }
+    if (command === '/retry') {
+      if (this.active.has(key)) {
+        store.setInbox(row.id, 'done');
+        this.reply(row, "I'm still working on your last message. Send /stop first if you want me to start over.");
+        return;
+      }
+      const sessionId = store.conversation(key);
+      const last = sessionId ? lastOwnerMessage(this.deps.sessions.events(sessionId)) : null;
+      if (!last) {
+        store.setInbox(row.id, 'done');
+        this.reply(row, 'There is no earlier message in this conversation to retry.');
+        return;
+      }
+      // The log is append-only: the earlier attempt stays in history, so say plainly what is happening.
+      const text = `${RETRY_PREFIX}${last}`;
+      void this.deps.lanes.run(key, () => this.process({ ...row, text }, key)).catch((e) => this.log('error', `retrying ${row.id}: ${errorMessage(e)}`));
       return;
     }
     void this.deps.lanes.run(key, () => this.process(row, key)).catch((e) => this.log('error', `processing ${row.id}: ${errorMessage(e)}`));
+  }
+
+  /**
+   * The turn for an inbound message: its text plus its files, downloaded from
+   * the channel (only now, for a paired sender), stored and described. Returns
+   * a direct reply instead when nothing in it is readable (a voice note with
+   * no transcription set up, an image for a text-only model).
+   */
+  private async inboundTurn(row: InboxRow, sessionId: string, channel: ChannelAdapter | undefined, signal: AbortSignal): Promise<{ turn: string | ContentBlock[] } | { reply: string }> {
+    const files = row.attachments ?? [];
+    if (files.length === 0) return { turn: row.text };
+    const text: ContentBlock[] = row.text.trim() ? [{ type: 'text', text: row.text }] : [];
+    const media = this.deps.media;
+    // Media handling off (media.enabled false): the same honest answer as other unreadable content; a caption is not acted on alone.
+    if (!media) return { reply: unsupportedReply(unsupportedOfFile(files[0]!), row.text.trim() !== '') };
+    const received: (MediaInput | FailedFile)[] = [];
+    for (const f of files) {
+      const base = { name: f.name, kind: f.kind };
+      if (f.size !== undefined && f.size > media.maxBytes) {
+        received.push({ ...base, error: `it is ${(f.size / 1048576).toFixed(1)} MB, over the ${(media.maxBytes / 1048576).toFixed(1)} MB limit (media.maxBytes)` });
+        continue;
+      }
+      if (!channel?.fetchAttachment) {
+        received.push({ ...base, error: `the ${row.channel} channel cannot download files` });
+        continue;
+      }
+      try {
+        const got = await channel.fetchAttachment(f.ref, { maxBytes: media.maxBytes, signal });
+        received.push({ data: got.data, name: f.name, mimeType: got.mimeType ?? f.mimeType, durationSec: f.durationSec });
+      } catch (e) {
+        if (signal.aborted) throw e;
+        this.log('warn', `${row.channel} attachment download failed: ${errorMessage(e)}`);
+        received.push({ ...base, error: errorMessage(e) });
+      }
+    }
+    const blocks = [...text, ...(await media.ingest(received, { sessionId, signal }))];
+    const unreadable = media.unreadableReply(blocks);
+    return unreadable ? { reply: unreadable } : { turn: blocks };
   }
 
   private async process(row: InboxRow, key: string): Promise<void> {
@@ -249,18 +445,71 @@ export class Gateway {
     const typing = setInterval(() => void channel?.typing?.(row.chatId), 4500);
     typing.unref();
     try {
+      const prepared = await this.inboundTurn(row, sessionId, channel, controller.signal);
+      if ('reply' in prepared) {
+        store.setInbox(row.id, 'done');
+        this.reply(row, prepared.reply);
+        return;
+      }
       const before = sessions.lastSeq(sessionId);
-      const task = await agent.run(sessionId, row.text, { signal: controller.signal, source: row.channel });
+      const task = await agent.run(sessionId, prepared.turn, { signal: controller.signal, source: row.channel });
       store.setInbox(row.id, 'done', { taskId: task.id });
       this.reply(row, this.replyText(sessionId, before, task));
     } catch (e) {
       store.setInbox(row.id, 'done');
+      if (controller.signal.aborted) {
+        // /stop while files were still downloading or being transcribed.
+        this.reply(row, 'Stopped.');
+        return;
+      }
       this.log('error', `task for ${row.id} crashed: ${errorMessage(e)}`);
       this.reply(row, 'Sorry, something went wrong on my side. The error has been logged.');
     } finally {
       clearInterval(typing);
       if (this.active.get(key) === controller) this.active.delete(key);
     }
+  }
+
+  /** /usage: tokens this conversation's session has used, never treating unknown as zero. */
+  private usageText(key: string): string {
+    const sessionId = this.deps.store.conversation(key);
+    if (!sessionId) return 'No usage yet: this conversation has not run a task.';
+    let usage = unknownUsage();
+    let context: number | null = null;
+    let lastTaskId: string | null = null;
+    for (const e of this.deps.sessions.events(sessionId)) {
+      if (e.type === 'assistant_message' || e.type === 'checkpoint') usage = addUsage(usage, e.usage);
+      if (e.type === 'assistant_message') context = e.usage.inputTokens === null && e.usage.cacheReadTokens === null ? null : billedTokens(e.usage);
+      if (e.type === 'checkpoint') context = null; // unknown until the next request
+      if (e.type === 'task_status') lastTaskId = e.taskId;
+    }
+    const n = (v: number | null) => (v === null ? '?' : v.toLocaleString('en-US'));
+    const window = this.deps.model?.contextWindow;
+    const lines = [
+      `Usage in this conversation (session ${sessionId}):`,
+      `• input ${n(usage.inputTokens)} · cache read ${n(usage.cacheReadTokens)} · cache write ${n(usage.cacheWriteTokens)} · output ${n(usage.outputTokens)} tokens`,
+      `• context at the last request: ${context === null ? 'unknown' : `${n(context)}${window ? ` of ${n(window)}` : ''} tokens`}`,
+    ];
+    const task = lastTaskId ? this.deps.sessions.getTask(lastTaskId) : undefined;
+    if (task) lines.push(`• last task: ${n(billedTokens(task.usage))} tokens, ${task.modelCalls} model call(s), ${task.toolCalls} tool call(s), ${task.status.replaceAll('_', ' ')}`);
+    lines.push('"?" means the provider did not report it; Ruby never counts unknown as zero.');
+    return lines.join('\n');
+  }
+
+  /** /status: what Ruby is doing in this conversation and whether its channels are healthy. */
+  private statusText(key: string): string {
+    const sessionId = this.deps.store.conversation(key);
+    const lines = ['Status:'];
+    if (this.deps.model) lines.push(`• model: ${this.deps.model.id}`);
+    lines.push(`• this conversation: ${this.active.has(key) ? 'working on a task (/stop cancels it)' : 'idle'}${sessionId ? `, session ${sessionId}` : ''}`);
+    const pending = sessionId ? (this.deps.approvals?.pending(sessionId, this.now().toISOString()) ?? []) : [];
+    for (const a of pending) lines.push(`• waiting for approval: ${a.summary} (/approve ${a.code} or /deny ${a.code})`);
+    lines.push(`• tasks running overall: ${this.active.size}`);
+    const { channels } = this.health();
+    for (const c of channels) lines.push(`• ${c.channel}: ${c.ok ? 'ok' : `not ok${c.lastError ? ` (${c.lastError})` : ''}`}`);
+    const { pending: queued, failed, uncertain } = this.deps.store.outboxCounts();
+    lines.push(`• outbox: ${queued} queued, ${failed} failed, ${uncertain} uncertain`);
+    return lines.join('\n');
   }
 
   private replyText(sessionId: string, afterSeq: number, task: TaskRecord): string {
@@ -318,7 +567,11 @@ export class Gateway {
   }
 
   private conversationKey(row: InboxRow): string {
-    return conversationKeyFor(this.deps.routes ?? [], row);
+    return this.conversationKeyFor(row.channel, row.account, row.chatId);
+  }
+
+  private conversationKeyFor(channel: string, account: string, chatId: string): string {
+    return conversationKeyFor(this.deps.routes ?? [], { channel, account, chatId });
   }
 
   private sessionFor(key: string, channel: string): string {
@@ -421,6 +674,21 @@ export function approvePairing(store: GatewayStore, code: string, now: Date = ne
   if (!p) return null;
   store.enqueue({ channel: p.channel, account: p.account, chatId: p.chatId, text: "You're connected. I'm Ruby — how can I help?" });
   return p;
+}
+
+const RETRY_PREFIX = '[Your owner used /retry: answer this earlier message again, from scratch.]\n\n';
+
+/** The newest message the owner wrote in a session (not an approval continuation or context note; a retry counts as its original). */
+function lastOwnerMessage(events: SessionEvent[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== 'user_message' || e.source === 'notification') continue;
+    let text = textOf(e.message).trim();
+    if (/^\[Owner (approved|declined) /.test(text)) continue;
+    if (text.startsWith(RETRY_PREFIX.trim())) text = text.slice(RETRY_PREFIX.trim().length).trim();
+    if (text) return text;
+  }
+  return null;
 }
 
 function approvalText(code: string, summary: string, approved: boolean): string {

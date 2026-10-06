@@ -59,10 +59,10 @@ Small changes that remove the sharpest edges. About a week in total.
 
 | Feature | Effort | Notes |
 | --- | --- | --- |
-| WhatsApp | L | Only unofficial bridges work for personal accounts (ToS and dependency risk); the official Cloud API needs a business number |
+| WhatsApp | L | Skipped for now (owner decision): only unofficial bridges work for personal accounts |
 | Slack, Matrix | M each | |
 | Browser use | S on top of MCP | Playwright MCP in Docker; L if built into Ruby |
-| `delegate` tool (one level of subagents) | M | PLAN.md lists multi-agent as a v1 non-goal; needs a decision |
+| Subagents (`delegate`, up to two levels) | M | Owner decision: must have. Moved into the build; see Build order |
 | Ruby as an MCP server | S after 1.6 | Ask Ruby, read memory, create tasks |
 | `/v1/responses` (Open Responses) | S–M | |
 | File snapshots and `/rewind` | M | Rewind is a new event; the log stays append-only |
@@ -72,9 +72,15 @@ Small changes that remove the sharpest edges. About a week in total.
 | Dashboard session cookie (HttpOnly, SameSite=Strict) | S–M | Found in the polish pass |
 | A2A | M | Low value for a personal agent |
 
-## Decisions for the owner
+## Decisions (2026-10-06)
 
-1. **The command name.** `ruby` clashes with the Ruby language's interpreter on many machines. The installer works around it (`--name`), but a different default avoids it entirely.
-2. **Subagents.** Allow one level of delegation (changes a v1 non-goal), or keep Ruby single-agent?
-3. **WhatsApp.** Accept an unofficial bridge as an optional, clearly labelled adapter, or wait for the official API?
-4. **Order.** The recommendation is Tier 0, then 1.1 to 1.6 in order, then Tier 2 by demand.
+1. **Name:** gem-name alternatives under review; see the session notes. No rename yet.
+2. **Subagents:** in scope, one to two levels deep.
+3. **WhatsApp:** skipped for now.
+4. **No version split.** Everything here is in scope; build as much as possible, polished.
+
+## Build order
+
+- **Wave 1:** Tier 0 (all), 1.1 containment + 1.2 web tools, 1.3 scheduling and messaging, 1.4 media.
+- **Wave 2:** subagents, 1.5 session search, 1.6 MCP client, 2.1 groups, 2.2 host-tools exec with named secrets, 2.3 model fallbacks.
+- **Wave 3:** the rest of Tier 2, then Tier 3 by value.

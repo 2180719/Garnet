@@ -1,6 +1,10 @@
 // Executes slash commands against Ruby. Shared by the interactive and plain chats.
 
-import type { ToolCallBlock, ToolResult } from '../../contracts/index.ts';
+import { readFile, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, resolve } from 'node:path';
+import { errorMessage, formatBytes, type ContentBlock, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
+import { detectMime } from '../../media/index.ts';
 import type { Ruby } from '../../main.ts';
 import type { ParsedSlash } from './commands.ts';
 import { helpRows, sessionTotals, toolExpandedRows, transcriptRows } from './render.ts';
@@ -16,7 +20,39 @@ export type CommandContext = {
   /** Makes `id` the active session. */
   switchTo: (id: string) => void;
   signal?: AbortSignal;
+  /** Files attached with /attach, sent with the next message. Owned by the chat; this list is changed in place. */
+  attachments?: PendingFile[];
 };
+
+export type PendingFile = { data: Uint8Array; name: string; mimeType: string };
+
+/**
+ * The turn for a message plus files attached with /attach: stored, transcribed
+ * or extracted by the media ingest. `reply` is an honest answer when nothing
+ * in it is readable (then the model is not called).
+ */
+export async function prepareTurn(
+  ruby: Ruby,
+  sessionId: string,
+  text: string,
+  files: PendingFile[],
+  signal: AbortSignal,
+): Promise<{ turn: string | ContentBlock[] } | { reply: string }> {
+  if (files.length === 0 || !ruby.media) return { turn: text };
+  const blocks: ContentBlock[] = [...(text ? [{ type: 'text' as const, text }] : []), ...(await ruby.media.ingest(files, { sessionId, signal }))];
+  const reply = ruby.media.unreadableReply(blocks);
+  return reply ? { reply } : { turn: blocks };
+}
+
+/** Accepts what a terminal pastes for a dropped file: quotes, backslash-escaped spaces, a leading ~. */
+export function pastedPath(raw: string): string {
+  let p = raw.trim();
+  if ((p.startsWith("'") && p.endsWith("'")) || (p.startsWith('"') && p.endsWith('"'))) p = p.slice(1, -1);
+  else p = p.replace(/\\(.)/g, '$1');
+  if (p.startsWith('file://')) p = decodeURIComponent(p.slice('file://'.length));
+  if (p === '~' || p.startsWith('~/')) p = homedir() + p.slice(1);
+  return resolve(p);
+}
 
 /** `rows` renders the output at a width, so a narrower terminal can redraw it cleanly. */
 export type CommandResult = { rows: (width: number) => string[]; effect?: 'exit' | 'clear' };
@@ -95,6 +131,35 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
           '',
         ],
       };
+    }
+    case 'attach': {
+      const pending = ctx.attachments;
+      const media = ruby.media;
+      if (!media || !pending) return { rows: (w: number) => ['', `  ${t.error('✗')} Attachments are off (media.enabled in config.json).`] };
+      if (!args) {
+        if (!pending.length) return { rows: (w: number) => ['', t.muted('  Usage: /attach <path>  (drag a file into the terminal to paste its path). /attach clear removes attached files.')] };
+        return { rows: (w: number) => ['', t.bold('  Attached to your next message'), ...pending.map((f) => truncate(`  · ${sanitize(f.name)} ${t.muted(`${f.mimeType}, ${formatBytes(f.data.byteLength)}`)}`, w)), ''] };
+      }
+      if (args === 'clear') {
+        const n = pending.splice(0).length;
+        return { rows: (w: number) => ['', t.muted(`  Removed ${n} attached file(s).`)] };
+      }
+      const path = pastedPath(args);
+      try {
+        const info = await stat(path);
+        if (!info.isFile()) return { rows: (w: number) => ['', `  ${t.error('✗')} ${sanitize(path)} is not a file.`] };
+        if (info.size > media.maxBytes) {
+          return { rows: (w: number) => ['', `  ${t.error('✗')} ${sanitize(basename(path))} is ${formatBytes(info.size)}; the limit is ${formatBytes(media.maxBytes)} (media.maxBytes).`] };
+        }
+        const data = new Uint8Array(await readFile(path));
+        const file = { data, name: basename(path), mimeType: detectMime(data, undefined, basename(path)) };
+        pending.push(file);
+        return {
+          rows: (w: number) => ['', ...wrapText(`  ${t.accent('+')} Attached ${t.bold(sanitize(file.name))} ${t.muted(`(${file.mimeType}, ${formatBytes(data.byteLength)})`)}. It goes with your next message.`, w), ''],
+        };
+      } catch (e) {
+        return { rows: (w: number) => ['', `  ${t.error('✗')} Cannot read ${sanitize(path)}: ${sanitize(errorMessage(e))}`] };
+      }
     }
     case 'compact': {
       const outcome = await ruby.agent.compact(ctx.sessionId, ctx.signal ? { signal: ctx.signal } : {});

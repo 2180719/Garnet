@@ -104,7 +104,9 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 3. With `fs.write` at `ask`, ask the bot to write a file. Expect an approval prompt in the chat. `/approve <code>` runs it once; `/deny <code>` refuses; reusing a code fails.
 4. Ask for a reply longer than 4096 characters. Expect several messages, in order, none cut mid-word badly and none missing.
 5. Rate limiting: send many messages quickly (or a long split reply to several chats). If Telegram returns 429, expect the outbox to wait for `retry_after` and then deliver. This is hard to trigger on purpose; record whether you saw it.
-6. `/new` starts a fresh conversation; `/stop` cancels a running task.
+6. `/new` starts a fresh conversation; `/stop` cancels a running task; `/retry` repeats your last message; `/usage`, `/status` and `/help` answer without calling the model.
+6a. Ask for a reply with headings, **bold**, `code`, a fenced code block, a link and a table. Expect it rendered (bold, monospace, a tappable link), with no raw `**` or backticks. If any reply arrives as plain text, check the log for a Telegram "can't parse entities" fallback and record the text that caused it.
+6b. Send a voice note, a photo with a caption, a file and a sticker. Expect one short "I can't … yet" reply to each and no model call.
 7. Start a second Ruby with the same token. Expect a 409 conflict reported in health with backoff, not a crash. Stop it and expect the first to recover.
 8. Group chats: expect Ruby to ignore them (the gateway ignores group chats).
 
@@ -143,6 +145,9 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 5. Set `api.host` to `0.0.0.0` with no keys. Expect Ruby to refuse to listen. Create a key; expect it to listen.
 6. Behind a reverse proxy (nginx or Caddy) with `api.trustProxy = true`: the proxy must append the client address to `X-Forwarded-For`. From two client IPs, confirm the audit log (dashboard Logs page) shows the right addresses, and that a spoofed `X-Forwarded-For: 1.2.3.4` sent by a client does not become the logged address (rightmost entry wins). Also confirm streaming is not buffered by the proxy.
 7. Send a request body slower than 30 s to an authenticated route. Expect 408 and a closed connection.
+8. Open WebUI: add Ruby as an OpenAI connection (`http://<host>:7311/v1`, a `chat` key). Start two chats with different first messages and check that neither sees the other (ask "what did I just say?"). Check that generated titles, tags and follow-ups do not appear as turns in `ruby sessions`. Repeat with `ENABLE_FORWARD_USER_INFO_HEADERS=true` (conversations then follow `X-OpenWebUI-Chat-Id`). Ask for something that needs approval and type `/approve CODE` in the same chat.
+9. Behind nginx with default timeouts (60 s), run a task longer than a minute with streaming. Expect the stream to survive (keepalive comments every 15 s).
+10. A browser-direct client (for example TypingMind) on an origin listed in `api.corsOrigins`: expect the preflight to pass and chats to work; from an unlisted origin expect a browser CORS error.
 
 ### 8. Dashboard
 

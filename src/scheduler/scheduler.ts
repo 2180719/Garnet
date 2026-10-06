@@ -6,6 +6,10 @@ import { resolveInWorkspace } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
 
 export const NOTHING = 'NOTHING_TO_REPORT';
+/** OpenClaw's heartbeat acknowledgement; imported checklists still ask for it. */
+export const HEARTBEAT_OK = 'HEARTBEAT_OK';
+/** Text left beside HEARTBEAT_OK up to this length still counts as "nothing to report" (OpenClaw's default ackMaxChars). */
+const ACK_MAX_CHARS = 300;
 const FAILURE_THRESHOLD = 3;
 /** Abort reason for runs cancelled because Ruby is shutting down (not the job's fault). */
 const SHUTDOWN = 'shutdown';
@@ -32,8 +36,6 @@ export type SchedulerDeps = {
   workspace: string;
   /** Script jobs fail with a clear error without it. */
   runScript?: RunScript | null;
-  /** Owner time zone for jobs without their own. Defaults to the host's. */
-  timezone?: string;
   enabled?: boolean;
   tickSeconds?: number;
   now?: () => Date;
@@ -41,6 +43,8 @@ export type SchedulerDeps = {
   /** Override the built-in pre-checks (tests). */
   check?: CheckFn;
   fetch?: typeof fetch;
+  /** Time zone for jobs without their own `timezone` (the owner's). Defaults to the host zone. */
+  timeZone?: string;
 };
 
 const hostZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -59,6 +63,24 @@ type Outcome = {
   /** Error reason used in the "paused" notice. */
   reason?: string;
 };
+
+/**
+ * Whether a reply means "nothing to report": `NOTHING_TO_REPORT` as the whole
+ * reply or its end, or `HEARTBEAT_OK` at its start or end with at most a short
+ * remark beside it. Returns the text to send otherwise (an acknowledgement
+ * token around a longer report is removed).
+ */
+export function quietReply(reply: string): { nothing: boolean; text: string } {
+  const t = reply.trim();
+  if (t === NOTHING || t.endsWith(NOTHING)) return { nothing: true, text: t };
+  // The token may be wrapped in markdown (**HEARTBEAT_OK**) or followed by punctuation.
+  const lead = /^[\s*_`]*HEARTBEAT_OK[\s*_`.!]*/;
+  const trail = /[\s*_`]*HEARTBEAT_OK[\s*_`.!]*$/;
+  if (!lead.test(t) && !trail.test(t)) return { nothing: false, text: t };
+  const rest = t.replace(lead, '').replace(trail, '').trim();
+  if (rest.length <= ACK_MAX_CHARS) return { nothing: true, text: t };
+  return { nothing: false, text: rest };
+}
 
 /**
  * Enqueues cron jobs, heartbeats, one-shot reminders and script-only jobs.
@@ -84,7 +106,7 @@ export class Scheduler {
   }
 
   private zone(job: JobConfig): string {
-    return job.timezone ?? this.deps.timezone ?? hostZone();
+    return job.timezone ?? this.deps.timeZone ?? hostZone();
   }
 
   start(): void {
@@ -328,16 +350,16 @@ export class Scheduler {
       return { status: 'cancelled', failed: false, taskId: task.id, tokens, message: null };
     }
     const failed = task.status === 'failed' || task.status === 'cancelled';
-    const nothing = reply.trim() === NOTHING || reply.trim().endsWith(NOTHING);
+    const q = quietReply(reply);
     // Completed runs with nothing to report stay quiet unless the job asks for every result.
-    const quiet = task.status === 'completed' && job.notifyWhen !== 'always' && nothing;
+    const quiet = task.status === 'completed' && job.notifyWhen !== 'always' && q.nothing;
     return {
       status: task.status as TaskStatus as JobRunStatus,
       failed,
       taskId: task.id,
       tokens,
       ...(task.reason ? { note: task.reason, reason: task.reason } : {}),
-      message: quiet ? null : `[${job.id}] ${reply}`,
+      message: quiet ? null : `[${job.id}] ${task.status === 'completed' ? q.text : reply}`,
       ...(newCheckValue !== null ? { checkValue: newCheckValue } : {}),
     };
   }

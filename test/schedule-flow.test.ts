@@ -87,3 +87,27 @@ test('the schedule and send_message tools exist only when their permission is no
   assert.equal(off.registry.get('send_message'), undefined);
   off.close();
 });
+
+test('a job created by a tainted conversation runs tainted: its consequential actions still ask', async () => {
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, model: { provider: 'fake' }, permissions: { 'fs.write': 'allow' } }));
+  const write = { name: 'write_file', input: { path: 'out.txt', content: 'pwned' } };
+  const model = new FakeModel([{ toolCalls: [write] }, { text: 'Done.' }, { toolCalls: [write] }, { text: 'Done.' }]);
+  const ruby = createRuby({ home, model, memoryDb: true });
+  const { gateway, scheduler } = buildService(ruby, () => {}, [], false);
+  try {
+    const origin = { by: 'agent', sessionId: 's', conversation: null, at: new Date().toISOString() } as const;
+    ruby.jobBook.create({ id: 'clean', kind: 'cron', cron: '0 9 * * *', instructions: 'Write the file.', permissions: { 'fs.write': 'allow' } }, origin);
+    ruby.jobBook.create({ id: 'dirty', kind: 'cron', cron: '0 9 * * *', instructions: 'Write the file.', permissions: { 'fs.write': 'allow' } }, { ...origin, taint: ['web_fetch https://evil.example/'] });
+    await scheduler.runNow('clean');
+    assert.equal(ruby.jobStore.runs('clean')[0]?.status, 'completed', 'allowed write ran without asking');
+    await scheduler.runNow('dirty');
+    assert.equal(ruby.jobStore.runs('dirty')[0]?.status, 'waiting_for_approval', 'the inherited taint escalates allow to ask');
+    const events = ruby.store.events(ruby.gatewayStore.conversation('job:dirty')!);
+    assert.ok(events.some((e) => e.type === 'tainted' && e.inherited && e.source === 'web_fetch https://evil.example/'));
+  } finally {
+    await scheduler.stop();
+    await gateway.stop(0);
+    ruby.close();
+  }
+});

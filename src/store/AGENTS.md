@@ -11,4 +11,5 @@ SQLite persistence through `node:sqlite` (WAL mode, foreign keys on).
 - `JobStore` also keeps stored jobs (`agent_jobs`: definition JSON, origin JSON; unvalidated here) and `GatewayStore` the `sent_messages` log (rate limits), `pairedChats()` and `chatForSession()`.
 - Schema changes: append a new entry to `MIGRATIONS` in `db.ts`. Never edit a released migration.
 - Event sequence numbers are assigned inside a transaction; callers never choose them.
+- `inbox.attachments`/`inbox.unsupported` and `outbox.attachments` hold the JSON of the contract shapes (references, not bytes). `lastChatForSession` answers where a session's files go.
 - Must not: interpret event payloads beyond storing them, or call models or tools.

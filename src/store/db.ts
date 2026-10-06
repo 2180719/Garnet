@@ -162,6 +162,11 @@ const MIGRATIONS: string[] = [
   CREATE INDEX outbox_by_chat ON outbox(channel, account, chat_id, status);
   `,
   `
+  ALTER TABLE inbox ADD COLUMN attachments TEXT;
+  ALTER TABLE outbox ADD COLUMN attachments TEXT;
+  CREATE INDEX inbox_by_session ON inbox(session_id);
+  `,
+  `
   -- Jobs created from chat (schedule tool), CLI or dashboard; config.json jobs stay in config.
   CREATE TABLE agent_jobs (
     id TEXT PRIMARY KEY,
@@ -181,7 +186,6 @@ const MIGRATIONS: string[] = [
     delivery_id TEXT NOT NULL
   );
   CREATE INDEX sent_messages_by_time ON sent_messages(sent_at);
-  CREATE INDEX inbox_by_session ON inbox(session_id, received_at);
   `,
 ];
 

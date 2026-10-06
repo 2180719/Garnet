@@ -11,7 +11,11 @@ import { minGapMinutes, nextRunOf } from './when.ts';
 export type JobOrigin =
   | { by: 'config' }
   /** Created by Ruby with the schedule tool. `conversation` is the chat it was created in, when there was one. */
-  | { by: 'agent'; sessionId: string; conversation: string | null; at: string }
+  /**
+   * `taint`: untrusted sources the creating (or a later editing) conversation had read. Each run of the
+   * job carries them in, so consequential actions keep needing approval (see policy containment).
+   */
+  | { by: 'agent'; sessionId: string; conversation: string | null; at: string; taint?: string[] }
   | { by: 'owner'; via: 'cli' | 'dashboard'; at: string };
 
 export type JobEntry = {
@@ -176,7 +180,7 @@ export class JobBook {
   }
 
   /** Replaces fields of a stored job. Config jobs are changed in config.json only. */
-  update(id: string, patch: Partial<JobConfig>, editor: JobOrigin['by']): JobEntry {
+  update(id: string, patch: Partial<JobConfig>, editor: JobOrigin['by'], taint: readonly string[] = []): JobEntry {
     const found = this.find(id);
     if (!found) throw new RubyError('invalid_input', `No job "${id}".`);
     if (found.origin.by === 'config') throw new RubyError('denied', `"${id}" is defined in config.json; only the owner can change it there.`);
@@ -189,7 +193,15 @@ export class JobBook {
     const actionKeys = ['instructions', 'message', 'script'] as const;
     if (actionKeys.some((k) => patch[k] !== undefined)) for (const k of actionKeys) if (patch[k] === undefined) delete merged[k];
     const job = this.validate(merged, editor === 'agent' ? { by: 'agent', sessionId: '', conversation: null, at: '' } : { by: 'owner', via: 'cli', at: '' });
-    this.deps.store.updateDefinition(id, job);
+    // An edit from a tainted conversation taints the job (never the other way round).
+    const origin = found.origin;
+    const added = taint.filter((t) => !(origin.by === 'agent' && origin.taint?.includes(t)));
+    const newOrigin: JobOrigin | undefined = added.length
+      ? origin.by === 'agent'
+        ? { ...origin, taint: [...(origin.taint ?? []), ...added] }
+        : { by: 'agent', sessionId: '', conversation: null, at: this.now().toISOString(), taint: [...added] }
+      : undefined;
+    this.deps.store.updateDefinition(id, job, newOrigin);
     const state = this.deps.store.state(id);
     const rescheduled = scheduleKeys.some((k) => JSON.stringify(job[k]) !== JSON.stringify(found.job[k])) || job.kind !== found.job.kind || job.timezone !== found.job.timezone;
     const changedAction = actionKeys.some((k) => JSON.stringify(job[k]) !== JSON.stringify(found.job[k]));
@@ -200,7 +212,13 @@ export class JobBook {
         ...(changedAction ? { checkValue: null } : {}),
       });
     }
-    return this.entry(job, found.origin);
+    return this.entry(job, newOrigin ?? found.origin);
+  }
+
+  /** Untrusted sources a job's runs inherit (empty for config and owner-made jobs). */
+  taintOf(id: string): string[] {
+    const o = this.find(id)?.origin;
+    return o?.by === 'agent' ? (o.taint ?? []) : [];
   }
 
   /** Deletes a stored job (its run history stays). A running occurrence is stopped. */
