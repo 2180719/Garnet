@@ -8,8 +8,9 @@ const LEGACY_ENV_SUFFIXES = ['HOME', 'SECRETS_KEY_FILE', 'SECRETS_PASSPHRASE', '
 /** Reads `name` (a `GARNET_*` variable), falling back to its deprecated `RUBY_*` twin. */
 export function envVar(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = env[name];
-  if (value !== undefined) return value;
-  return name.startsWith('GARNET_') ? env[`RUBY_${name.slice('GARNET_'.length)}`] : undefined;
+  if (value) return value; // empty falls through to the RUBY_ twin, like shell `:-`
+  const old = name.startsWith('GARNET_') ? env[`RUBY_${name.slice('GARNET_'.length)}`] : undefined;
+  return old || value;
 }
 
 /** Deprecated `RUBY_*` variables that are set and not shadowed by the `GARNET_*` name, as `{ old, name }`. */

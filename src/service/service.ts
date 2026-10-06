@@ -16,7 +16,7 @@ export type ServicePlan = {
   commands: { prepare: string[][]; install: string[][]; uninstall: string[][]; status: string[][]; restart: string[][] };
   notes: string[];
   /** The service file this instance had before the rename to Garnet, and the commands that stop it. */
-  legacy: { path: string; stop: string[][] };
+  legacy: { path: string; stop: string[][]; /** Other homes a legacy unit may run for this instance (the pre-rename `~/.ruby`, when home is `~/.garnet`). */ homes: string[] };
 };
 
 export type PlanOptions = {
@@ -76,6 +76,10 @@ export function checkServiceName(name: string | undefined): string | undefined {
 export const systemdUnit = (name?: string): string => (checkServiceName(name) ? `garnet-${name}.service` : SYSTEMD_UNIT);
 /** The launchd label for an instance. */
 /** Pre-rename names: `ruby[-name].service` and `dev.ruby.agent[.name]`. */
+/** The user ran `mv ~/.ruby ~/.garnet`: a legacy unit still pointing at ~/.ruby is the same instance. */
+const legacyHomes = (o: { home: string; userHome: string }): string[] => (o.home === join(o.userHome, '.garnet') ? [join(o.userHome, '.ruby')] : []);
+const legacyServiceHomeMatches = (found: string | null, o: { home: string; userHome: string }): boolean =>
+  found !== null && (found === o.home || legacyHomes(o).includes(found));
 const legacySystemdUnit = (name?: string): string => (checkServiceName(name) ? `ruby-${name}.service` : 'ruby.service');
 const legacyLaunchdLabel = (name?: string): string => (checkServiceName(name) ? `dev.ruby.agent.${name}` : 'dev.ruby.agent');
 export const launchdLabel = (name?: string): string => (checkServiceName(name) ? `${LAUNCHD_LABEL}.${name}` : LAUNCHD_LABEL);
@@ -154,7 +158,7 @@ WantedBy=default.target
       status: [['systemctl', '--user', 'status', unit, '--no-pager']],
       restart: [['systemctl', '--user', 'restart', unit]],
     },
-    legacy: { path: join(o.userHome, '.config', 'systemd', 'user', legacySystemdUnit(o.name)), stop: [['systemctl', '--user', 'disable', '--now', legacySystemdUnit(o.name)]] },
+    legacy: { path: join(o.userHome, '.config', 'systemd', 'user', legacySystemdUnit(o.name)), stop: [['systemctl', '--user', 'disable', '--now', legacySystemdUnit(o.name)]], homes: legacyHomes(o) },
     notes: [
       `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`garnet secrets set\` and put only GARNET_SECRETS_KEY_FILE=<path> there.`,
       'To keep Garnet running without an active login, run: loginctl enable-linger $USER',
@@ -224,7 +228,7 @@ ${args}
       status: [['launchctl', 'print', target]],
       restart: [['launchctl', 'kickstart', '-k', target]],
     },
-    legacy: { path: join(o.userHome, 'Library', 'LaunchAgents', `${legacyLaunchdLabel(o.name)}.plist`), stop: [['launchctl', 'bootout', `gui/${uid}/${legacyLaunchdLabel(o.name)}`]] },
+    legacy: { path: join(o.userHome, 'Library', 'LaunchAgents', `${legacyLaunchdLabel(o.name)}.plist`), stop: [['launchctl', 'bootout', `gui/${uid}/${legacyLaunchdLabel(o.name)}`]], homes: legacyHomes(o) },
     notes: [
       `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`garnet secrets set\` and put only GARNET_SECRETS_KEY_FILE=<path> there.`,
       `Logs: ${join(o.home, 'logs')}`,
@@ -318,7 +322,7 @@ export function resolveService(
 ): { plan: ServicePlan; conflict: string | null } | { unsupported: string } {
   checkServiceName(opts.name);
   const installed = installedServices(opts, deps);
-  const mine = installed.find((s) => s.home === opts.home) ?? legacyServices(opts, deps).find((s) => s.home === opts.home);
+  const mine = installed.find((s) => s.home === opts.home) ?? legacyServices(opts, deps).find((s) => legacyServiceHomeMatches(s.home, opts));
   const plan = planService({ ...opts, name: opts.name !== undefined ? opts.name : mine?.name });
   if ('unsupported' in plan) return plan;
   const existing = installed.find((s) => s.path === plan.path);
@@ -397,7 +401,7 @@ async function runAll(cmds: string[][], d: ServiceDeps, result: ServiceResult, m
 async function removeLegacy(plan: ServicePlan, d: ServiceDeps, result: ServiceResult): Promise<void> {
   const { path, stop } = plan.legacy;
   try {
-    if (!d.exists(path) || legacyServiceHomeOf(d.read(path)) !== plan.home) return;
+    if (!d.exists(path) || !plan.legacy.homes.concat(plan.home).includes(legacyServiceHomeOf(d.read(path)) ?? '\0')) return;
     await runAll(stop, d, result, true);
     await d.remove(path);
     result.files.push(path);

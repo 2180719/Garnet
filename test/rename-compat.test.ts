@@ -14,6 +14,8 @@ test('every RUBY_* variable is a fallback for its GARNET_* twin', () => {
   assert.equal(envVar({ RUBY_HOME: '/old' }, 'GARNET_HOME'), '/old');
   assert.equal(envVar({ RUBY_HOME: '/old', GARNET_HOME: '/new' }, 'GARNET_HOME'), '/new');
   assert.equal(envVar({}, 'GARNET_HOME'), undefined);
+  assert.equal(envVar({ GARNET_HOME: '', RUBY_HOME: '/old' }, 'GARNET_HOME'), '/old', 'empty falls through like shell :-');
+  assert.equal(envVar({ GARNET_HOME: '' }, 'GARNET_HOME'), '');
   assert.equal(envVar({ RUBY_COMMAND_NAME: 'x' }, 'GARNET_COMMAND_NAME'), 'x');
   assert.deepEqual(deprecatedEnvVars({ RUBY_HOME: '/a', RUBY_NODE: 'n', GARNET_NODE: 'n', RUBY_VERSION: '3.3' }), [{ old: 'RUBY_HOME', name: 'GARNET_HOME' }]);
 });
@@ -118,4 +120,26 @@ test('a legacy launchd agent is detected and booted out; an instance name is car
   assert.ok(calls.includes('launchctl bootout gui/501/dev.ruby.agent.work'));
   assert.equal(legacyServices(base).length, 0);
   assert.ok(planService(base));
+});
+
+test('service install removes a legacy unit that still runs ~/.ruby after `mv ~/.ruby ~/.garnet`', async () => {
+  const userHome = tempDir();
+  const unitDir = join(userHome, '.config', 'systemd', 'user');
+  mkdirSync(unitDir, { recursive: true });
+  const legacy = join(unitDir, 'ruby.service');
+  writeFileSync(legacy, OLD_UNIT(join(userHome, '.ruby')));
+  const base = { platform: 'linux' as const, home: join(userHome, '.garnet'), userHome, nodePath: '/usr/bin/node', entry: '/opt/garnet/src/cli/bin.ts' };
+  const calls: string[] = [];
+  const run = async (cmd: string[]): Promise<CommandResult> => (calls.push(cmd.join(' ')), { code: 0, stdout: '', stderr: '' });
+  const resolved = resolveService(base);
+  assert.ok(!('unsupported' in resolved));
+  await installService(resolved.plan, { run });
+  assert.ok(calls.includes('systemctl --user disable --now ruby.service'));
+  // But a ~/.ruby unit is not ours when the home is somewhere else.
+  writeFileSync(legacy, OLD_UNIT(join(userHome, '.ruby')));
+  calls.length = 0;
+  const other = resolveService({ ...base, home: join(userHome, 'elsewhere') });
+  assert.ok(!('unsupported' in other));
+  await installService(other.plan, { run });
+  assert.ok(!calls.some((c) => c.includes('ruby.service')));
 });
