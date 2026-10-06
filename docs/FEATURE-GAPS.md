@@ -81,6 +81,6 @@ Small changes that remove the sharpest edges. About a week in total.
 
 ## Build order
 
-- **Wave 1:** Tier 0 (all), 1.1 containment + 1.2 web tools, 1.3 scheduling and messaging, 1.4 media.
-- **Wave 2:** subagents, 1.5 session search, 1.6 MCP client, 2.1 groups, 2.2 host-tools exec with named secrets, 2.3 model fallbacks.
+- **Wave 1 (done):** Tier 0 (all), 1.1 containment + 1.2 web tools, 1.3 scheduling and messaging, 1.4 media.
+- **Wave 2 (deferred for budget):** subagents, 1.5 session search, 1.6 MCP client, 2.1 groups, 2.2 host-tools exec with named secrets, 2.3 model fallbacks.
 - **Wave 3:** the rest of Tier 2, then Tier 3 by value.
