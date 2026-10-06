@@ -43,6 +43,11 @@ type TgMessage = {
   chat: { id: number; type: string };
   photo?: (TgFile & { width: number; height: number })[];
   document?: TgFile;
+  forward_origin?: unknown;
+  forward_from?: unknown;
+  forward_from_chat?: unknown;
+  forward_sender_name?: unknown;
+  forward_date?: unknown;
   voice?: TgFile;
   audio?: TgFile;
   video?: TgFile;
@@ -360,6 +365,10 @@ export class TelegramChannel implements ChannelAdapter {
     if (Array.isArray(m.photo) && m.photo.length) add(m.photo.at(-1), 'image', 'photo.jpg', 'image/jpeg');
     if (m.document) add(m.document, kindOfClaim(m.document.mime_type), 'document');
     add(m.voice, 'audio', 'voice.ogg', 'audio/ogg');
+    // Only a voice note recorded in this message counts as live; a forwarded one was made by someone else.
+    const forwarded = m.forward_origin !== undefined || m.forward_from !== undefined || m.forward_from_chat !== undefined || m.forward_sender_name !== undefined || m.forward_date !== undefined;
+    const voice = out.find((a) => a.ref === m.voice?.file_id);
+    if (voice && !forwarded) voice.liveVoice = true;
     add(m.audio, 'audio', 'audio');
     add(m.video ?? m.video_note ?? m.animation, 'video', 'video.mp4', 'video/mp4');
     return out;

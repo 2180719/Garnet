@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { GarnetError, type ToolDefinition } from '../contracts/index.ts';
 import type { GatewayStore } from '../store/index.ts';
+import { BindMemo } from '../tools/index.ts';
 import { ChatDirectory } from './directory.ts';
 
 type SendInput = { text: string; to?: string | undefined };
@@ -9,7 +10,7 @@ export type SendMessageDeps = {
   directory: ChatDirectory;
   store: GatewayStore;
   /** Queues the message and records it in the target chat's conversation (`Gateway.notify`, late-bound). Returns the delivery ID. */
-  notify: (target: { channel: string; account: string; chatId: string }, text: string, record: { from: string; skipSession?: string }) => string;
+  notify: (target: { channel: string; account: string; chatId: string }, text: string, record: { from: string; skipSession?: string; taint?: readonly string[] }) => string;
   /** Messages per rolling hour across all chats (`gateway.messagesPerHour`). */
   perHour: number;
   now?: () => Date;
@@ -42,6 +43,7 @@ export function assertSendAllowed(store: GatewayStore, perHour: number, now: Dat
  */
 export function sendMessageTool(deps: SendMessageDeps): ToolDefinition<SendInput> {
   const now = deps.now ?? (() => new Date());
+  const memo = new BindMemo<SendInput>();
   return {
     name: 'send_message',
     version: 1,
@@ -57,6 +59,16 @@ export function sendMessageTool(deps: SendMessageDeps): ToolDefinition<SendInput
     }),
     capability: 'message.send',
     idempotent: false,
+    // Resolve the recipient before the approval ("owner" and the default are not fixed until now), so what is approved is where it goes.
+    bind: (input, ctx) =>
+      memo.resolve(ctx.sessionId, input, () => {
+        try {
+          const t = deps.directory.resolve(input.to, ctx.sessionId);
+          return { ...input, to: `${t.channel}:${t.chatId}` };
+        } catch {
+          return input; // reported by targets with the full explanation
+        }
+      }),
     targets: (input, ctx) => {
       const t = deps.directory.resolve(input.to, ctx.sessionId);
       return [`${t.channel}:${t.chatId}`];
@@ -67,10 +79,11 @@ export function sendMessageTool(deps: SendMessageDeps): ToolDefinition<SendInput
     },
     async run(input, ctx) {
       const target = deps.directory.resolve(input.to, ctx.sessionId);
+      memo.consume(ctx.sessionId, input);
       const sent = assertSendAllowed(deps.store, deps.perHour, now());
       const here = deps.directory.origin(ctx.sessionId).chat;
       const sameChat = !!here && here.channel === target.channel && here.account === target.account && here.chatId === target.chatId;
-      const deliveryId = deps.notify(target, input.text, { from: 'send_message', skipSession: ctx.sessionId });
+      const deliveryId = deps.notify(target, input.text, { from: 'send_message', skipSession: ctx.sessionId, ...(ctx.taint?.sources.length ? { taint: ctx.taint.sources } : {}) });
       deps.store.recordSent({ sessionId: ctx.sessionId, channel: target.channel, account: target.account, chatId: target.chatId, deliveryId });
       return {
         content: `Queued for ${ChatDirectory.label(target)}${sameChat ? ' (this chat)' : ''}; it is delivered by the running Garnet service. ${deps.perHour - sent - 1} more message(s) allowed this hour.`,

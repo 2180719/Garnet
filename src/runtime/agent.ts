@@ -402,11 +402,14 @@ type ModelError = Extract<ModelEvent, { type: 'error' }>;
 /**
  * Files the owner passes on (images, PDFs, documents) were usually written by
  * someone else and can carry instructions, so they taint the session like a
- * fetched page. Audio is the owner's own voice note and does not.
+ * fetched page. The one exception is a voice note the
+ * paired owner recorded live in a private chat, which the gateway marks
+ * (`liveVoice`) from the channel's own voice-note flag; forwarded voice notes
+ * and audio files taint like any file.
  */
 function fileTaint(input: string | ContentBlock[]): string[] {
   if (typeof input === 'string') return [];
-  return input.flatMap((b) => (b.type === 'attachment' && b.attachment.kind !== 'audio' ? [`file ${b.attachment.name ? JSON.stringify(b.attachment.name) : b.attachment.id} sent in chat`] : []));
+  return input.flatMap((b) => (b.type === 'attachment' && !(b.liveVoice && b.attachment.kind === 'audio') ? [`file ${b.attachment.name ? JSON.stringify(b.attachment.name) : b.attachment.id} sent in chat`] : []));
 }
 
 /** Bytes never enter the event log; only the reference and derived text do. */

@@ -16,6 +16,13 @@ export type InboundAttachment = {
   /** Bytes, when the platform says so up front. */
   size?: number;
   durationSec?: number;
+  /**
+   * Set by the adapter only for a voice note recorded live by the sender in
+   * this message (Telegram `voice`, Signal's voice-note flag), never for a
+   * forwarded one or an audio file. The gateway honors it only for the paired
+   * owner in a private chat; everything else a sender passes on taints.
+   */
+  liveVoice?: boolean;
   ref: string;
 };
 

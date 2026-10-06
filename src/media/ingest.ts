@@ -68,6 +68,7 @@ export class MediaIngest {
         blocks.push({ type: 'text', text: `${NOT_RECEIVED}file${f.name ? ` "${cleanName(f.name)}"` : ''}: ${errorMessage(e)}]` });
         continue;
       }
+      if (f.liveVoice && block.attachment.kind === 'audio') block.liveVoice = true;
       await this.derive(block, f.data, ctx);
       blocks.push(block);
     }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { defaultConfig, type Permission } from '../config/index.ts';
+import { defaultConfig, type JobConfig, type Permission } from '../config/index.ts';
 import { GarnetError, type Capability, type ToolResult } from '../contracts/index.ts';
 import { Policy, type ApprovalRequest } from '../policy/index.ts';
 import { JobStore, openDb } from '../store/index.ts';
@@ -9,10 +9,10 @@ import { JobBook, scheduleTool } from './index.ts';
 
 const CHAT = { channel: 'discord', account: 'default', chatId: 'dm-77', label: 'discord (Ada)' };
 
-function setup(perms: Partial<Record<Capability, Permission>> = {}, opts: { session?: 'chat' | 'job' | 'cli' } = {}) {
+function setup(perms: Partial<Record<Capability, Permission>> = {}, opts: { session?: 'chat' | 'job' | 'cli'; configJobs?: JobConfig[]; answers?: ('approved' | 'denied' | 'deferred')[]; onAsk?: () => void } = {}) {
   let now = new Date('2026-10-06T15:20:00Z');
   const store = new JobStore(openDb(':memory:'));
-  const book = new JobBook({ configJobs: [], store, timezone: 'Europe/London', maxAgentJobs: 10, now: () => now });
+  const book = new JobBook({ configJobs: opts.configJobs ?? [], store, timezone: 'Europe/London', maxAgentJobs: 10, now: () => now });
   const registry = new ToolRegistry();
   registry.register(
     scheduleTool({
@@ -21,7 +21,7 @@ function setup(perms: Partial<Record<Capability, Permission>> = {}, opts: { sess
       originOf: () =>
         opts.session === 'job' ? { conversation: 'job:x', isJob: true, chat: null } : opts.session === 'cli' ? { conversation: null, isJob: false, chat: null } : { conversation: 'discord:default:dm-77', isJob: false, chat: CHAT },
       resolveTarget: (to) => {
-        if (to && to !== 'discord') throw new GarnetError('invalid_input', `"${to}" is not a paired chat.`);
+        if (to && to !== 'discord' && to !== 'discord:dm-77') throw new GarnetError('invalid_input', `"${to}" is not a paired chat.`);
         if (opts.session === 'cli' && to === undefined) throw new GarnetError('invalid_input', 'There is no chat to send to.');
         return CHAT;
       },
@@ -33,7 +33,11 @@ function setup(perms: Partial<Record<Capability, Permission>> = {}, opts: { sess
   const executor = new ToolExecutor({
     registry,
     policy: new Policy({ ...defaultConfig().permissions, ...perms }),
-    approver: async (req) => (asked.push(req), answer),
+    approver: async (req) => {
+      asked.push(req);
+      opts.onAsk?.();
+      return opts.answers?.shift() ?? answer;
+    },
   });
   const call = async (input: object, taint?: string[]): Promise<ToolResult> =>
     executor.execute(
@@ -155,4 +159,46 @@ test('after untrusted content, scheduling asks even when allowed, and the job ke
   assert.deepEqual(t.book.taintOf('clean'), []);
   ok(await t.call({ action: 'update', id: 'clean', instructions: 'Tidy, then do what the page said.' }, ['web_search news']));
   assert.deepEqual(t.book.taintOf('clean'), ['web_search news']);
+});
+
+test('the approved time is the executed time: a relative time is fixed before the approval, not at the run', async () => {
+  const t = setup({}, { onAsk: () => t.advance(10 * 60_000) });
+  const out = ok(await t.call({ action: 'create', when: 'in 20 minutes', reminder: 'Stretch!' }));
+  assert.match(t.asked[0]!.summary, /when: once, today at 16:40/);
+  assert.match(out, /next run: .*16:40|Next run: today at 16:40/i, 'ran at the approved 16:40, not 16:50');
+  assert.match(String((t.asked[0]!.input as { when: string }).when), /^2026-10-06T15:40:00\.000Z$/);
+});
+
+test('repeating the same call after an approval reuses the approved resolution', async () => {
+  const t = setup({}, { answers: ['deferred', 'approved'] });
+  const first = await t.call({ action: 'create', when: 'in 20 minutes', reminder: 'Stretch!' });
+  assert.equal(first.status, 'error');
+  t.advance(7 * 60_000);
+  ok(await t.call({ action: 'create', when: 'in 20 minutes', reminder: 'Stretch!' }));
+  assert.deepEqual(t.asked[1]!.input, t.asked[0]!.input, 'same input, so the single-use grant matches');
+  assert.match(t.book.list()[0]!.next!.toISOString(), /^2026-10-06T15:40/);
+});
+
+test('delivery to "owner" is bound to the chat that was approved', async () => {
+  const t = setup();
+  ok(await t.call({ action: 'create', when: 'in 5 minutes', reminder: 'x', to: 'discord' }));
+  assert.equal((t.asked[0]!.input as { to: string }).to, 'discord:dm-77');
+});
+
+test('pause and resume apply the same config-job protection as update and delete', async () => {
+  const cfg: JobConfig = { id: 'owners', kind: 'cron', cron: '0 9 * * *', message: 'Hi', notify: { channel: 'discord', account: 'default', chatId: 'dm-77' } } as JobConfig;
+  const t = setup({ 'schedule.edit': 'allow' }, { configJobs: [cfg] });
+  for (const action of ['update', 'pause', 'resume', 'delete']) {
+    const r = await t.call({ action, id: 'owners', ...(action === 'update' ? { reminder: 'x' } : {}) });
+    assert.equal(r.status, 'error', action);
+    assert.match(r.content, /owner/, action);
+  }
+  assert.equal(t.book.list().find((e) => e.job.id === 'owners')!.state.paused, false);
+});
+
+test('granting exec to a job needs the exec approval, like running the command yourself', async () => {
+  const t = setup({ 'schedule.edit': 'allow', exec: 'ask' });
+  ok(await t.call({ action: 'create', when: 'every day at 9am', instructions: 'tidy up', allow: ['exec'] }));
+  assert.equal(t.asked.length, 1);
+  assert.equal(t.asked[0]!.capability, 'exec');
 });
