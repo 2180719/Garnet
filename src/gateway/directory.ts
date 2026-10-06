@@ -48,9 +48,9 @@ export class ChatDirectory {
     return this.deps.store.pairedChats().map((c) => ({ channel: c.channel, account: c.account, chatId: c.chatId, senderId: c.senderId, name: c.displayName }));
   }
 
-  private known(ref: { channel: string; account: string; chatId: string }): ChatTarget {
-    const match = this.chats().find((c) => c.channel === ref.channel && c.account === ref.account && c.chatId === ref.chatId);
-    return match ?? { ...ref, senderId: null, name: null };
+  /** The paired private chat for a reference, or null: a group, or a chat of a sender that is not paired, is never a delivery target. */
+  private paired(ref: { channel: string; account: string; chatId: string }): ChatTarget | null {
+    return this.chats().find((c) => c.channel === ref.channel && c.account === ref.account && c.chatId === ref.chatId) ?? null;
   }
 
   origin(sessionId: string): SessionOrigin {
@@ -58,11 +58,11 @@ export class ChatDirectory {
     if (!key) return { conversation: null, chat: null, isJob: false };
     if (key.startsWith('job:')) return { conversation: key, chat: null, isJob: true };
     const direct = chatOfKey(key);
-    if (direct) return { conversation: key, chat: this.known(direct), isJob: false };
+    if (direct) return { conversation: key, chat: this.paired(direct), isJob: false };
     if (key.startsWith('route:')) {
       // A shared conversation: answer the chat that wrote into it most recently.
       const last = this.deps.store.lastChatForSession(sessionId);
-      return { conversation: key, chat: last ? this.known(last) : null, isJob: false };
+      return { conversation: key, chat: last ? this.paired(last) : null, isJob: false };
     }
     return { conversation: key, chat: null, isJob: false };
   }
@@ -113,10 +113,10 @@ export class ChatDirectory {
    * (creating it if needed), so a reply ("tell me more") has context. A new
    * event, marked as not written by the owner; the log stays append-only.
    * Callers that may race a running turn go through the conversation's lane
-   * (`Gateway.notify`). Skipped when the target is `skipSession` (the sender's
+   * (`Gateway.notify`). With `taint`, the sender's untrusted sources follow the note as inherited `tainted` events. Skipped when the target is `skipSession` (the sender's
    * own conversation already has the tool call).
    */
-  record(target: { channel: string; account: string; chatId: string }, text: string, note: { from: string; skipSession?: string }): void {
+  record(target: { channel: string; account: string; chatId: string }, text: string, note: { from: string; skipSession?: string; taint?: readonly string[] }): void {
     const key = conversationKeyFor(this.deps.routes ?? [], target);
     let sessionId = this.deps.store.conversation(key);
     if (!sessionId) {
@@ -129,5 +129,7 @@ export class ChatDirectory {
       message: { role: 'user', content: [{ type: 'text', text: `[Context note, not written by your owner: you sent them this message from ${note.from}.]\n${text}` }] },
       source: 'notification',
     });
+    // A tainted sender's text can carry injected instructions: the conversation it lands in is tainted too.
+    for (const source of new Set(note.taint ?? [])) this.deps.sessions.append(sessionId, { type: 'tainted', source, inherited: true });
   }
 }

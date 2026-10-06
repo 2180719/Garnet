@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { validTimeZone, type JobConfig } from '../config/index.ts';
 import { GarnetError, type Capability, type ToolContext, type ToolDefinition } from '../contracts/index.ts';
+import { BindMemo } from '../tools/index.ts';
 import type { JobBook, JobEntry, JobOrigin } from './book.ts';
 import { describeDistance, describeNext, describeSchedule, describeTime, parseWhen } from './when.ts';
 
@@ -40,6 +41,8 @@ const input = z.object({
   timezone: z.string().max(64).optional().describe('IANA zone if not the owner\'s, e.g. America/New_York.'),
 });
 type Input = z.infer<typeof input>;
+/** An input after `bind`: `shifted` remembers that the requested local time did not exist. */
+type Bound = Input & { shifted?: boolean };
 
 const kindOf = (j: JobConfig): string => (j.message !== undefined ? 'reminder' : j.script ? 'script' : 'task');
 
@@ -95,7 +98,7 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
       if (when.kind === 'once') {
         job.kind = 'once';
         job.at = when.at.toISOString();
-        if (when.shifted) notes.push('That local time does not exist on that day (clocks go forward), so it was moved forward by the jump.');
+        if (when.shifted || (i as Bound).shifted) notes.push('That local time does not exist on that day (clocks go forward), so it was moved forward by the jump.');
       } else if (when.kind === 'heartbeat') Object.assign(job, { kind: 'heartbeat', everyMinutes: when.everyMinutes });
       else Object.assign(job, { kind: 'cron', cron: when.cron });
     }
@@ -127,11 +130,63 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
     return { job, target, ...(existing ? { existing } : {}), notes };
   };
 
+  const memo = new BindMemo<Input>();
+
+  /** The owner's job in config.json can be changed only by the owner, whatever the change (update, pause, resume, delete). */
+  const assertNotConfigJob = (i: Input): void => {
+    if (i.action !== 'pause' && i.action !== 'resume') return;
+    const id = need(i.id, 'id');
+    const found = deps.book.list().find((e) => e.job.id === id);
+    if (!found) throw new GarnetError('invalid_input', `No job "${id}". Use action "list" to see the jobs.`);
+    if (found.origin.by === 'config') throw new GarnetError('denied', `"${id}" is the owner's job in config.json; only the owner can ${i.action} it.`);
+  };
+
+  /**
+   * Fixes what would otherwise resolve at execution: a one-shot time (relative
+   * or wall-clock) becomes an absolute instant and the delivery chat a concrete
+   * one, so the approval shows, and the run uses, exactly the same values.
+   */
+  const bind = (i: Input, ctx: ToolContext): Input => {
+    assertNotConfigJob(i);
+    if (i.action !== 'create' && i.action !== 'update') return i;
+    const usable = (b: Input) => !(b.when && /^\d{4}-\d{2}-\d{2}T.*Z$/.test(b.when) && new Date(b.when).getTime() <= now().getTime());
+    return memo.resolve(
+      ctx.sessionId,
+      i,
+      () => {
+        const bound: Input = { ...i };
+        if (i.when !== undefined) {
+          try {
+            const existing = i.action === 'update' && i.id ? deps.book.list().find((e) => e.job.id === i.id) : undefined;
+            const when = parseWhen(i.when.trim(), { now: now(), zone: i.timezone ?? existing?.job.timezone ?? deps.book.timezone });
+            if (when.kind === 'once') {
+              bound.when = when.at.toISOString();
+              if (when.shifted) (bound as Bound).shifted = true; // the note about the skipped local time survives the conversion
+            }
+          } catch {
+            // Reported when the call is planned, with the parser's explanation.
+          }
+        }
+        if (i.action === 'create' || i.to !== undefined) {
+          try {
+            const t = deps.resolveTarget(i.to, ctx.sessionId);
+            bound.to = `${t.channel}:${t.chatId}`;
+          } catch {
+            // Reported when the call is planned.
+          }
+        }
+        return bound;
+      },
+      usable,
+    );
+  };
+
   const capabilities = (i: Input): Capability[] => {
     if (i.action === 'list') return [];
     const caps: Capability[] = ['schedule.edit'];
     // A script job runs a command unattended later: the owner approves that exact command as for run_command.
-    if (i.command?.trim()) caps.push('exec');
+    // A job granted exec in `allow` runs commands unattended too, so creating or changing it needs the same approval.
+    if (i.command?.trim() || i.allow?.includes('exec')) caps.push('exec');
     return caps;
   };
 
@@ -158,6 +213,7 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
       'Create and manage scheduled jobs: one-shot reminders, recurring tasks you run, and script-only jobs. Results are sent to this chat unless `to` says otherwise. Use "list" first to find ids. Times are in the owner\'s time zone; confirm the next run time back to the owner.',
     input,
     capability: 'schedule.edit',
+    bind,
     capabilitiesFor: capabilities,
     summarize,
     idempotent: false,
@@ -171,6 +227,8 @@ export function scheduleTool(deps: ScheduleToolDeps): ToolDefinition<Input> {
         return { content: [`Jobs (now: ${describeTime(t, deps.book.timezone, t)}, ${deps.book.timezone}):`, ...entries.map(describe)].join('\n') };
       }
       if (origin.isJob) throw new GarnetError('denied', 'Scheduled runs cannot create or change jobs.');
+      assertNotConfigJob(i);
+      memo.consume(ctx.sessionId, i);
       if (i.action === 'pause' || i.action === 'resume' || i.action === 'delete') {
         const id = need(i.id, 'id');
         if (i.action === 'delete') {

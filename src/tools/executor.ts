@@ -69,8 +69,13 @@ export class ToolExecutor {
       const issues = parsed.error.issues.map((i) => describeIssue(i, tool.input)).join('; ');
       return fail('invalid_input', `Invalid arguments for ${tool.name}: ${issues}. Fix the arguments and call again.`);
     }
-    const input = parsed.data;
     const fullCtx: ToolContext = { ...ctx, callId: call.id };
+    let input = parsed.data;
+    try {
+      if (tool.bind) input = tool.bind(input, fullCtx);
+    } catch (e) {
+      return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));
+    }
 
     let targets: string[];
     try {

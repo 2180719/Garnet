@@ -61,6 +61,8 @@ export type AttachmentBlock = {
   attachment: AttachmentRef;
   text?: string;
   note?: string;
+  /** A voice note the paired owner recorded live in a private chat (set by the gateway at ingest, never by a model). The only attachment that does not taint. */
+  liveVoice?: boolean;
   /**
    * Base64 bytes. Set only on blocks inside a `ModelRequest`, by the runtime,
    * for images and documents the model can read natively; never persisted.

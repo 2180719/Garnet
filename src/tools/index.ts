@@ -2,6 +2,7 @@ export { ToolRegistry } from './registry.ts';
 export { ToolExecutor, type ExecutorDeps } from './executor.ts';
 export { fileTools, listFiles, readFileTool, writeFileTool } from './builtin/files.ts';
 export { ArtifactStore, readArtifactTool } from './artifacts.ts';
+export { BindMemo } from './bind-memo.ts';
 export { repairCall, type Repaired } from './repair.ts';
 export { execTool } from './builtin/exec.ts';
 export { WebFetcher, parseTarget, type WebFetcherOptions, type FetchRequest, type FetchResponse, type Resolver } from './web/fetcher.ts';

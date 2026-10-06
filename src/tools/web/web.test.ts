@@ -201,6 +201,16 @@ test('bodies are capped after decompression, and slow servers time out', async (
   await assert.rejects(fetcher({ timeoutMs: 300 }).fetch(at('site.test', '/slow')), (e: Error & { category?: string }) => e.category === 'timeout');
 });
 
+test('a stalled compressed response rejects at the deadline', async () => {
+  routes.set('/stall-gz', (_q, r) => {
+    r.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' });
+    r.write(Buffer.from([0x1f, 0x8b, 0x08, 0x00])); // a partial gzip header, then silence
+  });
+  const started = Date.now();
+  await assert.rejects(fetcher({ timeoutMs: 300 }).fetch(at('site.test', '/stall-gz')), (e: Error & { category?: string }) => e.category === 'timeout');
+  assert.ok(Date.now() - started < 3000);
+});
+
 test('bad URLs and unknown hosts give honest errors', async () => {
   await assert.rejects(fetcher().fetch('not a url'), /not a valid URL/);
   await assert.rejects(fetcher().fetch('ftp://site.test/x'), /Only http and https/);

@@ -339,6 +339,20 @@ test('capabilities and typing', async () => {
 
 const base = { date: 1, from: { id: 7, first_name: 'Ada' }, chat: { id: 7, type: 'private' } };
 
+test('a forwarded voice note and an audio file are not marked as live voice', async () => {
+  const updates = [
+    { update_id: 1, message: { ...base, message_id: 1, forward_origin: { type: 'user' }, voice: { file_id: 'v1', duration: 4 } } },
+    { update_id: 2, message: { ...base, message_id: 2, audio: { file_id: 'a1', duration: 4, mime_type: 'audio/mpeg' } } },
+  ];
+  const { channel } = setup(fakeApi({}, [() => ok(updates)]));
+  const got: InboundMessage[] = [];
+  await channel.start(async (m) => void got.push(m));
+  await until(() => got.length === 2, 'two messages');
+  assert.equal(got[0]!.attachments![0]!.liveVoice, undefined);
+  assert.equal(got[1]!.attachments![0]!.liveVoice, undefined);
+  await channel.stop();
+});
+
 test('photos, voice notes, documents and captions arrive as attachments; stickers as unsupported', async () => {
   const updates = [
     { update_id: 1, message: { ...base, message_id: 1, caption: 'look', photo: [{ file_id: 'small', width: 90, height: 90, file_size: 1000 }, { file_id: 'big', width: 1280, height: 960, file_size: 90_000 }] } },
@@ -354,7 +368,7 @@ test('photos, voice notes, documents and captions arrive as attachments; sticker
   assert.equal(got[0]!.text, 'look');
   assert.deepEqual(got[0]!.attachments, [{ kind: 'image', ref: 'big', name: 'photo.jpg', mimeType: 'image/jpeg', size: 90_000 }]);
   assert.equal(got[1]!.text, '');
-  assert.deepEqual(got[1]!.attachments, [{ kind: 'audio', ref: 'v1', name: 'voice.ogg', mimeType: 'audio/ogg', size: 9000, durationSec: 4 }]);
+  assert.deepEqual(got[1]!.attachments, [{ kind: 'audio', ref: 'v1', name: 'voice.ogg', mimeType: 'audio/ogg', size: 9000, durationSec: 4, liveVoice: true }]);
   assert.deepEqual(got[2]!.attachments, [{ kind: 'document', ref: 'd1', name: 'report.pdf', mimeType: 'application/pdf', size: 50_000 }]);
   assert.equal(got[3]!.unsupported, 'sticker');
   assert.equal(got[3]!.attachments, undefined);

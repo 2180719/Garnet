@@ -8,7 +8,7 @@ import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
-import { Agent, LaneQueue } from './runtime/index.ts';
+import { Agent, LaneQueue, sessionTaint } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
@@ -26,7 +26,7 @@ export type Outbound = {
   notify: (
     target: { channel: string; account: string; chatId: string },
     text: string,
-    record?: { from: string; skipSession?: string },
+    record?: { from: string; skipSession?: string; taint?: readonly string[] },
     attachments?: OutboundMessage['attachments'],
   ) => string;
 };
@@ -379,7 +379,10 @@ export function buildService(garnet: Garnet, rawLog: LogFn, channels: ChannelAda
       if (!job.notify) return;
       const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
       // Recorded in the chat's conversation so a reply to it has context.
-      gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text, { from: `scheduled job "${job.id}"` });
+      // The job's inherited taint plus whatever its own run read: the note must not launder it into the owner's chat.
+      const runSession = garnet.gatewayStore.conversation(`job:${job.id}`);
+      const taint = [...new Set([...garnet.jobBook.taintOf(job.id), ...(runSession ? sessionTaint(garnet.store.events(runSession)).sources : [])])];
+      gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text, { from: `scheduled job "${job.id}"`, ...(taint.length ? { taint } : {}) });
     },
   });
   garnet.jobBook.onRemoved((id) => scheduler.cancel(id));
