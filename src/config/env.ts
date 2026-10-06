@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RubyConfig } from './schema.ts';
 
@@ -62,6 +62,47 @@ export function removeFromEnvFile(home: string, names: string[]): string[] {
   chmodSync(tmp, 0o600);
   renameSync(tmp, file);
   return [...removed];
+}
+
+/**
+ * Sets `entries` in `<home>/env`: replaces the first line for each name and
+ * drops later duplicates, appends names that are missing, and keeps comments
+ * and every other line. Atomic, mode 0600. Values must be single-line.
+ */
+export function setInEnvFile(home: string, entries: Record<string, string>): void {
+  for (const [name, value] of Object.entries(entries)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid variable name "${name}"`);
+    if (/[\r\n]/.test(value)) throw new Error(`The value for ${name} must be a single line`);
+  }
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const file = join(home, 'env');
+  const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : [];
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  const done = new Set<string>();
+  const out: string[] = [];
+  for (const raw of lines) {
+    const m = raw.trim().startsWith('#') ? null : LINE.exec(raw.trim());
+    const name = m?.[1];
+    if (name !== undefined && name in entries) {
+      if (done.has(name)) continue;
+      out.push(`${name}=${quoteEnv(entries[name]!)}`);
+      done.add(name);
+      continue;
+    }
+    out.push(raw);
+  }
+  for (const [name, value] of Object.entries(entries)) if (!done.has(name)) out.push(`${name}=${quoteEnv(value)}`);
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, out.join('\n') + '\n', { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, file);
+}
+
+/** Quotes a value so `parseEnv` and POSIX sh (the launchd wrapper sources the file) read it back unchanged. */
+function quoteEnv(value: string): string {
+  if (/^[A-Za-z0-9_\/.:@%+,=-]*$/.test(value)) return value;
+  if (!value.includes("'")) return `'${value}'`;
+  throw new Error('Values containing both special characters and a single quote cannot be written to the env file; use `ruby secrets set` instead');
 }
 
 /** Names of the environment variables (or stored secrets) the config refers to. Names only, never values. */

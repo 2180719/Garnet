@@ -3,6 +3,7 @@ export {
   installService,
   uninstallService,
   serviceStatus,
+  restartService,
   defaultEntry,
   shellQuote,
   type ServicePlan,

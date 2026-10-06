@@ -10,6 +10,8 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | `npm test` | Offline, deterministic tests (`node:test`). |
 | `npm run ruby -- chat --fake` | Chat with the offline fake model. |
 | `npm run ruby -- help` | All CLI commands. |
+| `npm run ruby -- setup` / `doctor` | Guided setup (re-runnable, `-y` for scripts) and install diagnosis. |
+| `sh -n install.sh` | Syntax-check the one-line installer (POSIX sh, no bashisms). |
 | `npm run ruby -- start` | Run the service in the foreground (gateway, channels, API). |
 
 Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md](docs/LIVE-TESTING.md).
@@ -37,7 +39,8 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/secrets/` | Optional encrypted secret store (`<RUBY_HOME>/secrets`, scrypt + AES-256-GCM) and secret-name resolution: environment first, then the store. |
 | `src/achievements/` | Local achievements and easter eggs for the dashboard. |
 | `src/backend.ts` | Composition-root implementation of the dashboard/admin API. |
-| `src/cli/` | The `ruby` command. |
+| `src/cli/` | The `ruby` command, including `ruby setup` (`setup/`) and `ruby doctor`. |
+| `install.sh` | One-line installer: clone or update into `~/.local/share/ruby`, `npm ci --omit=dev`, a `ruby` shim in `~/.local/bin`. |
 | `dashboard/` | Opt-in dashboard: static files served by the API server under a strict CSP. |
 | `src/main.ts` | Composition root: the only place modules are wired together. |
 | `site/` | Public static website (no build, no tracking). |

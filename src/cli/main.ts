@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
-import { defaultConfig, loadConfig, loadEnvFile, redact, rubyHome, writeConfig, configSchema } from '../config/index.ts';
+import { loadConfig, loadEnvFile, redact, rubyHome, writeConfig, configSchema } from '../config/index.ts';
 import { errorMessage, isRubyError } from '../contracts/index.ts';
-import { createRuby } from '../main.ts';
+import { createRuby, VERSION } from '../main.ts';
 import { FakeModel } from '../models/index.ts';
 import type { Approver } from '../policy/index.ts';
 import type { RuntimeEvent } from '../runtime/index.ts';
@@ -15,11 +15,16 @@ import { backup, restore } from './backup.ts';
 import { runImport } from '../migrate/index.ts';
 import { unlockWarnings } from '../secrets/index.ts';
 import { secrets } from './secrets.ts';
+import { doctor } from './doctor.ts';
+import { init, setup } from './setup/command.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
 
 Usage:
-  ruby init                 Create ~/.ruby with a default config
+  ruby setup                Guided setup: model, key, persona, channels, service
+                            (re-run any time; \`ruby setup --help\` for script flags)
+  ruby doctor [--json]      Check the install and setup, with fixes
+  ruby init [--defaults]    Create ~/.ruby (offers \`ruby setup\` on a terminal)
   ruby chat [--fake] [--session <id>]
                             Chat in the terminal (--fake uses an offline model)
   ruby config check         Validate the config file
@@ -81,7 +86,11 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
     for (const w of unlockWarnings(rubyHome(), process.env, loaded)) io.err(`Warning: ${w}\n`);
     switch (command) {
       case 'init':
-        return init(io);
+        return await init(rest, io);
+      case 'setup':
+        return await setup(rest, io);
+      case 'doctor':
+        return await doctor(rest, io, { version: VERSION });
       case 'chat':
         return await chat(rest, io);
       case 'config':
@@ -145,19 +154,6 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
     io.err(`${isRubyError(e) ? '' : 'Unexpected error: '}${errorMessage(e)}\n`);
     return 1;
   }
-}
-
-function init(io: Io): number {
-  const home = rubyHome();
-  if (existsSync(`${home}/config.json`)) {
-    io.out(`Ruby is already set up at ${home}. Edit ${home}/config.json or run \`ruby config check\`.\n`);
-    return 0;
-  }
-  const config = defaultConfig();
-  writeConfig(home, config);
-  mkdirSync(`${home}/workspace`, { recursive: true });
-  io.out(`Created ${home}/config.json and ${home}/workspace.\nSet ANTHROPIC_API_KEY, then run \`ruby chat\`.\n`);
-  return 0;
 }
 
 function configCommand(args: string[], io: Io): number {

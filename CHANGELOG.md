@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Installation and onboarding
+- One-line installer: `curl -fsSL https://raw.githubusercontent.com/2180719/Ruby/main/install.sh | sh`. POSIX sh, no sudo, idempotent: checks Node.js 22.18+ and `node:sqlite` (with install advice), clones or fast-forwards into `~/.local/share/ruby` (refusing to touch local changes), runs `npm ci --omit=dev`, writes a `ruby` shim in `~/.local/bin` (never over a file it did not write), warns when PATH lacks it or another `ruby` (the language) shadows it, then starts `ruby setup` on a terminal. `--name` installs under another command name.
+- `ruby setup`: a guided, re-runnable wizard for the model (Anthropic, OpenRouter, local servers, any OpenAI-compatible API, or the demo model), the key (hidden input; encrypted store with a new key file outside `~/.ruby`, the env file, or your own environment), persona basics, Telegram/Discord/Signal, importing from OpenClaw or Hermes (preview first), the background service, and pairing your own account. Live key checks run only with consent and cost no tokens. On a re-run it shows the current setup and a menu. `ruby setup -y` takes everything from flags (`--key-stdin` for the key) for scripts and CI.
+- `ruby doctor [--json]`: checks Node.js, `node:sqlite`, which `ruby` is on PATH, `RUBY_HOME` permissions, config validity, the env file mode, the secret store, that the model key and channel tokens resolve, the Docker sandbox (when commands are allowed) and the service, with a fix for each problem. It warns when an OpenAI-compatible server would be sent `ANTHROPIC_API_KEY`.
+- `ruby init` offers `ruby setup` on a terminal (`--defaults` keeps the old behavior).
+- `setInEnvFile` (config) and `restartService` (service).
+
 ### Phase 6: hardening
 - Encrypted secret store: `ruby secrets list|set|rm|import-env|keygen`. `<RUBY_HOME>/secrets` is AES-256-GCM under a scrypt-derived key, unlocked by `RUBY_SECRETS_KEY_FILE` or `RUBY_SECRETS_PASSPHRASE`. Environment variables win over stored secrets; values come from stdin, never argv. Backups include the store, not its key.
 - Docker sandbox never runs as root. New `sandbox.user` (`uid:gid`, uid 0 refused); unset, it is the host uid, or the workspace owner when Ruby runs as root, else 65534:65534. Startup fails with a remedy if that user cannot write the workspace.

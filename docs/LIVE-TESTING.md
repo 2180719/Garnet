@@ -9,7 +9,7 @@ Rules while you work: report what you ran and saw, not what you expect. Never pa
 - Linux host (systemd user services) or macOS (launchd). Node.js 22.18 or newer (`node -v`).
 - Docker, if you test the sandbox. Pull the image first: `docker pull debian:stable-slim` (the default `sandbox.image`; the sandbox does not pull).
 - A regular, non-root user for the service. Run `loginctl enable-linger <user>` yourself if the service must survive logout (Ruby only prints the hint).
-- `git clone https://github.com/2180719/Ruby && cd Ruby && npm install`.
+- Ruby itself: `curl -fsSL https://raw.githubusercontent.com/2180719/Ruby/main/install.sh | sh` (installs to `~/.local/share/ruby` with a `ruby` command in `~/.local/bin`), or `git clone https://github.com/2180719/Ruby && cd Ruby && npm install` and use `npm run ruby --` in place of `ruby`.
 - Accounts and credentials, with the names Ruby reads by default (all configurable in `config.json`):
 
 | Needed for | Name | Config field |
@@ -28,12 +28,13 @@ Names resolve from the process environment first, then from the encrypted store.
 All commands run from the repo root as the non-root service user. Every command below appears in `npm run ruby -- help`.
 
 ```sh
-npm run ruby -- init                       # creates ~/.ruby and config.json
+ruby setup                                 # model, key, persona, channels, service, pairing
+ruby doctor                                # checks the install and setup
 npm run ruby -- config explain             # every setting
 npm run ruby -- chat --fake                # offline sanity check
 ```
 
-Put the provider key in `~/.ruby/env` first (`chmod 600`), then edit `~/.ruby/config.json` to enable what you will test. Check it:
+Or by hand: `npm run ruby -- init --defaults`, put the provider key in `~/.ruby/env` (`chmod 600`), then edit `~/.ruby/config.json` to enable what you will test. Check it:
 
 ```sh
 npm run ruby -- config check
@@ -68,7 +69,19 @@ A running service reads the secret store once. Restart it after `ruby secrets` c
 
 ## Checklist
 
-Mark each item pass or fail with a redacted log excerpt. A reasonable order is: models, one channel, restart recovery, API, dashboard, the rest.
+Mark each item pass or fail with a redacted log excerpt. A reasonable order is: install and setup, models, one channel, restart recovery, API, dashboard, the rest.
+
+### 0. Install and setup
+
+Only tested offline and in a scratch `HOME` on one Linux container (no systemd user bus, root user). Test on a real host as a regular user, on Linux and macOS.
+
+1. Run the `curl … | sh` one-liner as a non-root user with Node 22.18+. Expect the shim in `~/.local/bin`, a PATH hint if that is not on PATH, and `ruby setup` to start on the terminal (stdin comes from `/dev/tty` even though the script was piped). Run it again: expect "Already up to date" and no prompts about an existing setup.
+2. Without Node.js, and with Node 20: expect a clear message with install options and exit 1.
+3. With the Ruby language installed (`/usr/bin/ruby`): expect the installer to warn about shadowing and never to overwrite it; `--name rubyagent` works; `ruby doctor` reports which `ruby` is on PATH.
+4. `ruby setup` on a real terminal: arrow-free numbered menus, hidden key input (dots only), Ctrl+C at any question saves nothing. Accept the live checks: a real Anthropic key (expect "key accepted"), a wrong key (expect "rejected", and the offer to re-enter), an OpenRouter key (uses `GET /api/v1/key`; confirm that endpoint still exists), a local Ollama (`/v1/models`), a Telegram token (expect the bot's @username), a Discord token. The key must not appear on screen, in `config.json` or in shell history.
+5. Let setup install the service, then pair through it: message the bot, press Enter at the prompt, approve the code. Expect the greeting in the chat. On macOS check that `launchctl kickstart -k` restarts the agent when setup offers a restart.
+6. Re-run `ruby setup`: the menu shows the current values; changing only the persona keeps everything else in `config.json` byte-for-byte apart from `persona`.
+7. `ruby doctor` on the finished host: expect no failures; stop Docker with `permissions.exec` at `ask` and expect a sandbox failure with a fix.
 
 ### 1. Anthropic model
 
