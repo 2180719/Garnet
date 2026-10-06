@@ -54,6 +54,13 @@ export type AgentDeps = {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 };
 
+export type CompactionOutcome = {
+  status: 'compacted' | 'nothing_to_compact' | 'failed';
+  /** Usage of the summarizing call; null when no call was made or the provider did not report it. */
+  usage: Usage | null;
+  modelCalls: number;
+};
+
 export type RunOptions = {
   signal?: AbortSignal;
   onEvent?: (event: RuntimeEvent) => void;
@@ -189,9 +196,9 @@ export class Agent {
   }
 
   /**
-   * Keep-tail compaction between tasks (never mid tool round): folds older
-   * turns into a summary, then re-freezes the system prompt and tool set so
-   * memory and tool changes take effect. Failures are logged as events and never block the task.
+   * Keep-tail compaction between tasks (never mid tool round), run when the
+   * previous request crossed `compactAtTokens`. Failures are logged as events
+   * and never block the task.
    */
   private async maybeCompact(
     sessionId: string,
@@ -207,21 +214,40 @@ export class Agent {
     const u = lastUsage.usage;
     const contextTokens = (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
     if (contextTokens < threshold) return;
-    const plan = planCompaction(events, this.deps.keepTurns ?? 2);
-    if (!plan) return;
+    const outcome = await this.compactNow(sessionId, signal, emit);
+    if (outcome.modelCalls) task.modelCalls += outcome.modelCalls;
+    if (outcome.usage) task.usage = addUsage(task.usage, outcome.usage);
+  }
+
+  /**
+   * Compacts a session now, regardless of `compactAtTokens` (the owner asked,
+   * for example with `/compact`). Must not run while a task is running on the
+   * same session. `nothing_to_compact` means there are no turns older than the
+   * kept tail that a checkpoint does not already cover.
+   */
+  async compact(sessionId: string, options: { signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void } = {}): Promise<CompactionOutcome> {
+    return this.compactNow(sessionId, options.signal ?? new AbortController().signal, options.onEvent ?? (() => {}));
+  }
+
+  /**
+   * Folds older turns into a summary (keep-tail), records a checkpoint, then
+   * re-freezes the system prompt and tool set so memory and tool changes take effect.
+   */
+  private async compactNow(sessionId: string, signal: AbortSignal, emit: (e: RuntimeEvent) => void): Promise<CompactionOutcome> {
+    const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2);
+    if (!plan) return { status: 'nothing_to_compact', usage: null, modelCalls: 0 };
     emit({ type: 'compacting' });
     // Summarize with the current frozen prefix so the request can hit the cache.
     const { system, tools } = this.frozenFor(sessionId);
     const turn = await this.callModel({ system, messages: plan.messages, tools, maxOutputTokens: this.deps.maxOutputTokens, signal }, () => {});
-    task.modelCalls += 1;
-    if (turn.usage) task.usage = addUsage(task.usage, turn.usage);
     const summary = turn.kind === 'done' ? extractSummary(textOf(turn.message)) : '';
     if (turn.kind === 'error' || !summary) {
       this.deps.store.append(sessionId, { type: 'model_error', category: turn.kind === 'error' ? turn.category : 'invalid_input', message: 'Compaction failed; continuing with full history.' });
-      return;
+      return { status: 'failed', usage: turn.usage, modelCalls: 1 };
     }
     this.deps.store.append(sessionId, { type: 'checkpoint', summary, throughSeq: plan.throughSeq, usage: turn.usage });
     this.freeze(sessionId, this.freshSystem());
+    return { status: 'compacted', usage: turn.usage, modelCalls: 1 };
   }
 
   private budgetProblem(task: TaskRecord, started: number): string | null {
