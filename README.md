@@ -4,7 +4,7 @@ A persistent personal agent you can actually read.
 
 Ruby runs on your own VPS or computer and is designed to be reached through Telegram, Signal, Discord, an opt-in dashboard, or a key-gated API. It is small enough to audit, secure by default, and careful with tokens.
 
-> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord, a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
+> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), web fetch and search with prompt-injection containment, bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord, a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
 
 ## Install
 
@@ -81,6 +81,12 @@ Point any OpenAI-compatible client at `http://127.0.0.1:7311/v1` with that key. 
 `ruby dashboard` turns on the web dashboard and prints a login link. The link works once and only for 15 minutes: the dashboard swaps it for a session key that stays in that browser tab.
 
 Ruby keeps its data in `~/.ruby` (override with `RUBY_HOME`). Tools can only touch `~/.ruby/workspace`; writes ask for your approval by default. A `workspace` setting that would contain `~/.ruby` itself is refused, since tools could then rewrite Ruby's config and secrets.
+
+### Web access and untrusted content
+
+`web_fetch` reads a page as Markdown and `web_search` searches the web. Both ask first by default (`permissions.net.fetch`); list hosts you trust in `web.allowHosts` to skip the question for them, or set `net.fetch` to `allow`. They only reach public internet addresses: private, loopback, link-local and cloud-metadata addresses are refused, after DNS and on every redirect. Search uses DuckDuckGo's HTML page by default, which needs no key but is unofficial and may be rate limited; `web.search.backend` can be `searxng` (your instance), `brave` or `tavily` (keys by secret name, e.g. `ruby secrets set BRAVE_API_KEY`).
+
+Web pages can carry instructions meant for Ruby (prompt injection). Once a conversation has read a page or search results, Ruby asks before any action that could do harm or leak data, even ones you set to `allow`: writing files, running commands, sending messages, changing memory, skills or schedules, and fetching a URL that neither you wrote nor a page contained word for word. The approval says why, `ruby chat` shows `⚠ untrusted content read`, and the dashboard marks the session. It lasts until `/new` starts a fresh conversation. `containment` in config changes which actions this covers.
 
 ## Develop
 

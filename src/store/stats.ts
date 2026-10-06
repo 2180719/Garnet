@@ -78,7 +78,8 @@ export class StatsStore {
       .prepare(
         `SELECT s.id, s.title, s.created_at, s.updated_at, ${conv} AS conversation,
                 EXISTS (SELECT 1 FROM conversations WHERE session_id = s.id) AS bound,
-                (SELECT COUNT(*) FROM events WHERE session_id = s.id) AS events
+                (SELECT COUNT(*) FROM events WHERE session_id = s.id) AS events,
+                EXISTS (SELECT 1 FROM events WHERE session_id = s.id AND type = 'tainted') AS tainted
          FROM sessions s ${where} ORDER BY s.updated_at DESC, s.id LIMIT ? OFFSET ?`,
       )
       .all(...args, opts.limit, opts.offset) as Record<string, string | number | null>[];
@@ -100,6 +101,7 @@ export class StatsStore {
         conversation: (r.conversation as string | null) ?? null,
         bound: r.bound === 1,
         events: r.events as number,
+        tainted: r.tainted === 1,
         tasks: ts.length,
         taskStatus: ts.at(-1)?.status ?? null,
         usage,
@@ -133,6 +135,8 @@ export type SessionSummary = {
   /** False for a session replaced by `/new` or unlinked. */
   bound: boolean;
   events: number;
+  /** The session has read untrusted content (a `tainted` event), so risky actions ask first. */
+  tainted: boolean;
   tasks: number;
   taskStatus: string | null;
   usage: Usage;

@@ -1,6 +1,13 @@
 import { api, enc } from '../api.js';
 import { busy, empty, errorBox, fmtDate, h, ago, pageHead, pill, toast } from '../ui.js';
 
+/** The operation, then (when present) the untrusted-content warning the runtime appended, as a banner. */
+function summary(text) {
+  const at = text.indexOf('\n⚠ ');
+  if (at === -1) return [h('p', null, text)];
+  return [h('p', null, text.slice(0, at)), h('div', { class: 'banner warn', role: 'note' }, text.slice(at + 1))];
+}
+
 function card(a, reload) {
   const result = h('div', { role: 'status' });
   const decide = (verb) => async (e) => {
@@ -14,7 +21,7 @@ function card(a, reload) {
   };
   return h('article', { class: 'card stack' },
     h('div', { class: 'item' }, h('h3', null, a.tool), h('div', { class: 'badges' }, pill(a.capability, 'accent'), h('code', null, a.code))),
-    h('p', null, a.summary),
+    ...summary(a.summary),
     h('dl', { class: 'kv' }, h('dt', null, 'Requested'), h('dd', null, `${fmtDate(a.createdAt)} (${ago(a.createdAt)})`),
       h('dt', null, 'Expires'), h('dd', null, `${fmtDate(a.expiresAt)} (${ago(a.expiresAt)})`), h('dt', null, 'Session'), h('dd', { class: 'mono small' }, a.sessionId)),
     h('div', { class: 'row' }, h('button', { class: 'btn btn-primary', type: 'button', onclick: decide('approve') }, 'Approve'),
