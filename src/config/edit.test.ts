@@ -38,6 +38,10 @@ test('unset returns a field to its default', () => {
 
 test('GARNET_* variables nothing reads are reported; known ones are not', () => {
   assert.deepEqual(unknownGarnetEnv({ GARNET_HOME: '/x', GARNET_NODE: 'n', GARNET_MODEL: 'm', PATH: '/bin' }), ['GARNET_MODEL']);
+  // The calendar connector's default secret name, and any secret name the config points at (an ssh passphrase), are read.
+  const env = { GARNET_CALENDAR_URL: 'https://cal.example/x.ics', GARNET_SSH_KEY_PASSPHRASE: 'p', GARNET_MODEL: 'm' };
+  assert.deepEqual(unknownGarnetEnv(env), ['GARNET_MODEL', 'GARNET_SSH_KEY_PASSPHRASE']);
+  assert.deepEqual(unknownGarnetEnv(env, ['GARNET_SSH_KEY_PASSPHRASE']), ['GARNET_MODEL']);
 });
 
 test('every setting in the schema is described, so `garnet config explain` covers it', () => {

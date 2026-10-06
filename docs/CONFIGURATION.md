@@ -45,6 +45,8 @@ Classes: **secret** (stays in the environment, `<home>/env` or the encrypted sto
 | `TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN` | secret | `channels.telegram.tokenEnv`, `channels.discord.tokenEnv` | Names configurable. |
 | `BRAVE_API_KEY`, `TAVILY_API_KEY` | secret | `web.search.apiKeyEnv` | Name configurable. |
 | Any name in `media.transcription.apiKeyEnv` | secret | media | Name configurable. |
+| Any name in `sandbox.ssh.passphraseEnv` | secret | `main.ts` `sandboxOptions` (ssh backend only) | Passphrase of the ssh key file. Name configurable. |
+| `GITHUB_TOKEN`, `GARNET_CALENDAR_URL` | secret | `connectors.github.tokenEnv`, `connectors.calendar.urlEnv` | Read only when that connector is on somewhere. Names configurable; doctor does not flag a `GARNET_*` name the config points at as unread. |
 | `PATH` | system | doctor, sandbox, media command lookup, migrate | Passed to local sandbox and media child processes; never settings. |
 | `HOME`, `LANG`, `LC_ALL`, `TMPDIR` | system | local sandbox, media commands | Forwarded to child processes in a fixed, minimal environment. |
 | `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY`, `XDG_RUNTIME_DIR` | system | `sandbox/docker.ts` | Forwarded to the docker client only, so it can reach its daemon. The container never sees them. Sandbox choices (image, network, memory) are config under `sandbox.*`. |

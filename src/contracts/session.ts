@@ -31,9 +31,13 @@ export type SessionEventPayload =
    * The system prompt (memory snapshot, skills index) and tool schemas frozen
    * for this session. Kept stable for prompt caching and prefix-bound blocks;
    * refreshed only at compaction. `tools` is absent in sessions frozen before
-   * tool sets were frozen.
+   * tool sets were frozen. `extras` is the set of optional built-ins (skills,
+   * connectors) resolved for this session from config (global plus its
+   * channel or conversation scope); it is chosen once and kept for the
+   * session's life, compaction included. Absent in sessions frozen before
+   * built-ins existed, or by a runtime that does not select them.
    */
-  | { type: 'context_frozen'; system: string; tools?: ToolSchema[] }
+  | { type: 'context_frozen'; system: string; tools?: ToolSchema[]; extras?: ActiveExtras }
   /**
    * Untrusted content entered the model-facing context. From here on the
    * session is tainted: policy escalates consequential capabilities from
@@ -45,6 +49,9 @@ export type SessionEventPayload =
   | { type: 'tainted'; source: string; callId?: string; inherited?: boolean }
   /** Compaction: events up to and including `throughSeq` are represented by `summary`. */
   | { type: 'checkpoint'; summary: string; throughSeq: number; usage: Usage };
+
+/** Optional built-in skills and connectors active in one session (names, sorted). */
+export type ActiveExtras = { skills: string[]; connectors: string[] };
 
 export type SessionEvent = SessionEventPayload & {
   sessionId: string;

@@ -132,7 +132,7 @@ Task states: `running`, `waiting_for_user`, `waiting_for_approval`, `completed`,
 
 - **Memory files** per namespace: `MEMORY.md` (agent notes) and `USER.md` (owner profile), each with a hard character cap (defaults 2,200 and 1,400). They are injected as a frozen snapshot at session start, so mid-session writes go to disk without breaking the cache. When full, the agent must consolidate or replace entries. Every change is versioned and can be inspected, edited and rolled back from the CLI or dashboard.
 - **Session search (not built yet):** FTS5 over past sessions, retrieved on demand through a tool rather than injected.
-- **Skills:** `SKILL.md` folders in the agentskills.io format. Only the index (name plus one line) is in the prompt; bodies load on demand. The agent may create skills; each records provenance (`agent`/`user`), usage count and last-used date. A user-edited skill is locked: the agent can only propose a diff for approval. Stale or unused agent skills are surfaced for archival, never silently deleted. Third-party skills are never fetched automatically.
+- **Skills:** `SKILL.md` folders in the agentskills.io format. Only the index (name plus one line) is in the prompt; bodies load on demand. The agent may create skills; each records provenance (`agent`/`user`), usage count and last-used date. A user-edited skill is locked: the agent can only propose a diff for approval. Stale or unused agent skills are surfaced for archival, never silently deleted. Third-party skills are never fetched automatically. A few optional skills ship with Garnet (read-only, off until enabled per scope in config).
 
 ## Policy and sandboxes
 
@@ -174,6 +174,7 @@ Static, no tracking, no cookies, no third-party requests, no frameworks; fast on
 | 4. Scheduler, chat approvals, Signal, OpenAI-compatible models, Docker sandbox | Done |
 | 5. Dashboard and website | Done: website, demo endpoint, dashboard (all pages including sessions, logs and routing, achievements, easter eggs). Keyboard navigation not yet checked by hand |
 | 6. Release hardening | Discord, importer, backup/restore, encrypted secret store, failure-injection tests, one-line installer, `garnet setup` and `garnet doctor` done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)) |
+| Built-ins | Optional built-in skills and connectors (calendar ICS, GitHub, weather), off by default, on globally or per channel/chat/route, fixed per session: [docs/CONNECTORS.md](docs/CONNECTORS.md). Email waits for the MCP client |
 | Next | Missing features ranked from research into OpenClaw, Hermes and the wider field: [docs/FEATURE-GAPS.md](docs/FEATURE-GAPS.md) |
 
 ## Build phases

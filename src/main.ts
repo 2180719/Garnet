@@ -2,10 +2,11 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
-import { loadConfig, redact, garnetHome, type Paths, type GarnetConfig } from './config/index.ts';
-import { assistantName, projectInstructionsSection } from './context/index.ts';
-import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
-import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
+import { activeNames, BUILTIN_SKILLS, CONNECTORS, enabledAnywhere, loadConfig, redact, garnetHome, type ConnectorName, type Paths, type GarnetConfig } from './config/index.ts';
+import { connectorTools } from './connectors/index.ts';
+import { assistantName, frozenContext, projectInstructionsSection } from './context/index.ts';
+import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type ActiveExtras, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
+import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, scopesForConversation, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel, onboardingScript } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
@@ -15,7 +16,7 @@ import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { ONBOARDING_TITLE, bootstrapPrompt, profileTool } from './onboarding/index.ts';
-import { SkillStore, skillTools } from './skills/index.ts';
+import { BuiltinSkills, SkillStore, skillTools } from './skills/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, requiresIsolation, type Sandbox, type SandboxOptions } from './sandbox/index.ts';
@@ -62,6 +63,15 @@ export type Garnet = {
   makeAgent: (policy: Policy, budget: Budget) => Agent;
   memory: MemoryStore;
   skills: SkillStore;
+  /** Optional skills shipped with Garnet (read-only); which are on comes from config `skills`. */
+  builtinSkills: BuiltinSkills;
+  /** Connectors whose tool is registered (on globally or in some scope, and net.fetch not denied). */
+  connectors: ConnectorName[];
+  /**
+   * The optional built-ins a session uses: as recorded when its context was
+   * first frozen, else what config gives its scopes now (see `extrasForScopes`).
+   */
+  extrasFor: (sessionId: string) => ActiveExtras;
   /** Inbound file handling; null when `media.enabled` is false. */
   media: MediaIngest | null;
   /** The attachment files under <home>/media; null when `media.enabled` is false. */
@@ -128,6 +138,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   const keyStore = new KeyStore(db);
   const memory = new MemoryStore({ root: join(paths.home, 'memory'), limits: { memory: config.memory.memoryChars, user: config.memory.userChars } });
   const skills = new SkillStore({ root: join(paths.home, 'skills') });
+  const builtinSkills = new BuiltinSkills();
   const artifacts = new ArtifactStore(join(paths.home, 'artifacts'));
   const gatewayStore = new GatewayStore(db);
   const jobStore = new JobStore(db);
@@ -144,7 +155,13 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     },
   };
   const registry = new ToolRegistry();
-  for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
+  // A session's optional built-ins: chosen from config by its conversation's scopes when its context is first
+  // frozen (see Agent.selectExtras), then read back from that record, so they never change mid-session.
+  const connectorOf = new Map<string, ConnectorName>();
+  const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(sessionId) ?? null, config.routes), [...connectorOf.values()]);
+  const extrasFor = (sessionId: string): ActiveExtras => frozenContext(store.events(sessionId))?.extras ?? selectExtras(sessionId);
+  const builtinSkillFor = (name: string, sessionId: string) => (extrasFor(sessionId).skills.includes(name) ? builtinSkills.get(name) : undefined);
+  for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills, { builtin: builtinSkillFor }), readArtifactTool(artifacts)]) registry.register(tool);
   // Like the other optional tools, set_profile exists only when its permission is not deny (the tool set is fixed per session).
   const onboarding = Boolean(options.onboarding) && config.permissions['memory.write'] !== 'deny';
   if (onboarding) registry.register(profileTool(paths.home));
@@ -203,6 +220,8 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   }
   // web_fetch and web_search exist only when net.fetch is not denied. They run in-process (the sandbox has no network).
   const trustedEndpoints = registerWebTools(registry, config, secret);
+  // Connectors: a tool each, registered when the connector is on anywhere; a session only gets the ones on for its scope.
+  for (const { connector, tool } of registerConnectors(registry, config, secret, ownerTimeZone(config))) connectorOf.set(tool, connector);
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
   // The demo provider has no real model: the wake-up conversation plays its offline script instead of echoing.
@@ -246,14 +265,17 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       recordSpend: (usage) => stats.recordSpend(usage),
       workspace: paths.workspace,
       persona: config.persona,
-      promptSections: (ns, sessionId) => [
+      promptSections: (ns, sessionId, extras) => [
         projectInstructionsSection(paths.workspace),
         memory.snapshot(ns),
         skills.index(),
+        builtinSkills.index(extras.skills, (n) => skills.has(n)),
         importedArchiveSection(paths.workspace),
         // The wake-up instructions belong to the onboarding session only, never to other sessions.
         onboarding && store.getSession(sessionId)?.title === ONBOARDING_TITLE ? bootstrapPrompt() : '',
       ],
+      selectExtras,
+      connectorOfTool: (name) => connectorOf.get(name),
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       maxOutputTokens: config.model.maxOutputTokens,
@@ -286,6 +308,9 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     sandbox,
     memory,
     skills,
+    builtinSkills,
+    connectors: [...new Set(connectorOf.values())].sort(),
+    extrasFor,
     media,
     mediaStore,
     agent,
@@ -311,6 +336,34 @@ function registerWebTools(registry: ToolRegistry, config: GarnetConfig, secret: 
   const backend = searchBackend({ backend: w.search.backend, searxngUrl: w.search.searxngUrl, apiKeyEnv: w.search.apiKeyEnv }, secret);
   registry.register(webSearchTool(backend, fetcher, { maxResults: w.search.maxResults, timeoutMs }));
   return [backend.endpoint];
+}
+
+/**
+ * The optional built-ins on for a conversation with these scopes (broadest
+ * first; see `scopesForConversation`): config `skills` and `connectors`,
+ * global list then per-scope overrides. Connectors are limited to those
+ * `available` (registered in this process).
+ */
+export function extrasForScopes(config: GarnetConfig, scopes: readonly string[], available: readonly string[]): ActiveExtras {
+  return {
+    skills: activeNames(BUILTIN_SKILLS, config.skills, scopes),
+    connectors: activeNames(CONNECTORS, config.connectors, scopes).filter((c) => available.includes(c)),
+  };
+}
+
+/**
+ * Registers the tool of every connector that is on anywhere (globally or in a scope). Like web_fetch, they need
+ * net.fetch: with it denied none is registered (doctor says so). Credentials are resolved by name at call time.
+ */
+function registerConnectors(registry: ToolRegistry, config: GarnetConfig, secret: SecretLookup, timeZone: string): { connector: ConnectorName; tool: string }[] {
+  const names = enabledAnywhere(config.connectors) as ConnectorName[];
+  if (!names.length || config.permissions['net.fetch'] === 'deny') return [];
+  const w = config.web.fetch;
+  const fetcher = new WebFetcher({ maxBytes: w.maxBytes, timeoutMs: w.timeoutSeconds * 1000, maxRedirects: w.maxRedirects });
+  return connectorTools(names, config.connectors, { fetcher, secret, timeZone }).map(({ connector, tool }) => {
+    registry.register(tool);
+    return { connector, tool: tool.name };
+  });
 }
 
 /** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */

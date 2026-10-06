@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { GarnetConfig } from './schema.ts';
+import { enabledAnywhere } from './extensions.ts';
 
 /** Environment variables Garnet reads. Before the rename each had a `RUBY_` twin, which is still read when the `GARNET_` one is unset. */
 const LEGACY_ENV_SUFFIXES = ['HOME', 'SECRETS_KEY_FILE', 'SECRETS_PASSPHRASE', 'LIVE_TESTS', 'NODE', 'COMMAND_NAME'] as const;
@@ -24,11 +25,16 @@ export function deprecatedEnvVars(env: NodeJS.ProcessEnv): { old: string; name: 
 const KNOWN_GARNET_ENV = new Set([
   ...LEGACY_ENV_SUFFIXES.map((s) => `GARNET_${s}`),
   'GARNET_INSTALL_DIR', 'GARNET_BIN_DIR', 'GARNET_BIN_NAME', 'GARNET_REPO', 'GARNET_REF', // install.sh only
+  'GARNET_CALENDAR_URL', // default secret name of connectors.calendar.urlEnv
 ]);
 
-/** `GARNET_*` variables that are set but that nothing reads (a setting someone tried to put in the environment). */
-export function unknownGarnetEnv(env: NodeJS.ProcessEnv): string[] {
-  return Object.keys(env).filter((k) => k.startsWith('GARNET_') && !KNOWN_GARNET_ENV.has(k)).sort();
+/**
+ * `GARNET_*` variables that are set but that nothing reads (a setting someone tried to put in the environment).
+ * `secretNames` are the names the config points at (`secretNames(config)`): a secret may be called `GARNET_SOMETHING`.
+ */
+export function unknownGarnetEnv(env: NodeJS.ProcessEnv, secretNames: readonly string[] = []): string[] {
+  const named = new Set(secretNames);
+  return Object.keys(env).filter((k) => k.startsWith('GARNET_') && !KNOWN_GARNET_ENV.has(k) && !named.has(k)).sort();
 }
 
 const LINE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
@@ -138,5 +144,17 @@ function quoteEnv(value: string): string {
 export function secretNames(config: GarnetConfig): string[] {
   const transcription = config.media.transcription.backend === 'openai-compatible' ? config.media.transcription.apiKeyEnv : undefined;
   const sshPassphrase = config.sandbox.backend === 'ssh' ? config.sandbox.ssh.passphraseEnv : undefined;
-  return [...new Set([config.model.apiKeyEnv, config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : []), ...(sshPassphrase ? [sshPassphrase] : [])])];
+  // Connectors that are on anywhere (globally or in a scope) need their credentials.
+  const on = new Set(enabledAnywhere(config.connectors));
+  const connectors = [...(on.has('github') ? [config.connectors.github.tokenEnv] : []), ...(on.has('calendar') ? [config.connectors.calendar.urlEnv] : [])];
+  return [
+    ...new Set([
+      config.model.apiKeyEnv,
+      config.channels.telegram.tokenEnv,
+      config.channels.discord.tokenEnv,
+      ...(transcription ? [transcription] : []),
+      ...(sshPassphrase ? [sshPassphrase] : []),
+      ...connectors,
+    ]),
+  ];
 }

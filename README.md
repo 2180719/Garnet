@@ -119,6 +119,19 @@ Garnet shows dollar cost beside token usage (terminal turn summary and `/usage`,
 
 Web pages can carry instructions meant for Garnet (prompt injection). Once a conversation has read a page or search results, Garnet asks before any action that could do harm or leak data, even ones you set to `allow`: writing files, running commands, sending messages, changing memory, skills or schedules, and fetching a URL that neither you wrote nor a page contained word for word. The approval says why, `garnet chat` shows `⚠ untrusted content read`, and the dashboard marks the session. It lasts until `/new` starts a fresh conversation. `containment` in config changes which actions this covers.
 
+### Built-in skills and connectors (optional, off by default)
+
+Garnet ships three skills (`daily-briefing`, `web-research`, `github-triage`) and three connectors: `calendar` (your calendar's private ICS feed, read-only), `github` (issues, pull requests, notifications; comments only if you allow them) and `weather` (Open-Meteo, keyless). Nothing is on until you enable it, everywhere or for one channel, chat, API key, job or shared conversation:
+
+```sh
+garnet connectors enable calendar --channel telegram
+garnet secrets set GARNET_CALENDAR_URL
+garnet skills enable daily-briefing --channel telegram
+garnet skills effective --channel telegram
+```
+
+Connectors go through the same permissions and untrusted-content rules as web access, and config only names their secrets. A conversation keeps the set it started with; restart the service and send `/new` to pick up changes. Details and setup for each: [docs/CONNECTORS.md](docs/CONNECTORS.md).
+
 ## Develop
 
 ```sh

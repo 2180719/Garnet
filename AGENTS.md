@@ -29,7 +29,8 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/models/` | Model adapters: `fake` (tests), `anthropic`, and `openai-compatible` (OpenRouter, local servers). |
 | `src/context/` | Frozen per-session system prompt, model-facing history derived from events, keep-tail compaction planning. |
 | `src/memory/` | Bounded `MEMORY.md`/`USER.md` per namespace with versioning, and the `memory` tool. |
-| `src/skills/` | `SKILL.md` skills (agentskills.io format) with provenance, owner-edit locks and proposals. |
+| `src/skills/` | `SKILL.md` skills (agentskills.io format) with provenance, owner-edit locks and proposals, plus optional built-in skills (`builtin/`). |
+| `src/connectors/` | Optional built-in connectors (calendar ICS feed, GitHub, weather): one policy-gated tool each on the SSRF-guarded client, credentials by secret name. Off by default; on globally or per channel/chat/route ([docs/CONNECTORS.md](docs/CONNECTORS.md)). |
 | `src/runtime/` | Agent loop, budgets, cancellation, retries, per-session lanes, session taint tracking. |
 | `src/gateway/` | Identity and pairing, chat approvals (`/approve`, `/deny`), conversation routing, durable inbox/outbox delivery, restart recovery, API keys, HTTP API. |
 | `src/channels/` | Messaging adapters (Telegram, Signal via signal-cli, Discord). Normalize a platform; no routing or persistence. |
@@ -57,7 +58,7 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 - Erasable TypeScript only (no `enum`, no constructor parameter properties, no namespaces) because Node strips types at runtime.
 - Tests are offline. Live provider tests must be opt-in (`GARNET_LIVE_TESTS=1`).
 - Never put secrets in config, prompts, logs or tool output. Config stores the *name* of an environment variable or stored secret; resolve it with `garnet.secret(name)`, never `env[name]`.
-- The event log is append-only. Never rewrite history the model has seen; derive cleaned views instead. The system prompt and tool set stay fixed for a session (prompt caching and signed thinking depend on it); they change only at compaction.
+- The event log is append-only. Never rewrite history the model has seen; derive cleaned views instead. The system prompt and tool set stay fixed for a session (prompt caching and signed thinking depend on it); they change only at compaction. The optional built-ins a session uses (`skills`, `connectors` in config) are chosen once when it starts and kept even through compaction.
 - Report honestly: say what you verified and what you did not.
 
 ## Self-modification

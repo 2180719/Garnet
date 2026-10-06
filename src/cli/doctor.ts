@@ -6,7 +6,8 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
-import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, unknownGarnetEnv, type GarnetConfig } from '../config/index.ts';
+import { CONFIG_VERSION, enabledAnywhere, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, secretNames, unknownGarnetEnv, type ConnectorName, type GarnetConfig } from '../config/index.ts';
+import { CONNECTOR_INFO } from '../connectors/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
 import { sandboxOptions } from '../main.ts';
@@ -78,14 +79,19 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
 
   // Deprecated names: RUBY_* variables and a ~/.ruby home from before the rename
   for (const v of deprecatedEnvVars(d.env)) add('env', 'warn', `${v.old} is deprecated, rename to ${v.name}`, `Set ${v.name} instead (a line in ${join(d.home, 'env')}, your shell profile or the service environment).`);
-  // Settings live in config.json: a GARNET_* variable nothing reads is ignored, so say so rather than let it look effective.
-  for (const name of unknownGarnetEnv(d.env)) add('env', 'warn', `${name} is set but Garnet does not read it (settings live in config.json, not the environment)`, `Remove it, and use \`garnet config set <path> <value>\` for the setting (\`garnet config explain\` lists them).`);
   if (d.home === join(d.userHome, '.ruby') && !envVar(d.env, 'GARNET_HOME')) add('home', 'warn', `${d.home} is a legacy data directory from before the rename`, `Stop Garnet, then run: mv ${d.home} ${join(d.userHome, '.garnet')}`);
 
   for (const s of legacyServices({ platform: d.platform, userHome: d.userHome })) add('service', 'warn', `A legacy service from before the rename is still installed (${s.path})`, `Run \`garnet service install\` to replace it, or remove ${s.path} by hand.`);
 
+  // Settings live in config.json: a GARNET_* variable nothing reads is ignored, so say so rather than let it look effective.
+  // A secret name the config points at (a connector or ssh passphrase may be called GARNET_*) is read, so it is not flagged.
+  const unread = (named: readonly string[]) => {
+    for (const name of unknownGarnetEnv(d.env, named)) add('env', 'warn', `${name} is set but Garnet does not read it (settings live in config.json, not the environment)`, `Remove it, and use \`garnet config set <path> <value>\` for the setting (\`garnet config explain\` lists them).`);
+  };
+
   // GARNET_HOME
   if (!existsSync(d.home)) {
+    unread([]);
     add('home', 'fail', `${d.home} does not exist yet`, 'Run `garnet setup`.');
     return out;
   }
@@ -111,6 +117,7 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       add('config', 'fail', `${file}: ${errorMessage(e)}`, 'Run `garnet setup` to fix it interactively, or edit the file (`garnet config explain` lists every setting).');
     }
   }
+  unread(config ? [...secretNames(config), ...(config.web.search.apiKeyEnv ? [config.web.search.apiKeyEnv] : [])] : []);
 
   // Env file and secret store
   const envFile = join(d.home, 'env');
@@ -191,6 +198,48 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     else add('web', 'ok', `web_search · ${web.backend}${web.backend === 'searxng' ? ` at ${web.searxngUrl}` : ' (keyless, unofficial; may be rate limited)'}`);
     if (config.permissions['net.fetch'] !== 'deny' && !config.containment.enabled) {
       add('web', 'warn', 'Untrusted-content containment is off: a web page could steer Garnet into actions you set to allow', 'Set containment.enabled = true in config.json.');
+    }
+
+    // Optional built-ins: skills and connectors (all off by default)
+    const onIn = (kind: 'skills' | 'connectors', name: string): string => {
+      const t = config[kind];
+      const scopes = Object.entries(t.channels).filter(([, o]) => o.enable.includes(name)).map(([s]) => s);
+      return [...(t.enabled.includes(name) ? ['global'] : []), ...scopes].join(', ');
+    };
+    const skillsOn = enabledAnywhere(config.skills);
+    const connectorsOn = enabledAnywhere(config.connectors) as ConnectorName[];
+    if (!skillsOn.length && !connectorsOn.length) add('builtins', 'info', 'No built-in skills or connectors enabled (all optional)', 'See `garnet skills builtin` and `garnet connectors list`.');
+    for (const name of skillsOn) {
+      const local = existsSync(join(d.home, 'skills', name, 'SKILL.md'));
+      if (local) add('skills', 'warn', `built-in skill ${name} is on (${onIn('skills', name)}) but a skill of the same name in ${join(d.home, 'skills')} takes precedence`, `Rename your own skill folder ${join(d.home, 'skills', name)} to use the built-in, or disable the built-in (\`garnet skills disable ${name}\`).`);
+      else add('skills', 'ok', `built-in skill ${name} · on (${onIn('skills', name)})`);
+    }
+    for (const name of connectorsOn) {
+      const info = CONNECTOR_INFO[name];
+      const label = `${name} · on (${onIn('connectors', name)})`;
+      if (config.permissions['net.fetch'] === 'deny') {
+        add('connector', 'warn', `${label}, but permissions.net.fetch is deny, so it is not offered`, 'Set permissions.net.fetch to ask (or allow) in config.json, or disable the connector.');
+        continue;
+      }
+      const secrets = info.secrets(config.connectors).map((s) => ({ ...s, loc: where(s.name) }));
+      const missing = secrets.filter((s) => !s.loc);
+      const required = missing.find((s) => s.required);
+      if (required) add('connector', 'fail', `${label}, but ${required.name} (${required.why}) is not set`, missingFix(required.name));
+      else if (missing.length) add('connector', 'info', `${label} · ${missing.map((s) => `${s.name} not set (${s.why})`).join('; ')}`, missingFix(missing[0]!.name));
+      else add('connector', 'ok', `${label}${secrets.length ? ` · ${secrets.map((s) => `${s.name} (${s.loc})`).join(', ')}` : ''}`);
+      if (info.needs(config.connectors).includes('message.send') && config.permissions['message.send'] === 'deny') {
+        add('connector', 'warn', `connectors.${name}.write is on but permissions.message.send is deny, so posting is always refused`, 'Set permissions.message.send to ask, or turn write off.');
+      }
+    }
+    const channelOn = (scope: string): boolean => {
+      const head = scope.split(':')[0]!;
+      if (head === 'telegram' || head === 'discord' || head === 'signal') return config.channels[head].enabled;
+      if (head === 'api') return config.api.enabled;
+      if (head === 'route') return config.routes.some((r) => `route:${r.conversation}` === scope);
+      return true;
+    };
+    for (const scope of [...new Set([...Object.keys(config.skills.channels), ...Object.keys(config.connectors.channels)])].sort()) {
+      if (!channelOn(scope)) add('builtins', 'info', `The override for ${scope} has no effect: ${scope.startsWith('route:') ? 'no route uses that conversation' : `${scope.split(':')[0]} is not enabled`}`);
     }
 
     // Sandbox
