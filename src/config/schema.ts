@@ -161,7 +161,7 @@ export const configSchema = z
         host: z.string().default('127.0.0.1').describe('Bind address. Non-loopback requires at least one API key.'),
         port: z.number().int().min(1).max(65535).default(7311).describe('HTTP port.'),
         rateLimitPerMinute: z.number().int().positive().default(120).describe('Requests per minute allowed for each API key (the dashboard polls, so keep this comfortably above 60).'),
-        trustProxy: z.boolean().default(false).describe('Behind your own reverse proxy: take the client IP from X-Forwarded-For.'),
+        trustProxy: z.boolean().default(false).describe('Behind your own reverse proxy: take the client IP from X-Forwarded-For. The rightmost entry (the one your proxy appends) is used, so the proxy must append the client address to X-Forwarded-For.'),
         demo: z
           .object({
             enabled: z.boolean().default(false).describe('Serve a public, keyless demo chat for your website at /v1/demo/chat/completions.'),

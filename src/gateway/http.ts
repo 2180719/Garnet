@@ -9,6 +9,11 @@ import { adminRoutes, type AdminBackend, type AdminRoute } from './admin.ts';
 import type { DemoChat } from './demo.ts';
 
 const MAX_BODY = 1_000_000;
+/** A request body must arrive within this long, so a client cannot hold a socket open by trickling bytes. */
+const BODY_TIMEOUT_MS = 30_000;
+const AUDIT_RETENTION_MS = 90 * 86_400_000;
+const AUDIT_MAX_ROWS = 100_000;
+const AUDIT_PRUNE_EVERY_MS = 3_600_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 
 export type ApiServerDeps = {
@@ -25,11 +30,16 @@ export type ApiServerDeps = {
   admin?: AdminBackend;
   /** Public website demo (keyless, tool-less, rate-limited). */
   demo?: DemoChat;
-  /** Use the first X-Forwarded-For address as the client IP (only behind your own reverse proxy). */
+  /**
+   * Take the client IP from X-Forwarded-For (only behind your own reverse proxy). The rightmost
+   * entry is used: it is the one your proxy appended; entries to its left are client-supplied.
+   */
   trustProxy?: boolean;
+  /** Deadline for reading a request body (default 30 s). */
+  bodyTimeoutMs?: number;
 };
 
-type Ctx = { req: IncomingMessage; res: ServerResponse; url: URL; keyId: string | null; scopes: string[]; ip: string | null };
+type Ctx = { req: IncomingMessage; res: ServerResponse; url: URL; keyId: string | null; scopes: string[]; ip: string | null; authAttempted: boolean };
 
 class HttpError extends Error {
   readonly status: number;
@@ -58,6 +68,10 @@ export class ApiServer {
   private readonly deps: ApiServerDeps;
   private readonly limiter: RateLimiter;
   private readonly authFailures = new RateLimiter(20);
+  /** Failed authentications are audited, but at most a few rows per IP and per minute overall. */
+  private readonly failureAuditPerIp = new RateLimiter(5);
+  private readonly failureAuditTotal = new RateLimiter(60);
+  private lastAuditPrune = 0;
   private server: Server | null = null;
   private readonly adminRoutes: AdminRoute[];
 
@@ -73,7 +87,9 @@ export class ApiServer {
       throw new RubyError('config', `Refusing to listen on ${host} without an API key. Create one with \`ruby api key create\`, or bind to 127.0.0.1.`);
     }
     const server = createServer((req, res) => void this.handle(req, res));
-    server.requestTimeout = 0; // long-running agent tasks; idle sockets are still reaped by headersTimeout
+    // No overall request timeout: agent tasks can run for a long time. headersTimeout bounds the
+    // header phase, readJson bounds the body phase (BODY_TIMEOUT_MS), keepAliveTimeout reaps idle sockets.
+    server.requestTimeout = 0;
     this.server = server;
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -96,20 +112,23 @@ export class ApiServer {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://ruby.local');
-    const forwarded = this.deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() : '';
-    const ctx: Ctx = { req, res, url, keyId: null, scopes: [], ip: forwarded || req.socket.remoteAddress || null };
+    // The rightmost X-Forwarded-For entry is the one the trusted proxy appended; anything left of it is client-controlled.
+    const forwarded = this.deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1)?.trim() : '';
+    const ctx: Ctx = { req, res, url, keyId: null, scopes: [], ip: forwarded || req.socket.remoteAddress || null, authAttempted: false };
+    const readBody = () => readJson(req, this.deps.bodyTimeoutMs ?? BODY_TIMEOUT_MS);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
     try {
       if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, { status: 'ok', version: this.deps.version });
-      if (this.deps.demo && (await this.deps.demo.handle(req, res, url.pathname, ctx.ip ?? 'unknown', () => readJson(req)))) return;
+      if (this.deps.demo && (await this.deps.demo.handle(req, res, url.pathname, ctx.ip ?? 'unknown', readBody))) return;
       if (!url.pathname.startsWith('/v1/') && !url.pathname.startsWith('/api/')) {
         if (this.deps.fallback?.(req, res)) return;
         throw new HttpError(404, 'Not found.');
       }
+      ctx.authAttempted = true;
       this.authenticate(ctx);
-      await this.route(ctx);
+      await this.route(ctx, readBody);
     } catch (e) {
       const status =
         e instanceof HttpError
@@ -118,7 +137,9 @@ export class ApiServer {
             ? 400
             : isRubyError(e, 'denied')
               ? 403
-              : 500;
+              : isRubyError(e, 'conflict')
+                ? 409
+                : 500;
       if (status === 500) this.deps.log?.('error', `API ${req.method} ${url.pathname}: ${errorMessage(e)}`);
       if (!res.headersSent) {
         for (const [k, v] of Object.entries(e instanceof HttpError ? e.headers : {})) res.setHeader(k, v);
@@ -126,8 +147,28 @@ export class ApiServer {
         send(res, status, { error: { message: status === 500 ? 'Internal error.' : errorMessage(e), type: errorType(status), ...problems } });
       } else res.end();
     } finally {
-      if (url.pathname !== '/health') {
-        this.deps.keyStore.audit({ keyId: ctx.keyId, ip: ctx.ip, method: req.method ?? '?', path: url.pathname, status: res.statusCode });
+      this.audit(ctx);
+    }
+  }
+
+  /**
+   * Audits authenticated requests, and failed authentication attempts at a
+   * limited rate. Keyless traffic (health, static files, the demo, unknown
+   * paths) is not audited, so it cannot grow the table. Old rows are pruned.
+   */
+  private audit(ctx: Ctx): void {
+    const ip = ctx.ip ?? 'unknown';
+    const failed = !ctx.keyId && ctx.authAttempted;
+    if (!ctx.keyId && !(failed && this.failureAuditPerIp.take(ip) === 0 && this.failureAuditTotal.take('*') === 0)) return;
+    const { keyStore } = this.deps;
+    keyStore.audit({ keyId: ctx.keyId, ip: ctx.ip, method: ctx.req.method ?? '?', path: ctx.url.pathname, status: ctx.res.statusCode });
+    const now = Date.now();
+    if (now - this.lastAuditPrune >= AUDIT_PRUNE_EVERY_MS) {
+      this.lastAuditPrune = now;
+      try {
+        keyStore.pruneAudit(new Date(now - AUDIT_RETENTION_MS).toISOString(), AUDIT_MAX_ROWS);
+      } catch (e) {
+        this.deps.log?.('warn', `Pruning the API audit log failed: ${errorMessage(e)}`);
       }
     }
   }
@@ -152,7 +193,7 @@ export class ApiServer {
     if (!ctx.scopes.includes(scope) && !ctx.scopes.includes('admin')) throw new HttpError(403, `This key lacks the "${scope}" scope.`);
   }
 
-  private async route(ctx: Ctx): Promise<void> {
+  private async route(ctx: Ctx, readBody: () => Promise<unknown>): Promise<void> {
     const { req, res, url } = ctx;
     const method = req.method ?? 'GET';
     const path = url.pathname;
@@ -163,7 +204,7 @@ export class ApiServer {
     }
     if (method === 'POST' && path === '/v1/chat/completions') {
       this.require(ctx, 'chat');
-      return this.chatCompletions(ctx);
+      return this.chatCompletions(ctx, readBody);
     }
     if (method === 'GET' && path === '/api/health') {
       this.require(ctx, 'read');
@@ -192,15 +233,15 @@ export class ApiServer {
       const m = route.pattern.exec(decoded);
       if (!m) continue;
       this.require(ctx, route.scope);
-      const result = await route.handle({ params: m.slice(1).map((p) => p.replaceAll('\u0000', '/')), query: url.searchParams, body: () => readJson(req) });
+      const result = await route.handle({ params: m.slice(1).map((p) => p.replaceAll('\u0000', '/')), query: url.searchParams, body: readBody });
       return send(res, 200, result ?? { ok: true });
     }
     throw new HttpError(404, 'Not found.');
   }
 
-  private async chatCompletions(ctx: Ctx): Promise<void> {
+  private async chatCompletions(ctx: Ctx, readBody: () => Promise<unknown>): Promise<void> {
     const { req, res } = ctx;
-    const parsed = chatBody.safeParse(await readJson(req));
+    const parsed = chatBody.safeParse(await readBody());
     if (!parsed.success) throw new HttpError(400, `Invalid request: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
     const last = parsed.data.messages.at(-1)!;
     if (last.role !== 'user') throw new HttpError(400, 'The last message must have role "user".');
@@ -274,16 +315,34 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length;
-    if (size > MAX_BODY) throw new HttpError(413, 'Request body too large.');
-    chunks.push(chunk);
+/** Reads a JSON body of at most MAX_BODY bytes that must arrive within `timeoutMs`. */
+async function readJson(req: IncomingMessage, timeoutMs: number): Promise<unknown> {
+  const declared = Number(req.headers['content-length']);
+  if (declared > MAX_BODY) throw new HttpError(413, 'Request body too large.', { Connection: 'close' });
+  const read = (async () => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req as AsyncIterable<Buffer>) {
+      size += chunk.length;
+      if (size > MAX_BODY) throw new HttpError(413, 'Request body too large.', { Connection: 'close' });
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  })();
+  read.catch(() => {}); // after a timeout the read may still fail when the socket closes
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    // Connection: close makes the server drop the socket after the 408, ending the trickle.
+    timer = setTimeout(() => reject(new HttpError(408, 'Timed out reading the request body.', { Connection: 'close' })), timeoutMs);
+  });
+  let body: Buffer;
+  try {
+    body = await Promise.race([read, deadline]);
+  } finally {
+    clearTimeout(timer);
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return JSON.parse(body.toString('utf8'));
   } catch {
     throw new HttpError(400, 'Request body must be JSON.');
   }
