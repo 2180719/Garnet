@@ -122,6 +122,15 @@ export const configSchema = z
           .boolean()
           .optional()
           .describe('The provider reads PDFs natively (document blocks). Default: on for anthropic, off for openai-compatible (OpenAI and OpenRouter accept them; most local servers do not).'),
+        pricing: z
+          .object({
+            input: z.number().min(0).describe('USD per million input tokens.'),
+            output: z.number().min(0).describe('USD per million output tokens.'),
+            cacheRead: z.number().min(0).optional().describe('USD per million cache-read tokens. Omit if the provider has no prompt cache; cache tokens then make the cost "?".'),
+            cacheWrite: z.number().min(0).optional().describe('USD per million cache-write tokens.'),
+          })
+          .optional()
+          .describe('USD per million tokens, to show dollar cost. Built in for current Anthropic models; set it for any other model. Without a price the cost shows "?", never $0.'),
       })
       .prefault({})
       .describe('Model used for interactive tasks.'),
@@ -131,6 +140,7 @@ export const configSchema = z
         maxTokens: z.number().int().positive().default(500_000).describe('Total tokens allowed per task.'),
         maxToolCalls: z.number().int().positive().default(50).describe('Tool calls allowed per task.'),
         maxWallMs: z.number().int().positive().default(15 * 60_000).describe('Wall-clock limit per task.'),
+        dailyUsd: z.number().positive().optional().describe('Daily spending cap in USD (the owner\'s calendar day, see `timezone`). Once today\'s known cost reaches it, new chat turns and agent jobs are refused and a running task stops before its next model call, until tomorrow; if pricing is missing or a task today has an unknown cost, new ones are refused too (never counted as $0); script and reminder jobs are unaffected. Needs pricing (built in for current Anthropic models, or model.pricing). Off by default.'),
       })
       .prefault({})
       .describe('Per-task resource limits.'),
@@ -380,6 +390,17 @@ export const configSchema = z
       )
       .default([])
       .describe('Optional rules that link chats into shared conversations. By default every chat is its own conversation.'),
+    retention: z
+      .object({
+        inboxDays: z.number().int().min(0).max(36500).default(90).describe('Delete handled inbox messages (done or ignored) older than this many days. 0 keeps them forever. Unhandled ones are never deleted.'),
+        outboxDays: z.number().int().min(0).max(36500).default(90).describe('Delete sent and failed outbound messages older than this many days. 0 keeps them forever. Pending and uncertain ones are never deleted.'),
+        sentMessagesDays: z.number().int().min(0).max(36500).default(90).describe('Delete the log of messages Garnet sent on its own (used for rate limits) older than this many days. 0 keeps it forever.'),
+        jobRunsDays: z.number().int().min(0).max(36500).default(90).describe('Delete finished scheduled-run records older than this many days; the newest run of each job is kept. 0 keeps them forever.'),
+        approvalsDays: z.number().int().min(0).max(36500).default(90).describe('Delete approval requests that expired more than this many days ago (decided or not). 0 keeps them forever.'),
+        mediaDays: z.number().int().min(0).max(36500).default(90).describe('Delete stored files in <home>/media older than this many days that no conversation, pending message or delivery refers to. Files referenced by the conversation log are always kept. 0 keeps them forever.'),
+      })
+      .prefault({})
+      .describe('How long finished operational records are kept. Runs at service start and daily. The conversation log (sessions and events) is never pruned.'),
     scheduler: z
       .object({
         enabled: z.boolean().default(true).describe('Global switch for cron jobs and heartbeats. Off stops all new scheduled runs.'),

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GarnetError, type AttachmentRef } from '../contracts/index.ts';
 import { detectMime, kindOf } from './mime.ts';
@@ -39,7 +39,8 @@ export class MediaStore {
     if (data.byteLength === 0) throw new GarnetError('invalid_input', 'The file is empty.');
     const id = `med_${createHash('sha256').update(data).digest('hex').slice(0, 32)}`;
     const file = this.path(id);
-    if (!existsSync(file)) writeFileSync(file, data, { mode: 0o600 });
+    if (existsSync(file)) utimesSync(file, new Date(), new Date()); // in use again: keeps retention from removing it
+    else writeFileSync(file, data, { mode: 0o600 });
     const mimeType = detectMime(data, input.mimeType, input.name);
     const name = input.name ? cleanName(input.name) : '';
     return {
@@ -65,6 +66,28 @@ export class MediaStore {
   read(id: string): Buffer | null {
     if (!this.has(id)) return null;
     return readFileSync(this.path(id));
+  }
+
+  /**
+   * Deletes stored files last written or re-sent before `before` (epoch ms)
+   * whose id is not in `inUse`. Returns how many were removed. Other files in
+   * the directory are left alone.
+   */
+  prune(before: number, inUse: ReadonlySet<string>): number {
+    let removed = 0;
+    for (const name of readdirSync(this.root)) {
+      const id = name.endsWith('.bin') ? name.slice(0, -4) : '';
+      if (!ID.test(id) || inUse.has(id)) continue;
+      try {
+        const file = join(this.root, name);
+        if (statSync(file).mtimeMs >= before) continue;
+        unlinkSync(file);
+        removed++;
+      } catch {
+        // Gone already, or not removable: try again next time.
+      }
+    }
+    return removed;
   }
 }
 

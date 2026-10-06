@@ -240,3 +240,84 @@ test('deprecated RUBY_* variables, a legacy ~/.ruby home and a leftover ruby.ser
   assert.ok(find(fs, 'home').some((f) => /legacy data directory/.test(f.message) && /mv .*\.ruby .*\.garnet/.test(f.fix ?? '')));
   assert.ok(find(fs, 'service').some((f) => f.status === 'warn' && /legacy service/.test(f.message)));
 });
+
+test('media checks: transcription command on PATH, openai-compatible key, PDF text command', async () => {
+  const d = deps();
+  mkdirSync(d.home, { recursive: true, mode: 0o700 });
+  const binDir = tempDir('bin-');
+  d.env.PATH = binDir;
+
+  configure(d.home, (c) => {
+    c.model.provider = 'fake';
+    c.media.transcription.backend = 'command';
+    c.media.transcription.command = ['whisper-cli', '-m', '/models/ggml-base.bin'];
+    c.media.pdfText.command = ['pdftotext', '-layout', '{input}', '-'];
+  });
+
+  // Without the commands on PATH, both should fail
+  let fs = await diagnose(d);
+  assert.match(find(fs, 'media')[0]!.message, /whisper-cli/);
+  assert.equal(find(fs, 'media')[0]!.status, 'fail');
+  assert.match(find(fs, 'media')[1]!.message, /pdftotext/);
+  assert.equal(find(fs, 'media')[1]!.status, 'fail');
+
+  // Create the commands
+  writeFileSync(join(binDir, 'whisper-cli'), '#!/bin/sh\necho ok', { mode: 0o755 });
+  writeFileSync(join(binDir, 'pdftotext'), '#!/bin/sh\necho ok', { mode: 0o755 });
+  fs = await diagnose(d);
+  assert.match(find(fs, 'media')[0]!.message, /whisper-cli/);
+  assert.equal(find(fs, 'media')[0]!.status, 'ok');
+  assert.match(find(fs, 'media')[1]!.message, /pdftotext/);
+  assert.equal(find(fs, 'media')[1]!.status, 'ok');
+});
+
+test('media checks: openai-compatible transcription needs baseUrl and key', async () => {
+  const d = deps();
+  mkdirSync(d.home, { recursive: true, mode: 0o700 });
+  configure(d.home, (c) => {
+    c.model.provider = 'fake';
+    c.media.transcription.backend = 'openai-compatible';
+    c.media.transcription.baseUrl = 'http://127.0.0.1:8000/v1';
+    c.media.transcription.apiKeyEnv = 'WHISPER_API_KEY';
+  });
+
+  // Without the key set
+  let fs = await diagnose(d);
+  const media = find(fs, 'media');
+  assert.ok(media.some((f) => f.status === 'warn' && /WHISPER_API_KEY/.test(f.message)));
+
+  // With the key in environment
+  d.env.WHISPER_API_KEY = 'test-key';
+  fs = await diagnose(d);
+  const media2 = find(fs, 'media');
+  assert.ok(media2.some((f) => f.status === 'ok' && /openai-compatible/.test(f.message)));
+});
+
+test('media disabled: no checks run', async () => {
+  const d = deps();
+  mkdirSync(d.home, { recursive: true, mode: 0o700 });
+  configure(d.home, (c) => {
+    c.model.provider = 'fake';
+    c.media.enabled = false;
+  });
+
+  const fs = await diagnose(d);
+  const media = find(fs, 'media');
+  assert.equal(media.length, 1);
+  assert.match(media[0]!.message, /off/);
+  assert.equal(media[0]!.status, 'info');
+});
+
+test('media: an absolute or relative-with-slash command is access-checked directly, not joined with PATH', async () => {
+  const d = deps();
+  const bin = tempDir();
+  const tool = join(bin, 'pdftotext');
+  writeFileSync(tool, '#!/bin/sh\n', { mode: 0o755 });
+  configure(d.home, (c) => {
+    c.media.pdfText.command = [tool, '-layout'];
+    c.media.transcription = { ...c.media.transcription, backend: 'command', command: [join(bin, 'missing')] };
+  });
+  const media = find(await diagnose(d), 'media');
+  assert.ok(media.some((f) => f.status === 'ok' && f.message.includes('PDF text extraction')), 'absolute path found with an empty PATH');
+  assert.ok(media.some((f) => f.status === 'fail' && /Transcription command .*missing is not an executable file/.test(f.message)));
+});

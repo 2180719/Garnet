@@ -196,7 +196,7 @@ export function createBackend(garnet: Garnet, gateway: Gateway, scheduler: Sched
       return p;
     },
     revokeIdentity: (channel, senderId) => garnet.gatewayStore.removeIdentity(channel, senderId),
-    sessions: (opts) => stats.sessionPage(opts),
+    sessions: (opts) => stats.sessionPage({ ...opts, pricing: garnet.pricing }),
     sessionEvents: (id, after, limit) => {
       const session = garnet.store.getSession(id);
       if (!session) throw new GarnetError('invalid_input', `No session "${id}".`);
@@ -225,7 +225,7 @@ export function createBackend(garnet: Garnet, gateway: Gateway, scheduler: Sched
     }),
     unlinkConversation: (key) => garnet.gatewayStore.removeConversation(key),
     denyPairing: (code) => garnet.gatewayStore.removePairing(code),
-    usage: (days) => ({ days: stats.usageByDay(days) }),
+    usage: (days) => ({ days: stats.usageByDay(days, garnet.pricing), pricing: garnet.pricing ?? null, dailyUsd: garnet.config.budgets.dailyUsd ?? null }),
     achievements: () => ({ achievements: achievements.evaluate(collect()) }),
     unlockEasterEgg: (id) => achievements.unlockEasterEgg(id),
   };

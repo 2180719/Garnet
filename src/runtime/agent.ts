@@ -57,6 +57,10 @@ export type AgentDeps = {
   compactAtTokens?: number;
   /** User turns kept verbatim after compaction. */
   keepTurns?: number;
+  /** Returns a message when new model-calling tasks must be refused (the daily spending cap); null otherwise. */
+  refuse?: () => string | null;
+  /** Records model usage that belongs to no task (manual compaction), so the daily spending cap counts it. */
+  recordSpend?: (usage: Usage) => void;
   maxOutputTokens: number;
   /** Transient provider failures retried per model call. */
   maxRetries?: number;
@@ -73,7 +77,9 @@ export type AgentDeps = {
 };
 
 export type CompactionOutcome = {
-  status: 'compacted' | 'nothing_to_compact' | 'failed';
+  status: 'compacted' | 'nothing_to_compact' | 'failed' | 'refused';
+  /** Why the compaction was refused (the daily spending cap); set with `status: 'refused'`. */
+  reason?: string;
   /** Usage of the summarizing call; null when no call was made or the provider did not report it. */
   usage: Usage | null;
   modelCalls: number;
@@ -114,7 +120,8 @@ export class Agent {
     const emit = options.onEvent ?? (() => {});
     // A request cancelled while queued must not leave its message in history.
     const cancelledEarly = signal.aborted;
-    if (!cancelledEarly) {
+    const refused = cancelledEarly ? null : (this.deps.refuse?.() ?? null);
+    if (!cancelledEarly && !refused) {
       store.append(sessionId, {
         type: 'user_message',
         message: { role: 'user', content: typeof input === 'string' ? [{ type: 'text', text: input }] : input.map((b) => (b.type === 'attachment' ? withoutData(b) : b)) },
@@ -140,6 +147,7 @@ export class Agent {
     };
 
     if (cancelledEarly) return finish('cancelled', 'Cancelled by the owner.');
+    if (refused) return finish('budget_exhausted', refused);
     try {
       return await this.loop(sessionId, task, started, signal, emit, finish);
     } catch (e) {
@@ -295,7 +303,9 @@ export class Agent {
    * kept tail that a checkpoint does not already cover.
    */
   async compact(sessionId: string, options: { signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void } = {}): Promise<CompactionOutcome> {
-    return this.compactNow(sessionId, options.signal ?? new AbortController().signal, options.onEvent ?? (() => {}));
+    const outcome = await this.compactNow(sessionId, options.signal ?? new AbortController().signal, options.onEvent ?? (() => {}));
+    if (outcome.usage) this.deps.recordSpend?.(outcome.usage); // no task row carries this call
+    return outcome;
   }
 
   /**
@@ -305,6 +315,9 @@ export class Agent {
   private async compactNow(sessionId: string, signal: AbortSignal, emit: (e: RuntimeEvent) => void, deadline = Infinity): Promise<CompactionOutcome> {
     const plan = planCompaction(this.deps.store.events(sessionId), this.deps.keepTurns ?? 2, { timeZone: this.deps.timeZone });
     if (!plan) return { status: 'nothing_to_compact', usage: null, modelCalls: 0 };
+    // Compaction is a model call like any other: the daily spending cap applies before it is made.
+    const refused = this.deps.refuse?.();
+    if (refused) return { status: 'refused', reason: refused, usage: null, modelCalls: 0 };
     emit({ type: 'compacting' });
     // Summarize with the current frozen prefix so the request can hit the cache.
     const { system, tools } = this.frozenFor(sessionId);
@@ -334,7 +347,8 @@ export class Agent {
     if (task.modelCalls >= b.maxModelCalls) return `Reached the limit of ${b.maxModelCalls} model calls.`;
     if (billedTokens(task.usage) >= b.maxTokens) return `Reached the limit of ${b.maxTokens} tokens.`;
     if (Date.now() - started >= b.maxWallMs) return `Reached the time limit of ${Math.round(b.maxWallMs / 1000)}s.`;
-    return null;
+    // The daily spending cap, re-checked before every model call (the task row is saved after each one).
+    return this.deps.refuse?.() ?? null;
   }
 
   /**

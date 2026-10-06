@@ -92,6 +92,9 @@ const KILL_GIVE_UP_MS = 30_000;
 export class DockerSandbox implements Sandbox {
   readonly kind = 'docker' as const;
   readonly isolated = true;
+  get networked(): boolean {
+    return this.network !== 'none';
+  }
   readonly workspace: string;
   private readonly image: string;
   private readonly network: 'none' | 'bridge';

@@ -86,7 +86,7 @@ export class InteractiveChat {
     this.screen = new Screen(options.stdout);
     this.sessionId = options.sessionId;
     this.editor = emptyEditor(options.history.entries.length);
-    this.totals = sessionTotals(options.garnet.store.events(this.sessionId));
+    this.totals = sessionTotals(options.garnet.store.events(this.sessionId), options.garnet.pricing);
   }
 
   private get theme(): Theme {
@@ -331,7 +331,7 @@ export class InteractiveChat {
       this.finishStream();
       this.refreshTotals();
       const elapsed = Date.now() - started;
-      this.commit((w) => turnSummary(task, elapsed, this.theme, w));
+      this.commit((w) => turnSummary(task, elapsed, this.theme, w, this.o.garnet.pricing));
     });
   }
 
@@ -409,7 +409,7 @@ export class InteractiveChat {
   }
 
   private refreshTotals(): void {
-    this.totals = sessionTotals(this.o.garnet.store.events(this.sessionId));
+    this.totals = sessionTotals(this.o.garnet.store.events(this.sessionId), this.o.garnet.pricing);
   }
 
   // ── commands ─────────────────────────────────────────────────────────

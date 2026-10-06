@@ -2,10 +2,32 @@
 
 ## Unreleased
 
+### Review fixes
+- Security: results of jobs and agent-sent messages that read untrusted content now carry that state into the chat they land in; forwarded voice notes and audio files count as untrusted (only a live voice note from the paired owner in a private chat does not); links in approval text are no longer treated as the owner's; "message the owner" and relative times are resolved before approval, so the action that runs is exactly the one approved; the agent cannot pause or resume `config.json` jobs, granting a job `exec` needs exec approval, and agent messages never go to group chats.
+- `web_fetch` no longer leaks a connection when a compressed response stalls.
+- The daily spending cap is checked before every model call and counts compaction; missing cache prices are derived from the input price; with a cap set, tasks whose cost can't be priced are refused; "today" follows the owner's time zone.
+- Installer: updates installs made under the old command name, leaves a link at the old install path for an old service, honours `RUBY_NODE`; an old service is removed after `~/.ruby` is moved to `~/.garnet`; an empty `GARNET_*` falls back to `RUBY_*`.
+- `doctor` checks media commands given as full paths correctly.
+- Security: in a conversation that has read untrusted content, every approval asks again, including tools already set to ask; an earlier "always allow" in the terminal chat no longer applies.
+- Backups include attachments (`<home>/media`); restore accepts backups made before the rename (`ruby.db`).
+- `/compact` respects the daily spending cap, and spending is counted by when each model call happened, so tasks that run past midnight are counted.
+
 ### Renamed: Ruby is now Garnet
 - The project, command (`garnet`), package (`garnet-agent`), default assistant name, repository (`2180719/Garnet`), service (`garnet.service` / `dev.garnet.agent`), API key prefix (`garnet_`), header (`X-Garnet-Conversation`) and data directory (`~/.garnet`) all changed, because `ruby` clashes with the Ruby language interpreter. Environment variables are now `GARNET_*` (`GARNET_HOME`, `GARNET_SECRETS_KEY_FILE`, ...); `npm run ruby` is now `npm run garnet`.
 - Existing installs keep working: `RUBY_*` variables are read when the `GARNET_*` one is unset (`doctor` warns); `~/.ruby` is used when `~/.garnet` does not exist (`doctor` suggests `mv ~/.ruby ~/.garnet`); `ruby_` API keys and `X-Ruby-Conversation` are still accepted; `ruby.db`, `ruby-secrets` stores and `.ruby.json` skill sidecars are still read.
 - `garnet service install` stops and removes the old `ruby` systemd unit / `dev.ruby` launchd agent when we wrote it and it runs the same home; `doctor` reports a leftover one. `install.sh` moves `~/.local/share/ruby` to `.../garnet` and removes the old `ruby` shim only when it is ours.
+
+### Polish
+- Garnet loads the workspace `AGENTS.md` into its prompt as your project instructions (8,000 character cap; changes apply after `/new`).
+- Skills can bundle `references/`, `scripts/` and other text files; `skill_view` lists them and can read one on request, contained to the skill folder.
+- `retention.*Days` (default 90) prunes finished inbox, outbox, job-run, approval and sent-message rows and unreferenced media at start and daily. The event log is never pruned.
+- Security: `run_command` output marks the conversation as having read untrusted content when the sandbox has network access (Docker with a network, or the local backend).
+- The channel `/start` greeting uses the configured assistant name.
+- `garnet doctor` checks the voice transcription backend and the PDF text command.
+- The channel `/start` greeting uses the configured assistant name.
+- `garnet doctor` checks the voice transcription backend and the PDF text command.
+- Dollar cost beside token usage in chat, dashboard and API: built-in Anthropic prices (checked 2026-10-06) or `model.pricing`; unknown shows `?`, never $0.
+- `budgets.dailyUsd`: optional daily spending cap that refuses new model tasks; reminders and script jobs still run.
 
 ### New capabilities
 

@@ -4,7 +4,8 @@ import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from './helpers.ts';
-import { isGarnetError } from '../src/contracts/index.ts';
+import { isGarnetError, startOfDayIso, type Usage } from '../src/contracts/index.ts';
+import { StatsStore } from '../src/store/index.ts';
 import { createGarnet } from '../src/main.ts';
 
 const withWorkspace = (workspace: string) => {
@@ -57,6 +58,143 @@ test('web tools follow net.fetch and the search backend; the owner policy carrie
     assert.equal(garnet.ownerPolicy.check('fs.write', { taint }).verdict, 'ask');
     assert.equal(garnet.ownerPolicy.check('net.fetch', { targets: ['https://html.duckduckgo.com/html/?q=x'], taint }).verdict, 'allow', 'the configured search endpoint');
     assert.equal(garnet.ownerPolicy.check('net.fetch', { targets: ['https://example.com/?q=secret'], taint }).verdict, 'ask');
+  } finally {
+    garnet.close();
+  }
+});
+
+test('budgets.dailyUsd refuses new model tasks once today\'s known cost reaches the cap', async () => {
+  const home = join(tempDir(), 'garnet-home');
+  createGarnet({ home, memoryDb: true, noModel: true }).close();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 1 } }));
+  const garnet = createGarnet({ home, memoryDb: true, noModel: true });
+  try {
+    const session = garnet.store.createSession();
+    const spent = garnet.store.createTask(session.id, { inputTokens: 100_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    spent.modelCalls = 1;
+    garnet.store.updateTask(spent);
+    const task = await garnet.agent.run(session.id, 'hello');
+    assert.equal(task.status, 'budget_exhausted');
+    assert.match(task.reason ?? '', /Daily spending cap reached: \$1\.00 spent today \(/);
+  } finally {
+    garnet.close();
+  }
+});
+
+function cappedGarnet(cfg: object) {
+  const home = join(tempDir(), 'garnet-home');
+  createGarnet({ home, memoryDb: true, noModel: true }).close();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, timezone: 'UTC', ...cfg }));
+  return createGarnet({ home, memoryDb: true, noModel: true });
+}
+
+const used = (n: number) => ({ inputTokens: n, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+
+test('daily cap: spend without a task row (manual compaction) counts toward it', async () => {
+  const garnet = cappedGarnet({ model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 1 } });
+  try {
+    new StatsStore(garnet.db).recordSpend(used(100_000));
+    const task = await garnet.agent.run(garnet.store.createSession().id, 'hello');
+    assert.equal(task.status, 'budget_exhausted');
+    assert.match(task.reason ?? '', /Daily spending cap reached/);
+  } finally {
+    garnet.close();
+  }
+});
+
+test('daily cap fails safe: a finished task of unknown cost, or no price at all, refuses new tasks', async () => {
+  const garnet = cappedGarnet({ model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 1 } });
+  try {
+    const session = garnet.store.createSession();
+    const t = garnet.store.createTask(session.id, { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null });
+    t.modelCalls = 1;
+    t.status = 'failed';
+    t.endedAt = new Date().toISOString();
+    garnet.store.updateTask(t);
+    const task = await garnet.agent.run(session.id, 'hello');
+    assert.equal(task.status, 'budget_exhausted');
+    assert.match(task.reason ?? '', /unknown cost.*model\.pricing/);
+  } finally {
+    garnet.close();
+  }
+  const noPrice = cappedGarnet({ model: { provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:1/v1', name: 'm' }, budgets: { dailyUsd: 1 } });
+  try {
+    const task = await noPrice.agent.run(noPrice.store.createSession().id, 'hello');
+    assert.equal(task.status, 'budget_exhausted');
+    assert.match(task.reason ?? '', /no known price/);
+  } finally {
+    noPrice.close();
+  }
+});
+
+test('daily cap: partial custom pricing (no cache prices) derives them instead of making cost unknown', async () => {
+  const garnet = cappedGarnet({ model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 100 } });
+  try {
+    const session = garnet.store.createSession();
+    const t = garnet.store.createTask(session.id, { inputTokens: 1000, outputTokens: 0, cacheReadTokens: 5000, cacheWriteTokens: 0 });
+    t.modelCalls = 1;
+    t.status = 'completed';
+    t.endedAt = new Date().toISOString();
+    garnet.store.updateTask(t);
+    const task = await garnet.agent.run(session.id, 'hello');
+    assert.notEqual(task.status, 'budget_exhausted');
+  } finally {
+    garnet.close();
+  }
+});
+
+test('daily cap uses the owner time zone for "today"', async () => {
+  const tz = 'Pacific/Kiritimati';
+  const midnight = new Date(startOfDayIso(tz)).getTime();
+  const garnet = cappedGarnet({ timezone: tz, model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 1 } });
+  try {
+    const session = garnet.store.createSession();
+    const t = garnet.store.createTask(session.id, used(100_000));
+    t.modelCalls = 1;
+    garnet.store.updateTask(t);
+    const setStart = (ms: number) => garnet.db.prepare('UPDATE tasks SET started_at = ? WHERE id = ?').run(new Date(ms).toISOString(), t.id);
+    setStart(midnight - 60_000); // yesterday in the owner's zone: not counted
+    assert.notEqual((await garnet.agent.run(session.id, 'hello')).status, 'budget_exhausted');
+    setStart(midnight); // today in the owner's zone: counted
+    const task = await garnet.agent.run(session.id, 'hello');
+    assert.equal(task.status, 'budget_exhausted');
+    assert.match(task.reason ?? '', /Pacific\/Kiritimati/);
+  } finally {
+    garnet.close();
+  }
+});
+
+test('daily cap: a task that crossed midnight counts the model calls made today, by call time', async () => {
+  const tz = 'UTC';
+  const midnight = new Date(startOfDayIso(tz)).getTime();
+  const garnet = cappedGarnet({ timezone: tz, model: { pricing: { input: 10, output: 10 } }, budgets: { dailyUsd: 1 } });
+  try {
+    const session = garnet.store.createSession();
+    const t = garnet.store.createTask(session.id, used(200_000)); // $2.00 in all: $1.00 yesterday, $1.00 today
+    t.modelCalls = 2;
+    garnet.store.updateTask(t);
+    const call = (usage: Usage, atMs: number) => {
+      const seq = garnet.store.append(session.id, { type: 'assistant_message', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] }, stopReason: 'end_turn', usage, model: 'm' } as never);
+      garnet.db.prepare('UPDATE events SET at = ? WHERE session_id = ? AND seq = (SELECT MAX(seq) FROM events WHERE session_id = ?)').run(new Date(atMs).toISOString(), session.id, session.id);
+      return seq;
+    };
+    garnet.db.prepare('UPDATE tasks SET started_at = ? WHERE id = ?').run(new Date(midnight - 3_600_000).toISOString(), t.id);
+    call(used(100_000), midnight - 1_800_000);
+    const stats = new StatsStore(garnet.db);
+    assert.equal(stats.costSince(new Date(midnight).toISOString(), { input: 10, output: 10 } as never).known, null, 'only yesterday so far');
+    call(used(100_000), midnight + 60_000);
+    const pricing = { input: 10, output: 10 } as never;
+    assert.equal(stats.costSince(new Date(midnight).toISOString(), pricing).known, 1, "today's call counts, yesterday's does not");
+    const refused = await garnet.agent.run(session.id, 'hello');
+    assert.equal(refused.status, 'budget_exhausted');
+    assert.match(refused.reason ?? '', /Daily spending cap reached: \$1\.00 spent today/);
+
+    // An unknown-cost call made today is unknown for the fail-safe once the task has finished.
+    t.endedAt = new Date().toISOString();
+    t.status = 'completed';
+    garnet.store.updateTask(t);
+    call({ inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null }, midnight + 120_000);
+    assert.equal(stats.costSince(new Date(midnight).toISOString(), pricing).unknown, 1);
   } finally {
     garnet.close();
   }

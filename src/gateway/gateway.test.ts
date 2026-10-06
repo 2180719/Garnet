@@ -447,3 +447,39 @@ test('a forwarded image or document taints the session; a live voice note does n
   assert.ok(tainted[1]!.type === 'tainted' && tainted[1]!.source === 'file "scan.png" sent in chat');
   await t.gateway.stop(0);
 });
+
+test('/start uses the configured assistant name', async () => {
+  const t = setup([{ text: 'Hello!' }], {
+    gateway: { assistantName: 'Iris' },
+  });
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('/start'));
+  await settle(t);
+  assert.match(t.channel.sent[0]!.text, /Hi! I'm Iris\./);
+  await t.gateway.stop(0);
+});
+
+test('/start defaults to Garnet when no assistant name is configured', async () => {
+  const t = setup([{ text: 'Hello!' }]);
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('/start'));
+  await settle(t);
+  assert.match(t.channel.sent[0]!.text, /Hi! I'm Garnet\./);
+  await t.gateway.stop(0);
+});
+
+test('/usage shows dollar cost when the model has a price', async () => {
+  const pricing = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
+  const t = setup([{ text: 'Hello.', usage: { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 0, cacheWriteTokens: 0 } }], { gateway: { model: { id: 'fake:scripted', contextWindow: 200_000, pricing } } });
+  t.store.addIdentity('fake', 'u1', 'Ada');
+  await t.gateway.start();
+  await t.channel.sink!(msg('hi'));
+  await settle(t);
+  await t.channel.sink!(msg('/usage'));
+  await settle(t);
+  assert.match(t.channel.sent.at(-1)!.text, /cost: \$15\.00/);
+  assert.match(t.channel.sent.at(-1)!.text, /completed, cost \$15\.00/);
+  await t.gateway.stop(0);
+});

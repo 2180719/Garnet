@@ -44,6 +44,7 @@ garnet chat      # talk to Garnet in the terminal (`garnet chat --fake` needs no
 - **Channels:** Telegram, Discord and Signal, with the steps for each.
 - **Service and pairing:** installs the background service (systemd or launchd), then helps you approve your own account when you message the bot.
 - **Import:** if it finds OpenClaw or Hermes, it previews what it can bring over before importing: memory (it offers bigger caps when yours is larger), persona and name, skills (flagging the tools and programs they need), scheduled jobs (added disabled for you to review), and the people on your allowlists (paired only if you say so). `garnet import openclaw|hermes` does the same outside setup.
+- **Workspace instructions and skill files:** an `AGENTS.md` in the workspace root (any letter case; `CLAUDE.md` is not read) is put in the prompt as your project instructions, capped at 8,000 characters. It is read when a conversation starts, so edits apply after `/new`. Skills can bundle `references/`, `scripts/` and other text files; Garnet lists them when it opens a skill and reads them on request (text only, 64 KB max, never outside the skill folder).
 
 Run it again to change one part: it shows what is set and offers a menu. For scripts and CI, `garnet setup -y` takes every answer from flags (`garnet setup --help`), for example:
 
@@ -102,6 +103,10 @@ In any chat, `/help` lists the commands: `/new`, `/stop`, `/retry`, `/usage`, `/
 `garnet dashboard` turns on the web dashboard and prints a login link. The link works once and only for 15 minutes: the dashboard swaps it for a session key that stays in that browser tab.
 
 Garnet keeps its data in `~/.garnet` (override with `GARNET_HOME`). Tools can only touch `~/.garnet/workspace`; writes ask for your approval by default. A `workspace` setting that would contain `~/.garnet` itself is refused, since tools could then rewrite Garnet's config and secrets.
+
+### Cost
+
+Garnet shows dollar cost beside token usage (terminal turn summary and `/usage`, chat `/usage`, the dashboard Usage page, `GET /api/usage`). Prices for current Anthropic models are built in (from Anthropic's pricing page); for any other model set `model.pricing` in `config.json`: USD per million tokens as `{ "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 }` (omitted cache prices are derived from `input`: 0.1x read, 1.25x write). Without a price, or when the provider does not report tokens, cost shows `?`, never `$0`. Set `budgets.dailyUsd` to refuse new chat turns and agent jobs once today's (your `timezone`) known cost reaches the cap (a running task stops before its next model call; with no price, or a task of unknown cost today, it refuses rather than count $0); script and reminder jobs are unaffected. It is off by default.
 
 ### Web access and untrusted content
 

@@ -3,6 +3,10 @@ import { empty, errorBox, field, h, num, pageHead, table } from '../ui.js';
 
 const sum = (rows, k) => rows.reduce((a, r) => a + r[k], 0);
 
+const usd = (v) => (v > 0 && v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
+// Unknown is "?", never $0. With some unknown tasks the known part is shown with "+ ?".
+const cost = (known, unknownTasks) => (known === null ? '?' : unknownTasks > 0 ? `${usd(known)} + ?` : usd(known));
+
 function chart(rows) {
   const max = Math.max(1, ...rows.map((r) => r.inputTokens + r.cacheReadTokens + r.outputTokens));
   const bars = rows.map((r) => {
@@ -28,14 +32,14 @@ export default async function mount(root) {
   const sel = h('select', null, [7, 14, 30, 90, 365].map((d) => h('option', { value: d, selected: d === 30 }, `Last ${d} days`)));
   const load = async () => {
     try {
-      const { days } = await api.get(`/api/usage?days=${sel.value}`);
+      const { days, dailyUsd } = await api.get(`/api/usage?days=${sel.value}`);
       if (!days.length) { out.replaceChildren(empty('No usage yet', 'Token counts appear after Garnet completes its first task.')); return; }
       out.replaceChildren(
         h('div', { class: 'grid' }, [['Tasks', sum(days, 'tasks')], ['Input tokens', sum(days, 'inputTokens')], ['Cached (read)', sum(days, 'cacheReadTokens')], ['Output tokens', sum(days, 'outputTokens')]]
-          .map(([l, v]) => h('div', { class: 'card stat' }, h('div', { class: 'label' }, l), h('div', { class: 'value' }, num(v))))),
+          .map(([l, v]) => h('div', { class: 'card stat' }, h('div', { class: 'label' }, l), h('div', { class: 'value' }, num(v)))).concat([h('div', { class: 'card stat' }, h('div', { class: 'label' }, 'Cost'), h('div', { class: 'value' }, cost(days.every((r) => r.costUsd === null) ? null : days.reduce((a, r) => a + (r.costUsd ?? 0), 0), sum(days, 'costUnknownTasks'))))])),
         chart(days),
-        table(['Day (UTC)', 'Tasks', 'Input', 'Cached read', 'Cache write', 'Output', 'Unknown'], [...days].reverse().map((r) => [r.day, num(r.tasks), num(r.inputTokens), num(r.cacheReadTokens), num(r.cacheWriteTokens), num(r.outputTokens), num(r.unknown)]), [1, 2, 3, 4, 5, 6]),
-        h('p', { class: 'muted small' }, '"Unknown" counts tasks where the model provider did not report token usage; they add nothing to the totals above.'));
+        table(['Day (UTC)', 'Tasks', 'Input', 'Cached read', 'Cache write', 'Output', 'Unknown', 'Cost'], [...days].reverse().map((r) => [r.day, num(r.tasks), num(r.inputTokens), num(r.cacheReadTokens), num(r.cacheWriteTokens), num(r.outputTokens), num(r.unknown), cost(r.costUsd, r.costUnknownTasks)]), [1, 2, 3, 4, 5, 6, 7]),
+        h('p', { class: 'muted small' }, '"Unknown" counts tasks where the model provider did not report token usage; they add nothing to the totals above. Cost is "?" when the model has no price (set model.pricing in config) or usage is unknown; "+ ?" means some tasks could not be priced.' + (dailyUsd ? ` Daily cap: ${usd(dailyUsd)}.` : '')));
     } catch (e) { out.replaceChildren(errorBox(e, load)); }
   };
   sel.addEventListener('change', load);

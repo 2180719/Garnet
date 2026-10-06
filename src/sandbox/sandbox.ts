@@ -30,6 +30,8 @@ export interface Sandbox {
   readonly kind: 'docker' | 'local';
   /** True only for a real isolation boundary. */
   readonly isolated: boolean;
+  /** True when commands can reach a network (the local backend always can), so their output may carry web content. */
+  readonly networked: boolean;
   /** Absolute (real) host path of the workspace the sandbox exposes. */
   readonly workspace: string;
   run(req: RunRequest): Promise<RunResult>;

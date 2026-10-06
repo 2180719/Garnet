@@ -1,6 +1,10 @@
 import { randomInt } from 'node:crypto';
 import {
   addUsage,
+  costOf,
+  eventsCost,
+  formatUsd,
+  type Pricing,
   billedTokens,
   errorMessage,
   GarnetError,
@@ -48,7 +52,9 @@ export type GatewayDeps = {
   /** Stores, transcribes and describes inbound files. Without it, files get an honest "can't receive files" reply. */
   media?: MediaIngest;
   /** Shown by /status and /usage. */
-  model?: { id: string; contextWindow: number };
+  model?: { id: string; contextWindow: number; pricing?: Pricing | undefined };
+  /** The configured assistant name. Defaults to "Garnet". */
+  assistantName?: string | undefined;
 };
 
 export type ChatResult = { task: TaskRecord; text: string; sessionId: string };
@@ -59,7 +65,7 @@ const HELP = [
   '/new: start a fresh conversation (memory and settings stay)',
   '/stop: cancel the running task',
   '/retry: run your last message again',
-  '/usage: token usage of this conversation (also /cost)',
+  '/usage: tokens and cost of this conversation (also /cost)',
   '/status: model, running task, pending approvals, channel health',
   '/approve CODE, /deny CODE: decide a pending action',
   '/help: this list',
@@ -368,7 +374,8 @@ export class Gateway {
     }
     if (command === '/start') {
       store.setInbox(row.id, 'done');
-      this.reply(row, "Hi! I'm Garnet. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task; /help lists every command.");
+      const name = this.deps.assistantName || 'Garnet';
+      this.reply(row, `Hi! I'm ${name}. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task; /help lists every command.`);
       return;
     }
     if (command === '/help') {
@@ -489,7 +496,8 @@ export class Gateway {
     let usage = unknownUsage();
     let context: number | null = null;
     let lastTaskId: string | null = null;
-    for (const e of this.deps.sessions.events(sessionId)) {
+    const events = this.deps.sessions.events(sessionId);
+    for (const e of events) {
       if (e.type === 'assistant_message' || e.type === 'checkpoint') usage = addUsage(usage, e.usage);
       if (e.type === 'assistant_message') context = e.usage.inputTokens === null && e.usage.cacheReadTokens === null ? null : billedTokens(e.usage);
       if (e.type === 'checkpoint') context = null; // unknown until the next request
@@ -502,8 +510,10 @@ export class Gateway {
       `• input ${n(usage.inputTokens)} · cache read ${n(usage.cacheReadTokens)} · cache write ${n(usage.cacheWriteTokens)} · output ${n(usage.outputTokens)} tokens`,
       `• context at the last request: ${context === null ? 'unknown' : `${n(context)}${window ? ` of ${n(window)}` : ''} tokens`}`,
     ];
+    const pricing = this.deps.model?.pricing;
+    lines.push(`• cost: ${formatUsd(eventsCost(events, pricing))}${pricing ? '' : ' (no price known for this model; set model.pricing)'}`);
     const task = lastTaskId ? this.deps.sessions.getTask(lastTaskId) : undefined;
-    if (task) lines.push(`• last task: ${n(billedTokens(task.usage))} tokens, ${task.modelCalls} model call(s), ${task.toolCalls} tool call(s), ${task.status.replaceAll('_', ' ')}`);
+    if (task) lines.push(`• last task: ${n(billedTokens(task.usage))} tokens, ${task.modelCalls} model call(s), ${task.toolCalls} tool call(s), ${task.status.replaceAll('_', ' ')}${task.modelCalls ? `, cost ${formatUsd(costOf(task.usage, pricing))}` : ''}`);
     lines.push('"?" means the provider did not report it; Garnet never counts unknown as zero.');
     return lines.join('\n');
   }

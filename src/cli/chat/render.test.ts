@@ -52,7 +52,7 @@ test('session totals add known usage and keep unknown as unknown', () => {
 });
 
 test('the footer keeps the most useful parts when narrow', () => {
-  const totals = { usage: usage(1000, 200), contextTokens: 1200, turns: 1, untrusted: [] };
+  const totals = { usage: usage(1000, 200), contextTokens: 1200, turns: 1, untrusted: [], costUsd: null };
   const info = { model: 'anthropic:claude-x', sessionId: 'ses_0123456789abcdef', totals, contextWindow: 200_000 };
   assert.equal(footer(info, plain, 200), '  anthropic:claude-x · ses_0123456789abcdef · context 1.2k/200k (1%) · 1.2k tokens · /help');
   assert.equal(footer(info, plain, 64), '  ses_0123456789abcdef · context 1.2k/200k (1%) · 1.2k tokens');
@@ -84,6 +84,15 @@ test('turn summaries spell out the status and show unknown usage as ?', () => {
   const task = { status: 'cancelled', reason: 'Cancelled by the owner.', usage: usage(null, 5), toolCalls: 1 } as TaskRecord;
   const text = turnSummary(task, 1500, plain, 100).join('\n');
   assert.match(text, /■ interrupted · 1\.5s · 1 tool call · \? in · 5 out — Cancelled by the owner\./);
+});
+
+test('turn summaries show dollar cost, or ? without a price or with unknown tokens', () => {
+  const pricing = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
+  const known = { status: 'completed', reason: null, usage: { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0 }, toolCalls: 0, modelCalls: 1 } as TaskRecord;
+  assert.match(turnSummary(known, 1000, plain, 100, pricing).join('\n'), /1k in · 200 out · \$0\.02/);
+  assert.match(turnSummary(known, 1000, plain, 100).join('\n'), /200 out · \?/);
+  const unknown = { ...known, usage: usage(null, 5) } as TaskRecord;
+  assert.match(turnSummary(unknown, 1000, plain, 100, pricing).join('\n'), /\? in · 5 out · \?/);
 });
 
 test('resumed transcripts show recent turns and say how many are hidden', () => {

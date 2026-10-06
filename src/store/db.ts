@@ -187,6 +187,15 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX sent_messages_by_time ON sent_messages(sent_at);
   `,
+  // Model spend that has no task row (manual compaction), so the daily spending cap sees it.
+  `
+  CREATE TABLE model_spend (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    usage TEXT NOT NULL
+  );
+  CREATE INDEX model_spend_by_time ON model_spend(at);
+  `,
 ];
 
 export type Db = DatabaseSync;
