@@ -262,3 +262,5 @@ a.card.stack{display:grid}
 .btn{white-space:nowrap}
 .btn svg{width:16px;height:16px;flex:none}
 .card>.fields{margin-top:14px}
+@media (max-width:899px){.side .brand,.side-foot .icon-btn{display:none}.side-foot .who{justify-content:flex-end}}
+.main:focus{outline:none}

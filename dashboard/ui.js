@@ -88,10 +88,10 @@ export function confirmDialog({ title, body, confirm = 'Confirm', danger = false
   return new Promise((resolve) => {
     const d = h('dialog', { class: big ? 'big' : '', 'aria-labelledby': 'dlg-title' });
     const done = (v) => { d.close(); d.remove(); resolve(v); };
-    d.append(h('h2', { id: 'dlg-title' }, title), body ? h('p', { class: 'muted' }, body) : null, content || null,
+    add(d, [h('h2', { id: 'dlg-title' }, title), body ? h('p', { class: 'muted' }, body) : null, content || null,
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => done(false) }, 'Cancel'),
-        h('button', { class: `btn ${danger ? 'btn-danger' : 'btn-primary'}`, type: 'button', onclick: () => done(true) }, confirm)));
+        h('button', { class: `btn ${danger ? 'btn-danger' : 'btn-primary'}`, type: 'button', onclick: () => done(true) }, confirm))]);
     d.addEventListener('cancel', (e) => { e.preventDefault(); done(false); });
     document.body.append(d);
     d.showModal();
@@ -111,7 +111,7 @@ export function pageHead(title, sub, ...actions) {
 export function field(label, input, hint, id) {
   const wrap = h('div', { class: 'field' });
   if (id) input.id = id;
-  wrap.append(h('label', { for: id }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
+  add(wrap, [h('label', { for: id }, label), input, hint ? h('span', { class: 'hint' }, hint) : null]);
   return wrap;
 }
 

@@ -23,9 +23,10 @@ function editor(ns, f, reload) {
   }));
   const hist = f.history.length
     ? h('div', { class: 'list' }, f.history.map((v) => h('div', { class: 'item' }, h('span', { class: 'small' }, `${fmtDate(v.at)} · ${v.chars.toLocaleString()} chars`),
-      h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async (e) => {
+      h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async (ev) => {
+          const btn = ev.currentTarget;
         if (!(await confirmDialog({ title: `Roll back ${f.name}?`, body: `Restore the version from ${fmtDate(v.at)}. The current content is saved first, so this can be undone.`, confirm: 'Roll back' }))) return;
-        await busy(e.currentTarget, async () => { await api.post(`/api/memory/${f.file}/rollback?ns=${enc(ns)}`, { id: v.id }); toast('Rolled back', 'ok'); await reload(); });
+        await busy(btn, async () => { await api.post(`/api/memory/${f.file}/rollback?ns=${enc(ns)}`, { id: v.id }); toast('Rolled back', 'ok'); await reload(); });
       } }, 'Roll back'))))
     : h('p', { class: 'muted small' }, 'No earlier versions yet.');
   return h('section', { class: 'card stack', 'aria-labelledby': `h-${f.file}` },

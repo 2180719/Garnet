@@ -17,10 +17,11 @@ export default async function mount(root) {
       const { keys } = await api.get('/api/keys');
       list.replaceChildren(keys.length ? table(['Name', 'Id', 'Scopes', 'State', 'Expires', 'Last used', ''], keys.map((k) => [
         h('span', null, k.name, k.id === session.id ? [' ', pill('this session', 'accent')] : null), h('code', null, k.id), k.scopes.join(', '), state(k), k.expiresAt ? fmtDate(k.expiresAt) : 'never', k.lastUsedAt ? ago(k.lastUsedAt) : 'never',
-        k.revokedAt ? '' : h('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: async (e) => {
+        k.revokedAt ? '' : h('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: async (ev) => {
+          const btn = ev.currentTarget;
           const self = k.id === session.id;
           if (!(await confirmDialog({ title: `Revoke "${k.name}"?`, body: self ? 'This is the key you are signed in with. You will be signed out.' : 'Anything using this key will stop working immediately.', confirm: 'Revoke', danger: true }))) return;
-          await busy(e.currentTarget, async () => {
+          await busy(btn, async () => {
             await api.del(`/api/keys/${enc(k.id)}`);
             toast('Key revoked', 'ok');
             if (self) { session.clear(); location.reload(); return; }

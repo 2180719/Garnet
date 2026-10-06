@@ -25,6 +25,7 @@ function signOut(message = '') {
   session.clear();
   notice = message;
   runCleanups();
+  nav++;
   shell = null;
   history.replaceState(null, '', `${location.pathname}${location.search}`);
   showLogin();
@@ -89,7 +90,7 @@ function showShell() {
     h('div', { class: 'brand' }, gemBtn(), h('a', { href: '#/overview' }, 'Ruby')), nav,
     h('div', { class: 'side-foot' }, h('p', { class: 'quote' }, `“${dailyQuote()}”`),
       h('div', { class: 'who' }, themeBtn(), h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => signOut('You have been signed out.') }, icon('out'), 'Sign out'))));
-  const main = h('main', { class: 'main', id: 'main' });
+  const main = h('main', { class: 'main', id: 'main', tabindex: '-1' });
   const top = h('header', { class: 'top' }, h('div', { class: 'brand' }, h('a', { href: '#/overview' }, 'Ruby'), gemBtn()), h('div', { class: 'tools' }, themeBtn(), menu));
   menu.addEventListener('click', () => {
     const open = side.classList.toggle('open');
@@ -145,16 +146,25 @@ async function hashChange() {
     const mod = await import(`./pages/${id}.js`);
     const view = h('div', { class: 'page' });
     await mod.default(view, ctx);
-    if (mine !== nav) return;
+    if (mine !== nav || !shell) return;
     shell.main.replaceChildren(view);
     (view.querySelector('h1') || shell.main).focus({ preventScroll: true });
     window.scrollTo(0, 0);
   } catch (e) {
-    if (mine === nav) shell.main.replaceChildren(h('div', { class: 'page' }, errorBox(e, hashChange)));
+    if (mine === nav && shell) shell.main.replaceChildren(h('div', { class: 'page' }, errorBox(e, hashChange)));
   }
 }
-addEventListener('hashchange', hashChange);
+addEventListener('hashchange', () => {
+  if (/(?:^#|&)key=ruby_/.test(location.hash)) { // a login link opened in a tab that is already showing the dashboard
+    takeKeyFromHash();
+    if (shell) signOut();
+    showShell();
+    return;
+  }
+  hashChange();
+});
 
+document.querySelector('.skip').addEventListener('click', (e) => { e.preventDefault(); document.getElementById('main')?.focus(); });
 takeKeyFromHash();
 watchKonami();
 if (session.key) showShell();

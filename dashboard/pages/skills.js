@@ -23,9 +23,10 @@ async function detail(root, name) {
   const load = async () => {
     try {
       const s = await api.get(`/api/skills/${enc(name)}`);
-      const act = (verb, label, cls, confirm) => h('button', { class: `btn ${cls}`, type: 'button', onclick: async (e) => {
+      const act = (verb, label, cls, confirm) => h('button', { class: `btn ${cls}`, type: 'button', onclick: async (ev) => {
+          const btn = ev.currentTarget;
         if (confirm && !(await confirmDialog({ title: confirm.title, body: confirm.body, confirm: label }))) return;
-        await busy(e.currentTarget, async () => {
+        await busy(btn, async () => {
           await api.post(`/api/skills/${enc(name)}/${verb}`);
           if (verb === 'archive') {
             toast(`Archived ${name}`, 'ok', { action: { label: 'Undo', run: () => api.post(`/api/skills/${enc(name)}/unarchive`).then(() => toast('Restored', 'ok')).catch((x) => toast(x.message, 'error')) } });

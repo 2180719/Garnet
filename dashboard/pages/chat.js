@@ -15,11 +15,11 @@ function bubble(m) {
 }
 function paint(m) {
   const n = m.node;
-  if (!n || !n.isConnected) return;
+  if (!n) return;
   n.className = `msg msg-${m.role}${m.live ? ' typing' : ''}`;
   n.textContent = m.text || (m.live ? 'Thinking' : '');
   const log = n.parentNode;
-  if (log && log.scrollHeight - log.scrollTop - log.clientHeight < 140) log.scrollTop = log.scrollHeight;
+  if (log && n.isConnected && log.scrollHeight - log.scrollTop - log.clientHeight < 140) log.scrollTop = log.scrollHeight;
 }
 
 export default function mount(root) {
