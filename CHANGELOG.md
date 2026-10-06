@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Phase 4: scheduling, approvals, Signal, providers
+- Cron jobs and heartbeats in config: time zones and DST, occurrence IDs so a slot runs once across restarts, coalesced catch-up, no overlap, cheap pre-checks (`file_changed`, `url_changed`) that skip the model, per-run and daily token budgets, pausing after repeated failures, `NOTHING_TO_REPORT` quiet runs, `ruby jobs ...`.
+- Jobs run with their own agent: their permission grant intersected with the owner's (read-only by default).
+- Approvals over chat: `/approve <code>` and `/deny <code>`, single-use grants bound to the exact operation.
+- Signal channel through a local signal-cli daemon (HTTP JSON-RPC + SSE).
+- OpenAI-compatible model adapter for OpenRouter and local servers.
+
 ### Phase 3: memory, skills, context
 - Bounded memory (`MEMORY.md` 2,200 chars, `USER.md` 1,400 chars) per namespace, versioned with rollback, a `memory` tool, and `ruby memory show|edit|history|rollback`.
 - Skills in the agentskills.io `SKILL.md` format: only the index is in the prompt; owner-edited skills are locked and agent changes become proposals; `ruby skills ...`.

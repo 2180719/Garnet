@@ -199,6 +199,12 @@ export class GatewayStore {
     return r?.session_id;
   }
 
+  /** The conversation currently bound to a session, if any. */
+  keyForSession(sessionId: string): string | undefined {
+    const r = this.db.prepare('SELECT key FROM conversations WHERE session_id = ?').get(sessionId) as { key: string } | undefined;
+    return r?.key;
+  }
+
   bindConversation(key: string, sessionId: string): void {
     this.db
       .prepare('INSERT INTO conversations (key, session_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at')

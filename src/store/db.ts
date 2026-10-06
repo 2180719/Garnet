@@ -112,6 +112,42 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX api_audit_by_time ON api_audit(at);
   `,
+  `
+  CREATE TABLE approvals (
+    code TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    decided_at TEXT,
+    used_at TEXT
+  );
+  CREATE INDEX approvals_by_session ON approvals(session_id, status);
+  CREATE TABLE job_runs (
+    occurrence_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    task_id TEXT,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    note TEXT
+  );
+  CREATE INDEX job_runs_by_job ON job_runs(job_id, started_at);
+  CREATE TABLE job_state (
+    job_id TEXT PRIMARY KEY,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    paused INTEGER NOT NULL DEFAULT 0,
+    check_value TEXT,
+    last_scheduled_for TEXT
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

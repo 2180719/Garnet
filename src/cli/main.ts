@@ -8,7 +8,7 @@ import { FakeModel } from '../models/index.ts';
 import type { Approver } from '../policy/index.ts';
 import type { RuntimeEvent } from '../runtime/index.ts';
 import { sparkle } from './sparkle.ts';
-import { api, pair, service, start } from './admin.ts';
+import { api, jobs, pair, service, start } from './admin.ts';
 import { memory, skills } from './knowledge.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
@@ -28,6 +28,8 @@ Usage:
   ruby api key create --name <n> [--scopes chat,read,admin] [--expires-days N]
   ruby api key list|revoke <id>
                             Opt-in HTTP API and its keys
+  ruby jobs list|history <id>|run <id>|resume <id>
+                            Scheduled jobs and heartbeats (defined in config.json)
   ruby memory show|edit|history|rollback
                             Inspect and correct what Ruby remembers
   ruby skills list|show|proposal|accept|reject|archive|stale
@@ -77,6 +79,8 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return await service(rest, io);
       case 'memory':
         return memory(rest, io);
+      case 'jobs':
+        return await jobs(rest, io);
       case 'skills':
         return skills(rest, io);
       case '--sparkle':

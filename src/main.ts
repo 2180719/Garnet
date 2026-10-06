@@ -1,14 +1,15 @@
 // Composition root: the only place modules are wired together.
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { TelegramChannel } from './channels/index.ts';
+import { SignalChannel, TelegramChannel } from './channels/index.ts';
 import { loadConfig, redact, rubyHome, type Paths, type RubyConfig } from './config/index.ts';
-import { RubyError, type ChannelAdapter, type ModelAdapter } from './contracts/index.ts';
-import { ApiKeys, ApiServer, Gateway, type LogFn } from './gateway/index.ts';
-import { AnthropicModel, FakeModel } from './models/index.ts';
-import { Policy, deferAll, type Approver } from './policy/index.ts';
+import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter } from './contracts/index.ts';
+import { ApiKeys, ApiServer, Gateway, persistentApprover, type LogFn } from './gateway/index.ts';
+import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
+import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue } from './runtime/index.ts';
-import { GatewayStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
+import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
+import { Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, fileTools, readArtifactTool } from './tools/index.ts';
@@ -25,6 +26,10 @@ export type Ruby = {
   keyStore: KeyStore;
   keys: ApiKeys;
   registry: ToolRegistry;
+  approvals: ApprovalStore;
+  jobStore: JobStore;
+  ownerPolicy: Policy;
+  makeAgent: (policy: Policy, budget: Budget) => Agent;
   memory: MemoryStore;
   skills: SkillStore;
   agent: Agent;
@@ -56,22 +61,26 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   const artifacts = new ArtifactStore(join(paths.home, 'artifacts'));
   const registry = new ToolRegistry();
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
-  const policy = new Policy(config.permissions);
-  const executor = new ToolExecutor({ registry, policy, approver: options.approver ?? deferAll, artifacts });
+  const approvals = new ApprovalStore(db);
+  const approver = options.approver ?? persistentApprover(approvals);
   const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, env));
-  const agent = new Agent({
-    store,
-    model,
-    registry,
-    executor,
-    budget: config.budgets,
-    workspace: paths.workspace,
-    persona: config.persona,
-    promptSections: (ns) => [memory.snapshot(ns), skills.index()],
-    compactAtTokens: config.context.compactAtTokens,
-    keepTurns: config.context.keepTurns,
-    maxOutputTokens: config.model.maxOutputTokens,
-  });
+  /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
+  const makeAgent = (policy: Policy, budget: Budget): Agent =>
+    new Agent({
+      store,
+      model,
+      registry,
+      executor: new ToolExecutor({ registry, policy, approver, artifacts }),
+      budget,
+      workspace: paths.workspace,
+      persona: config.persona,
+      promptSections: (ns) => [memory.snapshot(ns), skills.index()],
+      compactAtTokens: config.context.compactAtTokens,
+      keepTurns: config.context.keepTurns,
+      maxOutputTokens: config.model.maxOutputTokens,
+    });
+  const ownerPolicy = new Policy(config.permissions);
+  const agent = makeAgent(ownerPolicy, config.budgets);
   return {
     config,
     paths,
@@ -79,6 +88,10 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     db,
     store,
     gatewayStore: new GatewayStore(db),
+    approvals,
+    jobStore: new JobStore(db),
+    ownerPolicy,
+    makeAgent,
     keyStore,
     keys: new ApiKeys(keyStore),
     registry,
@@ -94,6 +107,10 @@ export function createModel(config: RubyConfig, env: NodeJS.ProcessEnv): ModelAd
   const m = config.model;
   if (m.provider === 'fake') return new FakeModel();
   const apiKey = env[m.apiKeyEnv];
+  if (m.provider === 'openai-compatible') {
+    // Local servers often need no key.
+    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow });
+  }
   if (!apiKey) {
     throw new RubyError('config', `No API key found. Set the ${m.apiKeyEnv} environment variable, or run with --fake.`);
   }
@@ -114,28 +131,66 @@ export function createChannels(config: RubyConfig, env: NodeJS.ProcessEnv): Chan
     if (!token) throw new RubyError('config', `Telegram is enabled but ${tg.tokenEnv} is not set.`);
     channels.push(new TelegramChannel({ token }));
   }
+  const sig = config.channels.signal;
+  if (sig.enabled) channels.push(new SignalChannel({ account: sig.account!, baseUrl: sig.baseUrl }));
   return channels;
 }
 
-export type Service = { gateway: Gateway; api: ApiServer | null; stop: () => Promise<void> };
+export type Service = { gateway: Gateway; api: ApiServer | null; scheduler: Scheduler; stop: () => Promise<void> };
+
+/** Each job runs as its own agent: its grant intersected with the owner's permissions, and its own budget. */
+function jobAgents(ruby: Ruby): Map<string, Agent> {
+  const agents = new Map<string, Agent>();
+  for (const job of ruby.config.jobs) {
+    const policy = ruby.ownerPolicy.intersect(new Policy(job.permissions));
+    agents.set(`job:${job.id}`, ruby.makeAgent(policy, { ...ruby.config.budgets, maxTokens: job.budget.maxTokensPerRun, maxWallMs: job.timeoutMinutes * 60_000 }));
+  }
+  return agents;
+}
 
 /** Starts the long-running service: gateway, channels and (if enabled) the HTTP API. */
-export async function startService(ruby: Ruby, log: LogFn, overrides: { channels?: ChannelAdapter[] } = {}): Promise<Service> {
+/** Wires the gateway and scheduler without starting anything. `deliver` is false for short-lived CLI processes. */
+export function buildService(ruby: Ruby, log: LogFn, channels: ChannelAdapter[], deliver: boolean): { gateway: Gateway; scheduler: Scheduler; channels: ChannelAdapter[] } {
   const { config } = ruby;
-  const channels = overrides.channels ?? createChannels(config, ruby.env);
+  const agents = jobAgents(ruby);
   const gateway = new Gateway({
     store: ruby.gatewayStore,
+    approvals: ruby.approvals,
     sessions: ruby.store,
     agent: ruby.agent,
+    agentFor: (key) => agents.get(key),
     lanes: new LaneQueue(config.gateway.maxConcurrent),
     channels,
     routes: config.routes,
     pairingTtlMinutes: config.gateway.pairingTtlMinutes,
+    deliveryEnabled: deliver,
     log: (level, message) => log(level, redact(message)),
   });
+  const scheduler = new Scheduler({
+    jobs: config.jobs,
+    store: ruby.jobStore,
+    workspace: ruby.paths.workspace,
+    enabled: config.scheduler.enabled,
+    tickSeconds: config.scheduler.tickSeconds,
+    log,
+    run: (job, text, signal) => gateway.chat(`job:${job.id}`, text, { signal, source: 'scheduler' }),
+    notify: (job, text) => {
+      if (!job.notify) return;
+      const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
+      gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text);
+    },
+  });
+  return { gateway, scheduler, channels };
+}
+
+/** Starts the long-running service: gateway, channels, scheduler and (if enabled) the HTTP API. */
+export async function startService(ruby: Ruby, log: LogFn, overrides: { channels?: ChannelAdapter[] } = {}): Promise<Service> {
+  const { config } = ruby;
+  const { gateway, scheduler, channels } = buildService(ruby, log, overrides.channels ?? createChannels(config, ruby.env), true);
   let api: ApiServer | null = null;
   try {
     await gateway.start();
+    scheduler.start();
     if (config.api.enabled) {
       api = new ApiServer({
         gateway,
@@ -150,14 +205,20 @@ export async function startService(ruby: Ruby, log: LogFn, overrides: { channels
       log('info', `API listening on http://${address.address}:${address.port}`);
     }
   } catch (e) {
+    await scheduler.stop();
     await gateway.stop(0);
     throw e;
+  }
+  if (config.jobs.length) {
+    log('info', `Scheduler: ${config.jobs.filter((j) => j.enabled).length} of ${config.jobs.length} job(s) enabled${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
   }
   if (channels.length === 0 && !api) log('warn', 'No channels or API enabled; Ruby is idle. Enable one in config.json.');
   return {
     gateway,
     api,
+    scheduler,
     stop: async () => {
+      await scheduler.stop();
       await api?.close();
       await gateway.stop();
     },

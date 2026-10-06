@@ -7,15 +7,19 @@ import {
   type TaskRecord,
 } from '../contracts/index.ts';
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
-import type { GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
+import type { ApprovalStore, GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
 
 export type Route = { match: { channel: string; chatId?: string | undefined }; conversation: string };
 export type LogFn = (level: 'info' | 'warn' | 'error', message: string) => void;
 
 export type GatewayDeps = {
   store: GatewayStore;
+  /** Pending approvals; enables /approve and /deny in chat. */
+  approvals?: ApprovalStore;
   sessions: SessionStore;
   agent: Agent;
+  /** Agent for special conversations (e.g. `job:<id>` runs with the job's permissions). Defaults to `agent`. */
+  agentFor?: (conversationKey: string) => Agent | undefined;
   lanes: LaneQueue;
   channels: ChannelAdapter[];
   routes?: Route[];
@@ -25,6 +29,8 @@ export type GatewayDeps = {
   /** Delivery poll interval. The outbox is also flushed right after each reply. */
   deliveryIntervalMs?: number;
   maxDeliveryAttempts?: number;
+  /** False in short-lived processes (CLI): replies stay queued for the running service to send. */
+  deliveryEnabled?: boolean;
 };
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -103,9 +109,16 @@ export class Gateway {
     return this.deps.lanes.run(conversationKey, async () => {
       const sessionId = this.sessionFor(conversationKey, options.source);
       const before = this.deps.sessions.lastSeq(sessionId);
-      const task = await this.deps.agent.run(sessionId, text, options);
+      const agent = this.deps.agentFor?.(conversationKey) ?? this.deps.agent;
+      const task = await agent.run(sessionId, text, options);
       return { task, text: this.replyText(sessionId, before, task), sessionId };
     });
+  }
+
+  /** Queues a proactive message (scheduled results, alerts) to a chat. */
+  notify(target: { channel: string; account: string; chatId: string }, text: string): void {
+    this.deps.store.enqueue({ ...target, text });
+    void this.deliver();
   }
 
   /** Channel liveness and delivery backlog, for health endpoints. */
@@ -146,6 +159,29 @@ export class Gateway {
       this.reply(row, 'Started a fresh conversation. Memory and settings are unchanged.');
       return;
     }
+    if ((command === '/approve' || command === '/deny') && this.deps.approvals) {
+      store.setInbox(row.id, 'done');
+      const code = row.text.trim().split(/\s+/)[1]?.toUpperCase() ?? '';
+      const pending = this.deps.approvals.get(code);
+      // Owners may approve from any paired chat; the task resumes in the conversation that asked.
+      const targetKey = pending ? (store.keyForSession(pending.sessionId) ?? null) : null;
+      if (!pending || !targetKey) {
+        this.reply(row, 'No pending approval with that code.');
+        return;
+      }
+      const decided = this.deps.approvals.decide(code, command === '/approve' ? 'approved' : 'denied', this.now().toISOString());
+      if (!decided) {
+        this.reply(row, 'That approval already expired or was decided.');
+        return;
+      }
+      // Continue the task in the same conversation; an approval grants exactly that operation once.
+      const text =
+        command === '/approve'
+          ? `[Owner approved ${decided.code}: ${decided.summary}] Go ahead with exactly that operation, then continue.`
+          : `[Owner declined ${decided.code}: ${decided.summary}] Do not do that. Continue without it, or explain what you need.`;
+      void this.deps.lanes.run(targetKey, () => this.process({ ...row, text }, targetKey)).catch((e) => this.log('error', `resuming ${row.id}: ${errorMessage(e)}`));
+      return;
+    }
     if (command === '/start') {
       store.setInbox(row.id, 'done');
       this.reply(row, "Hi! I'm Ruby. Send me a message to get started. /new starts a fresh conversation; /stop cancels a running task.");
@@ -155,7 +191,8 @@ export class Gateway {
   }
 
   private async process(row: InboxRow, key: string): Promise<void> {
-    const { store, sessions, agent } = this.deps;
+    const { store, sessions } = this.deps;
+    const agent = this.deps.agentFor?.(key) ?? this.deps.agent;
     const sessionId = this.sessionFor(key, row.channel);
     store.setInbox(row.id, 'processing', { sessionId });
     const controller = new AbortController();
@@ -191,12 +228,19 @@ export class Gateway {
       case 'cancelled':
         return text ? `${text}\n\n(Stopped.)` : 'Stopped.';
       case 'waiting_for_approval':
-        return `${text ? `${text}\n\n` : ''}⏸ ${task.reason ?? 'An action needs approval.'} Chat approvals are not available yet: allow it in config, or run this from \`ruby chat\` on the host.`;
+        return `${text ? `${text}\n\n` : ''}${this.approvalPrompt(sessionId) || `⏸ ${task.reason ?? 'An action needs approval.'}`}`;
       case 'budget_exhausted':
         return `${text ? `${text}\n\n` : ''}(Stopped early: ${task.reason ?? 'budget exhausted'})`;
       default:
         return `Sorry, I couldn't finish that. ${task.reason ?? ''}`.trim();
     }
+  }
+
+  private approvalPrompt(sessionId: string): string {
+    const pending = this.deps.approvals?.pending(sessionId, this.now().toISOString()) ?? [];
+    if (pending.length === 0) return '';
+    const lines = pending.map((a) => `• ${a.summary}\n  /approve ${a.code}   /deny ${a.code}`);
+    return `⏸ I need your approval to continue:\n${lines.join('\n')}`;
   }
 
   private offerPairing(row: InboxRow): void {
@@ -257,6 +301,7 @@ export class Gateway {
 
   /** Sends due outbox messages. Concurrent calls share one pass. */
   deliver(): Promise<void> {
+    if (this.deps.deliveryEnabled === false) return Promise.resolve();
     if (this.delivering) return this.delivering;
     this.delivering = this.deliverOnce().finally(() => {
       this.delivering = null;

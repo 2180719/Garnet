@@ -7,6 +7,8 @@ export type ApprovalRequest = {
   tool: string;
   capability: Capability;
   targets: string[];
+  /** Validated input; approvals are bound to this exact operation. */
+  input: unknown;
   /** Human-readable summary of the operation, shown to the owner. */
   summary: string;
 };

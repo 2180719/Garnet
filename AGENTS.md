@@ -21,13 +21,14 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | `src/store/` | SQLite: schema migrations, sessions, append-only event log, tasks, gateway tables, API keys and audit log. |
 | `src/policy/` | Capability permissions, approvals, workspace path containment. |
 | `src/tools/` | Tool registry, executor (repair → validate → authorize → run with limits), artifacts for large outputs, built-in tools. |
-| `src/models/` | Model adapters: `fake` (tests) and `anthropic`. |
+| `src/models/` | Model adapters: `fake` (tests), `anthropic`, and `openai-compatible` (OpenRouter, local servers). |
 | `src/context/` | Frozen per-session system prompt, model-facing history derived from events, keep-tail compaction planning. |
 | `src/memory/` | Bounded `MEMORY.md`/`USER.md` per namespace with versioning, and the `memory` tool. |
 | `src/skills/` | `SKILL.md` skills (agentskills.io format) with provenance, owner-edit locks and proposals. |
 | `src/runtime/` | Agent loop, budgets, cancellation, retries, per-session lanes. |
-| `src/gateway/` | Identity and pairing, conversation routing, durable inbox/outbox delivery, restart recovery, API keys, HTTP API. |
-| `src/channels/` | Messaging adapters (Telegram). Normalize a platform; no routing or persistence. |
+| `src/gateway/` | Identity and pairing, chat approvals (`/approve`, `/deny`), conversation routing, durable inbox/outbox delivery, restart recovery, API keys, HTTP API. |
+| `src/channels/` | Messaging adapters (Telegram, Signal via signal-cli). Normalize a platform; no routing or persistence. |
+| `src/scheduler/` | Cron jobs and heartbeats with pre-checks, budgets, catch-up and failure pausing; runs go through the gateway. |
 | `src/service/` | systemd/launchd service definitions and install. |
 | `src/cli/` | The `ruby` command. |
 | `src/main.ts` | Composition root: the only place modules are wired together. |

@@ -11,3 +11,11 @@ Messaging-platform adapters that implement `ChannelAdapter` from `contracts/chan
 - Never log or return the bot token; redact it from every error message.
 - Tests are offline: inject `fetch` and `sleep`; no real timers above 50ms.
 - Adding a channel: create `<name>.ts` with a class implementing `ChannelAdapter` (constructor takes options plus optional `fetch`/`sleep`), add a `<name>.test.ts`, export it from `index.ts`, and wire it in `src/main.ts` from config.
+
+## Signal
+
+- `SignalChannel` talks to a local `signal-cli -a +NUMBER daemon --http 127.0.0.1:8080` (`GET /api/v1/check`, SSE `GET /api/v1/events`, JSON-RPC `POST /api/v1/rpc`). No dependencies. The RPC endpoint is unauthenticated, so a non-loopback `baseUrl` must be https (else `RubyError('config')`).
+- Chat ids: `group:<groupId>` for groups, otherwise the sender's number (or uuid). `externalId` is `<sender uuid|number>:<timestamp>`. Envelopes without `dataMessage.message` (receipts, typing, sync) and messages from the bot's own number are ignored.
+- Inbound is NOT at-least-once. SSE has no durable offsets: the sink is awaited sequentially, a failing sink is retried 4 times with backoff, then the message is dropped and `lastError` is set. A crash or restart can lose messages (the daemon only replays its last ~1000 events to a `Last-Event-ID` reconnect within one daemon lifetime). The gateway must not assume Signal gives at-least-once.
+- `health().ok` is true while the event stream is connected, or if traffic was seen in the last 2 minutes.
+- Send errors: network/5xx are retryable; JSON-RPC errors and per-recipient failures (unregistered, invalid group) are not, except NETWORK_FAILURE. `replyToExternalId` is ignored (Signal quoting needs the author).

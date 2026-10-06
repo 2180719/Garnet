@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { writeConfig } from '../config/index.ts';
 import { RubyError } from '../contracts/index.ts';
 import { approvePairing, SCOPES, type Scope } from '../gateway/index.ts';
-import { createRuby, startService, VERSION } from '../main.ts';
+import { buildService, createRuby, startService, VERSION } from '../main.ts';
 import { defaultEntry, installService, planService, serviceStatus, uninstallService, type ServiceResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 
@@ -141,4 +141,51 @@ export async function service(args: string[], io: Io): Promise<number> {
   for (const c of result.commands) io.out(`  $ ${c.cmd.join(' ')}  → exit ${c.code}${c.stderr.trim() ? `\n    ${c.stderr.trim()}` : ''}${sub === 'status' && c.stdout.trim() ? `\n${c.stdout.trim()}` : ''}\n`);
   for (const n of result.notes) io.out(`  note: ${n}\n`);
   return result.ok ? 0 : 1;
+}
+
+export async function jobs(args: string[], io: Io): Promise<number> {
+  const [sub = 'list', id] = args;
+  const ruby = createRuby({ noModel: sub !== 'run' });
+  try {
+    const { config, jobStore } = ruby;
+    const job = id ? config.jobs.find((j) => j.id === id) : undefined;
+    if (sub === 'list') {
+      if (!config.jobs.length) io.out('No jobs. Add them under "jobs" in config.json (`ruby config explain` describes each field).\n');
+      if (!config.scheduler.enabled) io.out('The scheduler is switched off (scheduler.enabled = false).\n');
+      for (const j of config.jobs) {
+        const state = jobStore.state(j.id);
+        const last = jobStore.runs(j.id, 1)[0];
+        const when = j.kind === 'cron' ? `cron "${j.cron}" ${j.timezone ?? ''}`.trim() : `every ${j.everyMinutes} min`;
+        const status = !j.enabled ? 'disabled' : state.paused ? 'PAUSED' : 'enabled';
+        io.out(`${j.id.padEnd(20)} ${status.padEnd(8)} ${when}${last ? `  · last: ${last.status} ${last.startedAt}` : ''}\n`);
+      }
+      return 0;
+    }
+    if (!job) {
+      io.err(id ? `No job "${id}".\n` : 'Usage: ruby jobs list | history <id> | run <id> | resume <id>\n');
+      return id ? 1 : 2;
+    }
+    if (sub === 'history') {
+      for (const r of jobStore.runs(job.id)) io.out(`${r.startedAt}  ${r.status.padEnd(20)} ${String(r.tokens).padStart(7)} tok  ${r.note ?? ''}\n`);
+      return 0;
+    }
+    if (sub === 'resume') {
+      jobStore.saveState({ ...jobStore.state(job.id), paused: false, consecutiveFailures: 0 });
+      io.out(`Resumed ${job.id}.\n`);
+      return 0;
+    }
+    if (sub === 'run') {
+      // Runs in this process; any notification is queued for the running service to deliver.
+      const log = (level: string, message: string) => io.err(`${level}: ${message}\n`);
+      const { scheduler } = buildService(ruby, log, [], false);
+      await scheduler.runNow(job.id);
+      const r = jobStore.runs(job.id, 1)[0];
+      io.out(`Ran ${job.id}: ${r?.status ?? 'unknown'}${r?.note ? ` (${r.note})` : ''}, ${r?.tokens ?? 0} tokens.\n`);
+      return 0;
+    }
+    io.err('Usage: ruby jobs list | history <id> | run <id> | resume <id>\n');
+    return 2;
+  } finally {
+    ruby.close();
+  }
 }

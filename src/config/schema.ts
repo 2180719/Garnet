@@ -1,10 +1,68 @@
 import { z } from 'zod';
+import { parseCron, validTimeZone } from './cron.ts';
 
 export const CONFIG_VERSION = 1;
 
 const permission = z.enum(['allow', 'ask', 'deny']);
 
 // Every field has a description: the dashboard and `ruby config explain` render them.
+const capabilityGrant = z.object({
+  'fs.read': permission.default('allow'),
+  'fs.write': permission.default('deny'),
+  'net.fetch': permission.default('deny'),
+  exec: permission.default('deny'),
+  'message.send': permission.default('deny'),
+  'memory.write': permission.default('deny'),
+  'schedule.edit': permission.default('deny'),
+});
+
+const jobSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9-]{1,40}$/).describe('Short unique name.'),
+    enabled: z.boolean().default(true).describe('Disabled jobs never run and never call the model.'),
+    kind: z.enum(['cron', 'heartbeat']).describe('cron: calendar times. heartbeat: every N minutes.'),
+    cron: z.string().optional().describe('5-field cron expression (minute hour day month weekday), for kind=cron.'),
+    everyMinutes: z.number().int().min(5).max(10_080).optional().describe('Interval for kind=heartbeat.'),
+    timezone: z.string().optional().describe('IANA time zone, e.g. Europe/London. Defaults to the host zone.'),
+    instructions: z.string().min(1).max(4000).describe('What Ruby should do on each run.'),
+    check: z
+      .discriminatedUnion('type', [
+        z.object({ type: z.literal('file_changed'), path: z.string().describe('Workspace-relative file to watch.') }),
+        z.object({ type: z.literal('url_changed'), url: z.string().url().describe('URL whose content to watch.') }),
+      ])
+      .optional()
+      .describe('Cheap check run first; the model is called only when it changed.'),
+    permissions: capabilityGrant.prefault({}).describe('What the job may do. Intersected with the owner permissions; defaults to read-only.'),
+    budget: z
+      .object({
+        maxTokensPerRun: z.number().int().min(1000).default(100_000).describe('Token cap for one run.'),
+        maxTokensPerDay: z.number().int().min(1000).default(500_000).describe('Token cap across all runs in 24 hours.'),
+      })
+      .prefault({}),
+    timeoutMinutes: z.number().int().min(1).max(240).default(10).describe('Runs are cancelled after this long.'),
+    notify: z
+      .object({ channel: z.string(), chatId: z.string(), account: z.string().default('default') })
+      .optional()
+      .describe('Where to send results. Without it, results are only kept in run history.'),
+    notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Ruby has something worth reporting.'),
+    catchUp: z.boolean().default(true).describe('After downtime, run missed occurrences once (coalesced). Otherwise skip them.'),
+  })
+  .strict()
+  .superRefine((j, ctx) => {
+    if (j.kind === 'cron' && !j.cron) ctx.addIssue({ code: 'custom', path: ['cron'], message: 'cron jobs need a cron expression' });
+    if (j.kind === 'heartbeat' && !j.everyMinutes) ctx.addIssue({ code: 'custom', path: ['everyMinutes'], message: 'heartbeats need everyMinutes' });
+    if (j.cron) {
+      try {
+        parseCron(j.cron);
+      } catch (e) {
+        ctx.addIssue({ code: 'custom', path: ['cron'], message: (e as Error).message });
+      }
+    }
+    if (j.timezone && !validTimeZone(j.timezone)) ctx.addIssue({ code: 'custom', path: ['timezone'], message: `Unknown time zone "${j.timezone}"` });
+  });
+
+export type JobConfig = z.infer<typeof jobSchema>;
+
 export const configSchema = z
   .object({
     version: z.literal(CONFIG_VERSION).describe('Config format version. Migrated automatically.'),
@@ -14,7 +72,10 @@ export const configSchema = z
       .describe('Directory tools may work in. Defaults to <home>/workspace.'),
     model: z
       .object({
-        provider: z.enum(['anthropic', 'fake']).default('anthropic').describe('Model provider.'),
+        provider: z
+          .enum(['anthropic', 'openai-compatible', 'fake'])
+          .default('anthropic')
+          .describe('anthropic, or openai-compatible for OpenRouter and local servers (Ollama, llama.cpp, vLLM, LM Studio).'),
         name: z.string().default('claude-opus-5-5').describe('Model ID sent to the provider.'),
         effort: z
           .enum(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -26,7 +87,8 @@ export const configSchema = z
           .string()
           .default('ANTHROPIC_API_KEY')
           .describe('Name of the environment variable holding the API key. Keys never live in config.'),
-        baseUrl: z.string().url().optional().describe('Override the provider API base URL.'),
+        baseUrl: z.string().url().optional().describe('Provider API base URL. Required for openai-compatible, e.g. http://127.0.0.1:11434/v1.'),
+        contextWindow: z.number().int().min(4096).optional().describe('Context window of an openai-compatible model.'),
         maxOutputTokens: z.number().int().positive().default(32_000).describe('Output token cap per model call.'),
       })
       .prefault({})
@@ -94,6 +156,14 @@ export const configSchema = z
           })
           .prefault({})
           .describe('Telegram bot channel.'),
+        signal: z
+          .object({
+            enabled: z.boolean().default(false).describe('Connect Signal through a local signal-cli daemon.'),
+            account: z.string().optional().describe("The bot's Signal number in E.164 form, e.g. +15551234567."),
+            baseUrl: z.string().url().default('http://127.0.0.1:8080').describe('signal-cli daemon HTTP address (run: signal-cli -a <number> daemon --http 127.0.0.1:8080).'),
+          })
+          .prefault({})
+          .describe('Signal channel via signal-cli.'),
       })
       .prefault({})
       .describe('Messaging channels. Each is off until enabled.'),
@@ -121,6 +191,24 @@ export const configSchema = z
       )
       .default([])
       .describe('Optional rules that link chats into shared conversations. By default every chat is its own conversation.'),
+    scheduler: z
+      .object({
+        enabled: z.boolean().default(true).describe('Global switch for cron jobs and heartbeats. Off stops all new scheduled runs.'),
+        tickSeconds: z.number().int().min(5).max(300).default(30).describe('How often the scheduler checks for due jobs.'),
+      })
+      .prefault({})
+      .describe('Scheduled work.'),
+    jobs: z
+      .array(jobSchema)
+      .default([])
+      .superRefine((jobs, ctx) => {
+        const seen = new Set<string>();
+        for (const [i, j] of jobs.entries()) {
+          if (seen.has(j.id)) ctx.addIssue({ code: 'custom', path: [i, 'id'], message: `Duplicate job id "${j.id}"` });
+          seen.add(j.id);
+        }
+      })
+      .describe('Cron jobs and heartbeats. Each runs through the normal agent with its own permissions and budgets.'),
     dashboard: z
       .object({
         enabled: z.boolean().default(false).describe('Serve the dashboard through the API server.'),
@@ -128,7 +216,20 @@ export const configSchema = z
       .prefault({})
       .describe('Opt-in web dashboard.'),
   })
-  .strict();
+  .strict()
+  .superRefine((c, ctx) => {
+    if (c.model.provider === 'openai-compatible' && !c.model.baseUrl) {
+      ctx.addIssue({ code: 'custom', path: ['model', 'baseUrl'], message: 'openai-compatible needs model.baseUrl' });
+    }
+    if (c.channels.signal.enabled && !c.channels.signal.account) {
+      ctx.addIssue({ code: 'custom', path: ['channels', 'signal', 'account'], message: "Signal needs the bot's number" });
+    }
+    for (const [i, j] of c.jobs.entries()) {
+      if (j.notify && !(j.notify.channel === 'telegram' || j.notify.channel === 'signal')) {
+        ctx.addIssue({ code: 'custom', path: ['jobs', i, 'notify', 'channel'], message: 'notify.channel must be telegram or signal' });
+      }
+    }
+  });
 
 export type RubyConfig = z.infer<typeof configSchema>;
 export type Permission = z.infer<typeof permission>;

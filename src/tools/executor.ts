@@ -83,7 +83,8 @@ export class ToolExecutor {
         tool: tool.name,
         capability: tool.capability,
         targets,
-        summary: `${tool.name} ${targets.join(', ')}`.trim(),
+        input,
+        summary: describe(tool.name, input, targets, ctx.workspace),
       });
       if (answer === 'denied') return fail('denied', 'The owner declined this operation. Do not retry it.');
       if (answer === 'deferred') return fail('needs_approval', 'Waiting for the owner to approve this operation.');
@@ -128,4 +129,12 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
       },
     );
   });
+}
+
+/** A short, human-readable description of an operation for approval prompts. */
+function describe(tool: string, input: unknown, targets: string[], workspace: string): string {
+  const where = targets.map((t) => (t.startsWith(workspace + '/') ? t.slice(workspace.length + 1) : t)).join(', ');
+  const preview = JSON.stringify(input, (_k, v) => (typeof v === 'string' && v.length > 120 ? `${v.slice(0, 120)}… (${v.length} chars)` : v));
+  const short = preview.length > 300 ? `${preview.slice(0, 300)}…` : preview;
+  return `${tool}${where ? ` on ${where}` : ''} ${short}`;
 }
