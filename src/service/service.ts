@@ -9,7 +9,11 @@ export type ServicePlan = {
   /** Where the unit / plist file is written. */
   path: string;
   contents: string;
-  commands: { install: string[][]; uninstall: string[][]; status: string[][]; restart: string[][] };
+  /**
+   * `prepare` runs before `install` and may fail (e.g. unloading a service that is not loaded);
+   * install (re)starts the service, so reinstalling picks up a changed unit or plist.
+   */
+  commands: { prepare: string[][]; install: string[][]; uninstall: string[][]; status: string[][]; restart: string[][] };
   notes: string[];
 };
 
@@ -49,6 +53,12 @@ export type ServiceResult = {
 const SYSTEMD_UNIT = 'ruby.service';
 const LAUNCHD_LABEL = 'dev.ruby.agent';
 const NODE_FLAGS = ['--disable-warning=ExperimentalWarning'];
+/**
+ * Seconds the service manager waits after SIGTERM before killing Ruby. Shutdown closes the API
+ * (up to 20 s for in-flight requests), then drains running tasks (up to 20 s, then 5 s after
+ * cancelling them) and flushes deliveries, so 30 s could kill it mid-drain.
+ */
+const STOP_TIMEOUT_SEC = 60;
 
 /** Absolute path of src/cli/bin.ts, resolved relative to this module. */
 export function defaultEntry(): string {
@@ -91,7 +101,7 @@ Environment=${systemdQuote(`RUBY_HOME=${o.home}`)}
 EnvironmentFile=-${systemdPath(join(o.home, 'env'))}
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=30
+TimeoutStopSec=${STOP_TIMEOUT_SEC}
 KillSignal=SIGTERM
 NoNewPrivileges=true
 PrivateTmp=true
@@ -105,9 +115,12 @@ WantedBy=default.target
     path: join(o.userHome, '.config', 'systemd', 'user', SYSTEMD_UNIT),
     contents,
     commands: {
+      prepare: [],
       install: [
         ['systemctl', '--user', 'daemon-reload'],
-        ['systemctl', '--user', 'enable', '--now', SYSTEMD_UNIT],
+        ['systemctl', '--user', 'enable', SYSTEMD_UNIT],
+        // restart, not start: an already running service must pick up the new unit and code.
+        ['systemctl', '--user', 'restart', SYSTEMD_UNIT],
       ],
       uninstall: [['systemctl', '--user', 'disable', '--now', SYSTEMD_UNIT]],
       status: [['systemctl', '--user', 'status', SYSTEMD_UNIT, '--no-pager']],
@@ -129,6 +142,9 @@ function planLaunchd(o: PlanOptions): ServicePlan {
     'set -a; [ -f "$RUBY_HOME/env" ] && . "$RUBY_HOME/env"; set +a; exec ' +
     [o.nodePath, ...NODE_FLAGS, o.entry, 'start'].map(shellQuote).join(' ');
   const args = ['/bin/sh', '-c', script].map((a) => `    <string>${xmlEscape(a)}</string>`).join('\n');
+  // launchd's default PATH is /usr/bin:/bin:/usr/sbin:/sbin, which misses Homebrew and Docker Desktop
+  // (the Docker sandbox runs `docker`). Deterministic, so `ruby doctor` can compare the file.
+  const searchPath = [...new Set([dirname(o.nodePath), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
   const contents = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -143,6 +159,8 @@ ${args}
   <dict>
     <key>RUBY_HOME</key>
     <string>${xmlEscape(o.home)}</string>
+    <key>PATH</key>
+    <string>${xmlEscape(searchPath)}</string>
   </dict>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(repoRoot(o.entry))}</string>
@@ -153,6 +171,8 @@ ${args}
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ExitTimeOut</key>
+  <integer>${STOP_TIMEOUT_SEC}</integer>
   <key>StandardOutPath</key>
   <string>${xmlEscape(join(o.home, 'logs', 'ruby.out.log'))}</string>
   <key>StandardErrorPath</key>
@@ -167,6 +187,8 @@ ${args}
     path,
     contents,
     commands: {
+      // bootstrap fails if the agent is already loaded, so unload it first (a reinstall then restarts it).
+      prepare: [['launchctl', 'bootout', target]],
       install: [['launchctl', 'bootstrap', `gui/${uid}`, path]],
       uninstall: [['launchctl', 'bootout', target]],
       status: [['launchctl', 'print', target]],
@@ -210,7 +232,8 @@ const defaultDeps: ServiceDeps = {
     writeFileSync(path, contents, { mode });
     chmodSync(path, mode); // the open() mode is masked by umask and ignored for existing files
   },
-  mkdir: (path) => void mkdirSync(path, { recursive: true }),
+  // RUBY_HOME holds the env file with secrets: keep directories private to the user.
+  mkdir: (path) => void mkdirSync(path, { recursive: true, mode: 0o700 }),
   exists: (path) => existsSync(path),
   remove: (path) => rmSync(path, { force: true }),
   run: execCommand,
@@ -221,7 +244,7 @@ const ENV_TEMPLATE =
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-async function runAll(cmds: string[][], d: ServiceDeps, result: ServiceResult): Promise<void> {
+async function runAll(cmds: string[][], d: ServiceDeps, result: ServiceResult, mayFail = false): Promise<void> {
   for (const cmd of cmds) {
     let r: CommandResult;
     try {
@@ -230,7 +253,7 @@ async function runAll(cmds: string[][], d: ServiceDeps, result: ServiceResult): 
       r = { code: 1, stdout: '', stderr: errorText(e) };
     }
     result.commands.push({ cmd, ...r });
-    if (r.code !== 0) result.ok = false;
+    if (r.code !== 0 && !mayFail) result.ok = false;
   }
 }
 
@@ -253,6 +276,7 @@ export async function installService(plan: ServicePlan, deps: Partial<ServiceDep
     result.notes.push(`Could not write service files: ${errorText(e)}`);
     return result;
   }
+  await runAll(plan.commands.prepare, d, result, true);
   await runAll(plan.commands.install, d, result);
   return result;
 }
