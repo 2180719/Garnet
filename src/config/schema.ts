@@ -86,7 +86,7 @@ export const configSchema = z
         apiKeyEnv: z
           .string()
           .default('ANTHROPIC_API_KEY')
-          .describe('Name of the environment variable holding the API key. Keys never live in config.'),
+          .describe('Name of the environment variable (or encrypted secret, see `ruby secrets`) holding the API key. Keys never live in config.'),
         baseUrl: z.string().url().optional().describe('Provider API base URL. Required for openai-compatible, e.g. http://127.0.0.1:11434/v1.'),
         contextWindow: z.number().int().min(4096).optional().describe('Context window of an openai-compatible model.'),
         maxOutputTokens: z.number().int().positive().default(32_000).describe('Output token cap per model call.'),
@@ -181,14 +181,14 @@ export const configSchema = z
         telegram: z
           .object({
             enabled: z.boolean().default(false).describe('Connect a Telegram bot.'),
-            tokenEnv: z.string().default('TELEGRAM_BOT_TOKEN').describe('Environment variable holding the bot token from @BotFather.'),
+            tokenEnv: z.string().default('TELEGRAM_BOT_TOKEN').describe('Environment variable (or encrypted secret) holding the bot token from @BotFather.'),
           })
           .prefault({})
           .describe('Telegram bot channel.'),
         discord: z
           .object({
             enabled: z.boolean().default(false).describe('Connect a Discord bot (direct messages). Enable the Message Content intent in the developer portal.'),
-            tokenEnv: z.string().default('DISCORD_BOT_TOKEN').describe('Environment variable holding the bot token.'),
+            tokenEnv: z.string().default('DISCORD_BOT_TOKEN').describe('Environment variable (or encrypted secret) holding the bot token.'),
           })
           .prefault({})
           .describe('Discord bot channel.'),

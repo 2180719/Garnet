@@ -15,6 +15,7 @@ import { MemoryStore, memoryTool } from './memory/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, execTool, fileTools, readArtifactTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
+import { openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
 export const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }).version;
 
@@ -22,6 +23,10 @@ export type Ruby = {
   config: RubyConfig;
   paths: Paths;
   env: NodeJS.ProcessEnv;
+  /** The encrypted secret store at <home>/secrets (decrypted only when a secret is needed). */
+  secrets: SecretStore;
+  /** Resolves a secret name: process environment first, then the encrypted store. */
+  secret: SecretLookup;
   db: Db;
   store: SessionStore;
   gatewayStore: GatewayStore;
@@ -55,6 +60,8 @@ export type CreateOptions = {
 export function createRuby(options: CreateOptions = {}): Ruby {
   const env = options.env ?? process.env;
   const { config, paths } = loadConfig(options.home ?? rubyHome(env));
+  const secrets = openSecretStore(paths.home, env);
+  const secret = secretLookup(env, secrets);
   mkdirSync(paths.workspace, { recursive: true });
   const db = openDb(options.memoryDb ? ':memory:' : paths.database);
   const store = new SessionStore(db);
@@ -73,7 +80,7 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   }
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
-  const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, env));
+  const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, secret));
   /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
   const makeAgent = (policy: Policy, budget: Budget): Agent =>
     new Agent({
@@ -95,6 +102,8 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     config,
     paths,
     env,
+    secrets,
+    secret,
     db,
     store,
     gatewayStore: new GatewayStore(db),
@@ -114,16 +123,17 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   };
 }
 
-export function createModel(config: RubyConfig, env: NodeJS.ProcessEnv): ModelAdapter {
+/** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */
+export function createModel(config: RubyConfig, secret: SecretLookup): ModelAdapter {
   const m = config.model;
   if (m.provider === 'fake') return new FakeModel();
-  const apiKey = env[m.apiKeyEnv];
+  const apiKey = secret(m.apiKeyEnv);
   if (m.provider === 'openai-compatible') {
     // Local servers often need no key.
     return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow });
   }
   if (!apiKey) {
-    throw new RubyError('config', `No API key found. Set the ${m.apiKeyEnv} environment variable, or run with --fake.`);
+    throw new RubyError('config', `No API key found. Set the ${m.apiKeyEnv} environment variable or store it with \`ruby secrets set ${m.apiKeyEnv}\`, or run with --fake.`);
   }
   return new AnthropicModel({
     apiKey,
@@ -137,22 +147,22 @@ export function createModel(config: RubyConfig, env: NodeJS.ProcessEnv): ModelAd
 /** The website demo uses its own cheap model with the same provider and credentials. */
 function createDemo(ruby: Ruby): DemoChat {
   const d = ruby.config.api.demo;
-  const model = createModel({ ...ruby.config, model: { ...ruby.config.model, name: d.model, effort: 'low' } }, ruby.env);
+  const model = createModel({ ...ruby.config, model: { ...ruby.config.model, name: d.model, effort: 'low' } }, ruby.secret);
   return new DemoChat({ model, allowedOrigins: d.allowedOrigins, perIpPerHour: d.perIpPerHour, dailyTokenBudget: d.dailyTokenBudget, maxOutputTokens: d.maxOutputTokens });
 }
 
-export function createChannels(config: RubyConfig, env: NodeJS.ProcessEnv): ChannelAdapter[] {
+export function createChannels(config: RubyConfig, secret: SecretLookup): ChannelAdapter[] {
   const channels: ChannelAdapter[] = [];
   const tg = config.channels.telegram;
   if (tg.enabled) {
-    const token = env[tg.tokenEnv];
-    if (!token) throw new RubyError('config', `Telegram is enabled but ${tg.tokenEnv} is not set.`);
+    const token = secret(tg.tokenEnv);
+    if (!token) throw new RubyError('config', `Telegram is enabled but ${tg.tokenEnv} is not set (environment or \`ruby secrets set ${tg.tokenEnv}\`).`);
     channels.push(new TelegramChannel({ token }));
   }
   const dc = config.channels.discord;
   if (dc.enabled) {
-    const token = env[dc.tokenEnv];
-    if (!token) throw new RubyError('config', `Discord is enabled but ${dc.tokenEnv} is not set.`);
+    const token = secret(dc.tokenEnv);
+    if (!token) throw new RubyError('config', `Discord is enabled but ${dc.tokenEnv} is not set (environment or \`ruby secrets set ${dc.tokenEnv}\`).`);
     channels.push(new DiscordChannel({ token }));
   }
   const sig = config.channels.signal;
@@ -210,7 +220,7 @@ export function buildService(ruby: Ruby, log: LogFn, channels: ChannelAdapter[],
 /** Starts the long-running service: gateway, channels, scheduler and (if enabled) the HTTP API. */
 export async function startService(ruby: Ruby, log: LogFn, overrides: { channels?: ChannelAdapter[] } = {}): Promise<Service> {
   const { config } = ruby;
-  const { gateway, scheduler, channels } = buildService(ruby, log, overrides.channels ?? createChannels(config, ruby.env), true);
+  const { gateway, scheduler, channels } = buildService(ruby, log, overrides.channels ?? createChannels(config, ruby.secret), true);
   let api: ApiServer | null = null;
   try {
     // Fail fast rather than silently downgrade isolation; remove containers a crash may have left.
