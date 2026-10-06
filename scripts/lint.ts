@@ -33,13 +33,18 @@ for (const file of walk(SRC)) {
   const source = readFileSync(file, 'utf8');
   const from = moduleOf(file);
   const isTest = file.endsWith('.test.ts');
-  for (const match of source.matchAll(/^\s*(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/gm)) {
-    const spec = match[1]!;
+  // Static imports and re-exports, side-effect imports, and dynamic import() with a literal specifier.
+  const specs = [
+    ...source.matchAll(/^\s*(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/gm),
+    ...source.matchAll(/^\s*import\s+['"]([^'"]+)['"]/gm),
+    ...source.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g),
+  ].map((m) => m[1]!);
+  for (const spec of specs) {
     const where = `${relative(ROOT, file)}: "${spec}"`;
     if (spec.startsWith('node:')) continue;
     if (spec.startsWith('.')) {
       const target = resolve(dirname(file), spec);
-      if (!target.startsWith(SRC)) {
+      if (!target.startsWith(SRC + sep)) {
         if (!(isTest && target.startsWith(join(ROOT, 'test')))) problems.push(`${where} reaches outside src/`);
         continue;
       }

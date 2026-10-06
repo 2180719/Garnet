@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
@@ -35,6 +35,17 @@ test('config without a version is migrated and backed up', () => {
   assert.equal(config.persona, 'Be brief.');
   assert.ok(existsSync(join(home, 'config.json.bak-v0')));
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
+});
+
+test('a second migration keeps the earlier backup', () => {
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json.bak-v0'), 'earlier backup');
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ persona: 'Second.' }));
+  assert.equal(loadConfig(home).migrated, true);
+  assert.equal(readFileSync(join(home, 'config.json.bak-v0'), 'utf8'), 'earlier backup');
+  const backups = readdirSync(home).filter((n) => n.startsWith('config.json.bak-v0-'));
+  assert.equal(backups.length, 1);
+  assert.match(readFileSync(join(home, backups[0]!), 'utf8'), /Second/);
 });
 
 test('sandbox.user is optional uid:gid and never root', () => {

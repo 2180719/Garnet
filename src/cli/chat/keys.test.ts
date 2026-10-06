@@ -53,3 +53,7 @@ test('bracketed paste is one key, even across reads, with newlines normalized', 
   assert.deepEqual(names(p.feed('01~after')), ['paste:first', 'text:after']);
   assert.deepEqual(names(parse('\x1b[200~a\x1b[Ab\x1b[201~')), ['paste:a\x1b[Ab'], 'escape bytes inside a paste are text');
 });
+
+test('malformed or out-of-range key codes become unknown keys instead of throwing', () => {
+  assert.deepEqual(names(parse('\x1b[1114112u\x1b[u\x1b[27;5;99999999~x')), ['unknown', 'unknown', 'unknown', 'text:x']);
+});

@@ -6,7 +6,7 @@ The opt-in web dashboard. Static files served by the gateway (`src/gateway/stati
 
 - **CSP:** `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:`. No inline `<script>`, no `style="..."` in markup, no `eval`/`new Function`, no CDN, font or analytics. Set dynamic sizes with `el.style.x = ...` or `el.style.setProperty(...)` from JS (allowed); style everything else in `styles.css`.
 - **Untrusted data** (memory, skills, chat, job output, names, errors) is rendered with `h()` / `textContent` only. Never `innerHTML`. `node.replaceChildren(null)` prints "null": use `fill()` from `ui.js` when children may be null.
-- **Auth:** the key lives in `sessionStorage` (`api.js` `session`). Every request goes through `api.js`, which sends `Authorization: Bearer`. 401 signs out, 403/429/network errors become readable `ApiError`s.
+- **Auth:** `ruby dashboard` prints a one-time link, `#login=<key>`, holding an admin key that expires in 15 minutes. On load the dashboard removes the fragment from the address bar first, trades that key for a session key (admin, 1 day; `login.js`) and revokes it, so the link works once and a copy left in browser history is useless. `#key=<key>` (a key you made yourself) is used as is. The key lives only in this tab's `sessionStorage` (`api.js` `session`), never in `localStorage`, a cookie or a URL the server sees. Every request goes through `api.js`, which sends `Authorization: Bearer` (no cookies, so no CSRF surface). Sign out revokes a session key the dashboard minted. 401 signs out, 403/429/network errors become readable `ApiError`s.
 - **Storage** (`localStorage`/`sessionStorage`) is always wrapped in try/catch; the UI must work without it.
 - Accessible by default: landmarks, labels on every control, visible focus, `aria-live` toasts, `prefers-reduced-motion` respected (CSS and `achv.js`).
 
@@ -16,8 +16,9 @@ The opt-in web dashboard. Static files served by the gateway (`src/gateway/stati
 | --- | --- |
 | `index.html` | Shell: skip link, `#root`, `#toasts` live region, loads `theme.js` and `app.js`. |
 | `theme.js` | Classic script: applies the saved theme before first paint. |
-| `app.js` | Auth (login screen, `#key=` capture), shell, hash router, theme toggle, gem-click and Konami wiring. |
-| `api.js` | `api.get/post/put/del`, `streamChat` (SSE), `session`, `ApiError`, `hooks.unauthorized`. |
+| `app.js` | Auth (login screen, `#login=`/`#key=` capture), shell, hash router, theme toggle, gem-click and Konami wiring. |
+| `api.js` | `api.get/post/put/del`, `requestAs` (an explicit key), `streamChat` (SSE), `session`, `ApiError`, `hooks.unauthorized`. |
+| `login.js` | One-time login links: `credentialIn`, `exchangeLoginKey`. No DOM; tested from Node in `test/dashboard-login.test.ts`. |
 | `ui.js` | `h()` element builder, `fill`, icons, the gem, toasts, `confirmDialog`, `busy`, formatters, `table`, `pill`, `field`. |
 | `diff.js` | `lineDiff` (LCS) for skill proposals and `pathDiff` for config review. |
 | `achv.js` | Achievement toasts (diffed against `sessionStorage`), sparkle, easter eggs, daily quote. |

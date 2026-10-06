@@ -4,7 +4,7 @@ import { addUsage, billedTokens, unknownUsage, type SessionEvent, type TaskRecor
 import type { ApprovalRequest } from '../../policy/index.ts';
 import { COMMANDS, SHORTCUTS, type SlashCommand } from './commands.ts';
 import { renderMarkdown } from './markdown.ts';
-import { displayWidth, formatDuration, formatTokens, padEnd, truncate, wrapText } from './text.ts';
+import { displayWidth, formatDuration, formatTokens, padEnd, sanitize, truncate, wrapText } from './text.ts';
 import type { Theme } from './theme.ts';
 
 export const MARK = '◆';
@@ -29,7 +29,7 @@ export function banner(theme: Theme, width: number, model: string, sessionId: st
 /** The owner's message as it stays in the scrollback. */
 export function userBlock(text: string, theme: Theme, width: number, source?: string): string[] {
   const label = source && source !== 'cli' ? theme.muted(` [${source}]`) : '';
-  const rows = text.split('\n').flatMap((l) => wrapText(l, width - 2));
+  const rows = sanitize(text).split('\n').flatMap((l) => wrapText(l, width - 2));
   return ['', ...prefixRows(rows.map((r, i) => theme.bold(r) + (i === rows.length - 1 ? label : '')), `${theme.accent('›')} `, '  ')];
 }
 
@@ -51,7 +51,7 @@ export function describeCall(call: ToolCallBlock): string {
   } else if (input !== undefined && input !== null) {
     arg = typeof input === 'string' ? input : JSON.stringify(input);
   }
-  return arg ? `${call.name} ${arg.replace(/\s+/g, ' ')}` : call.name;
+  return sanitize(arg ? `${call.name} ${arg.replace(/\s+/g, ' ')}` : call.name);
 }
 
 export function toolRunningRow(call: ToolCallBlock, frame: string, elapsedMs: number, theme: Theme, width: number): string {
@@ -70,7 +70,7 @@ export function toolDoneRows(call: ToolCallBlock, result: ToolResult, theme: The
     ? theme.muted(` · ${formatDuration(result.durationMs)}${result.truncated ? ' · truncated' : ''}`)
     : ` ${theme.error(result.category === 'denied' ? 'denied' : `failed (${result.category})`)}`;
   const head = `  ${icon} ${truncate(theme.bold(describeCall(call)), width - 6 - displayWidth(meta))}${meta}`;
-  const body = result.content.replace(/\s+$/, '');
+  const body = sanitize(result.content).replace(/\s+$/, '');
   if (!body || preview <= 0) return [head];
   const lines = body.split('\n');
   const shown = lines.slice(0, preview).map((l) => truncate(l.replace(/\t/g, '    '), width - 6));
@@ -84,11 +84,11 @@ export function toolDoneRows(call: ToolCallBlock, result: ToolResult, theme: The
 /** Full output of a tool call for /expand. */
 export function toolExpandedRows(call: ToolCallBlock, result: ToolResult, theme: Theme, width: number): string[] {
   const rows = [`  ${theme.bold(describeCall(call))} ${theme.muted(result.status === 'ok' ? '(ok)' : `(${result.category})`)}`];
-  const input = JSON.stringify(call.input, null, 2) ?? '';
+  const input = sanitize(JSON.stringify(call.input, null, 2) ?? '');
   rows.push(theme.muted('  input'));
   for (const l of input.split('\n')) rows.push(...wrapText(l, width - 4).map((r) => `    ${theme.muted(r)}`));
   rows.push(theme.muted('  output'));
-  for (const l of (result.content || '(empty)').split('\n')) rows.push(...wrapText(l.replace(/\t/g, '    '), width - 4).map((r) => `    ${r}`));
+  for (const l of sanitize(result.content || '(empty)').split('\n')) rows.push(...wrapText(l.replace(/\t/g, '    '), width - 4).map((r) => `    ${r}`));
   return rows;
 }
 
@@ -99,7 +99,7 @@ export function turnSummary(task: TaskRecord, elapsedMs: number, theme: Theme, w
   const tokens = ` · ${formatTokens(u.inputTokens)} in${cached} · ${formatTokens(u.outputTokens)} out`;
   const stats = `${formatDuration(elapsedMs)}${tools}${tokens}`;
   const status = statusLabel(task.status, theme);
-  const reason = task.reason ? ` — ${task.reason}` : '';
+  const reason = task.reason ? ` — ${sanitize(task.reason)}` : '';
   return ['', ...hangingRows(`  ${status} `, theme.muted(`· ${stats}${reason}`), width)];
 }
 
@@ -124,13 +124,13 @@ export function statusLabel(status: TaskRecord['status'], theme: Theme): string 
 
 /** Committed to the scrollback when a tool asks for approval. The full summary is shown, never truncated. */
 export function approvalRows(req: ApprovalRequest, theme: Theme, width: number): string[] {
-  const head = hangingRows(`  ${theme.warn('?')} `, `${theme.bold(req.tool)} ${theme.muted(`needs approval (${req.capability})`)}`, width);
-  const body = req.summary.split('\n').flatMap((l) => wrapText(l, width - 6)).map((r) => `    ${theme.rule('│')} ${r}`);
+  const head = hangingRows(`  ${theme.warn('?')} `, `${theme.bold(sanitize(req.tool))} ${theme.muted(`needs approval (${req.capability})`)}`, width);
+  const body = sanitize(req.summary).split('\n').flatMap((l) => wrapText(l, width - 6)).map((r) => `    ${theme.rule('│')} ${r}`);
   return ['', ...head, ...body];
 }
 
 export function approvalChoices(req: ApprovalRequest, theme: Theme, width: number): string[] {
-  const always = req.capability === 'exec' ? 'this exact command' : req.tool;
+  const always = req.capability === 'exec' ? 'this exact command' : sanitize(req.tool);
   const choices = `${theme.bold('y')} allow once · ${theme.bold('a')} always allow ${always} in this chat · ${theme.bold('n')} deny`;
   return hangingRows(`  ${theme.warn('Allow?')} `, choices, width);
 }
@@ -243,7 +243,7 @@ export function transcriptRows(events: SessionEvent[], theme: Theme, width: numb
     } else if (e.type === 'checkpoint') {
       rows.push(theme.muted('  ── earlier turns were compacted into a summary ──'));
     } else if (e.type === 'task_status' && e.status !== 'completed' && e.status !== 'running') {
-      rows.push(`  ${statusLabel(e.status, theme)}${e.reason ? theme.muted(` — ${e.reason}`) : ''}`);
+      rows.push(`  ${statusLabel(e.status, theme)}${e.reason ? theme.muted(` — ${sanitize(e.reason)}`) : ''}`);
     }
   }
   if (rows.length) rows.push('', theme.rule('  ─── resumed ───'), '');

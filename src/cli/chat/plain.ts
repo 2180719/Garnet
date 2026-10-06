@@ -3,14 +3,14 @@
 // tool calls, status) goes to stderr, so stdout stays clean for scripts.
 
 import { createInterface } from 'node:readline';
-import type { ToolCallBlock, ToolResult } from '../../contracts/index.ts';
+import { errorMessage, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
 import type { Ruby } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
 import { executeCommand } from './actions.ts';
 import { messageText, parseSlash } from './commands.ts';
 import { describeCall } from './render.ts';
-import { formatTokens, truncate } from './text.ts';
+import { formatTokens, sanitize, truncate } from './text.ts';
 import { makeTheme } from './theme.ts';
 
 export type PlainOptions = {
@@ -53,8 +53,9 @@ export class PlainChat {
   readonly approve = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
     const key = req.capability === 'exec' ? `${req.tool}|${JSON.stringify(req.input)}` : `${req.tool}|${req.capability}`;
     if (this.always.has(`${this.sessionId}|${key}`)) return 'approved';
-    this.o.err(`\n  ? ${req.tool} wants ${req.capability}${req.targets.length ? ` on ${req.targets.join(', ')}` : ''}\n`);
-    for (const line of req.summary.split('\n')) this.o.err(`    | ${line}\n`);
+    // stderr is usually the owner's terminal: show control characters instead of sending them.
+    this.o.err(`\n  ? ${sanitize(req.tool)} wants ${req.capability}${req.targets.length ? ` on ${sanitize(req.targets.join(', '))}` : ''}\n`);
+    for (const line of sanitize(req.summary).split('\n')) this.o.err(`    | ${line}\n`);
     const answer = ((await this.ask('  allow? [y]es once, [a]lways in this chat, [N]o: ')) ?? '').trim().toLowerCase();
     if (answer === 'a' || answer === 'always') {
       this.always.add(`${this.sessionId}|${key}`);
@@ -87,7 +88,8 @@ export class PlainChat {
             switchTo: (id) => (this.sessionId = id),
           });
           if (result.effect === 'exit') return 0;
-          if (result.rows.length) this.o.err(result.rows.join('\n') + '\n');
+          const rows = result.rows(100);
+          if (rows.length) this.o.err(rows.join('\n') + '\n');
           continue;
         }
         await this.turn(messageText(raw).trim());
@@ -111,9 +113,9 @@ export class PlainChat {
         this.o.err(`  [tool] ${truncate(describeCall(e.call), 160)}\n`);
       } else if (e.type === 'tool_end') {
         this.toolLog.push({ call: e.call, result: e.result });
-        if (e.result.status === 'error') this.o.err(`  [tool ${e.result.category}] ${truncate(e.result.content.replace(/\s+/g, ' '), 160)}\n`);
+        if (e.result.status === 'error') this.o.err(`  [tool ${e.result.category}] ${truncate(sanitize(e.result.content.replace(/\s+/g, ' ')), 160)}\n`);
       } else if (e.type === 'retry') {
-        this.o.err(`  [retrying in ${Math.round(e.delayMs / 1000)}s: ${e.message}]\n`);
+        this.o.err(`  [retrying in ${Math.round(e.delayMs / 1000)}s: ${sanitize(e.message)}]\n`);
       } else if (e.type === 'compacting') {
         this.o.err('  [compacting older turns]\n');
       }
@@ -122,7 +124,11 @@ export class PlainChat {
       const task = await this.o.ruby.agent.run(this.sessionId, text, { signal: this.current.signal, onEvent, source: 'cli' });
       if (wroteText) this.o.out('\n');
       const u = task.usage;
-      this.o.err(`  [${task.status}${task.reason ? `: ${task.reason}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens]\n\n`);
+      this.o.err(`  [${task.status}${task.reason ? `: ${sanitize(task.reason)}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens]\n\n`);
+    } catch (e) {
+      // Like the interactive chat: report the error and keep the conversation going.
+      if (wroteText) this.o.out('\n');
+      this.o.err(`  [error: ${sanitize(errorMessage(e))}]\n\n`);
     } finally {
       this.current = null;
     }

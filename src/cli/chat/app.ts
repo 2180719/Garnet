@@ -17,7 +17,7 @@ import {
   suggestionRows, toolDoneRows, toolRunningRow, transcriptRows, turnSummary, userBlock, type SessionTotals,
 } from './render.ts';
 import { Screen, type TerminalOut } from './screen.ts';
-import { displayWidth, formatDuration, truncate, wrapText } from './text.ts';
+import { displayWidth, formatDuration, sanitize, truncate, wrapText } from './text.ts';
 import type { Theme } from './theme.ts';
 
 export type TtyInput = NodeJS.ReadableStream & { isTTY?: boolean; setRawMode?: (mode: boolean) => unknown };
@@ -177,12 +177,22 @@ export class InteractiveChat {
   private onInput(chunk: string): void {
     if (this.escapeTimer) clearTimeout(this.escapeTimer);
     this.escapeTimer = null;
-    for (const k of this.parser.feed(chunk)) this.onKey(k);
+    this.keys(() => this.parser.feed(chunk));
     if (this.parser.pendingEscape) {
       this.escapeTimer = setTimeout(() => {
         this.escapeTimer = null;
-        for (const k of this.parser.flush()) this.onKey(k);
+        this.keys(() => this.parser.flush());
       }, 30);
+    }
+  }
+
+  /** Handles parsed keys. A bug in key handling shows a notice instead of crashing with the terminal in raw mode. */
+  private keys(parse: () => Key[]): void {
+    try {
+      for (const k of parse()) this.onKey(k);
+    } catch (e) {
+      this.setNotice(this.theme.error(`Input error: ${sanitize(errorMessage(e))}`), 4000);
+      this.render();
     }
   }
 
@@ -294,7 +304,7 @@ export class InteractiveChat {
     }, 100);
     this.render();
     return work(controller.signal)
-      .catch((e: unknown) => this.commit(['', `  ${this.theme.error('✗ error')} ${errorMessage(e)}`]))
+      .catch((e: unknown) => this.commit((w) => ['', ...hangingRows(`  ${this.theme.error('✗ error')} `, sanitize(errorMessage(e)), w)]))
       .finally(() => {
         if (this.spinnerTimer) clearInterval(this.spinnerTimer);
         this.spinnerTimer = null;
@@ -347,7 +357,7 @@ export class InteractiveChat {
       this.commit((w) => toolDoneRows(call, result, this.theme, w));
     } else if (e.type === 'retry') {
       this.finishStream();
-      this.commit([this.theme.warn(`  ↻ retrying in ${formatDuration(e.delayMs)} (attempt ${e.attempt}): ${e.message}`)]);
+      this.commit([this.theme.warn(`  ↻ retrying in ${formatDuration(e.delayMs)} (attempt ${e.attempt}): ${sanitize(e.message)}`)]);
     } else if (e.type === 'compacting') {
       r.label = 'compacting older turns';
       this.commit([this.theme.muted('  ⋯ compacting older turns to free context')]);
@@ -403,7 +413,9 @@ export class InteractiveChat {
       if (result.effect === 'exit') return void this.exit(0);
       if (result.effect === 'clear') this.clearScreen();
       this.refreshTotals();
-      if (result.rows.length) this.commit(result.rows);
+      // Re-rendered at the new width if the terminal narrows; rows that still overflow are wrapped.
+      const render = (w: number) => result.rows(w).flatMap((r) => (displayWidth(r) > w ? wrapText(r, w) : [r]));
+      if (render(this.width).length) this.commit(render);
       else this.render();
     };
     if ('command' in parsed && parsed.command.name === 'compact') return this.busy('compacting', run);
@@ -509,7 +521,7 @@ export class InteractiveChat {
         const elapsed = formatDuration(Date.now() - r.startedAt);
         rows.push('', truncate(`  ${t.accent(frame)} ${t.muted(`${r.label}… ${elapsed}`)}${t.muted(r.cancelling ? '' : ' · esc to interrupt')}`, w));
       }
-      for (const q of this.queue) rows.push(truncate(t.muted(`  ↳ queued: ${q.replace(/\s+/g, ' ')}`), w));
+      for (const q of this.queue) rows.push(truncate(t.muted(`  ↳ queued: ${sanitize(q.replace(/\s+/g, ' '))}`), w));
     }
     let cursor: { row: number; col: number } | null = null;
     if (!this.approval) {

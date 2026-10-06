@@ -78,7 +78,9 @@ ruby api key create --name laptop --scopes chat
 
 Point any OpenAI-compatible client at `http://127.0.0.1:7311/v1` with that key. Ruby keeps the conversation on the server: it only reads your newest message.
 
-Ruby keeps its data in `~/.ruby` (override with `RUBY_HOME`). Tools can only touch `~/.ruby/workspace`; writes ask for your approval by default.
+`ruby dashboard` turns on the web dashboard and prints a login link. The link works once and only for 15 minutes: the dashboard swaps it for a session key that stays in that browser tab.
+
+Ruby keeps its data in `~/.ruby` (override with `RUBY_HOME`). Tools can only touch `~/.ruby/workspace`; writes ask for your approval by default. A `workspace` setting that would contain `~/.ruby` itself is refused, since tools could then rewrite Ruby's config and secrets.
 
 ## Develop
 

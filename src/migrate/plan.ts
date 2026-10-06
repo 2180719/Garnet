@@ -2,10 +2,10 @@
 // all text read from the source is treated as untrusted data.
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_LIMITS, MAX_ENTRY_CHARS } from '../memory/index.ts';
+import { DEFAULT_LIMITS, MAX_ENTRY_CHARS, injectionReason } from '../memory/index.ts';
 import { MAX_BODY, MAX_DESCRIPTION, NAME_RE } from '../skills/index.ts';
 import { makeScanner, type Scanner } from './safefs.ts';
-import type { CopyAction, ImportPlan, MemoryAction, NotImported, PersonaAction, SkillAction, Source } from './types.ts';
+import type { ImportPlan, MemoryAction, PersonaAction, SkillAction, Source } from './types.ts';
 
 export const PERSONA_MAX = 4000;
 const MAX_SKILL_DEPTH = 4;
@@ -15,13 +15,6 @@ const CHANNELS = ['telegram', 'discord', 'slack', 'whatsapp', 'signal', 'imessag
 export function defaultSourceDir(source: Source, home: string = homedir()): string {
   return join(home, source === 'openclaw' ? '.openclaw' : '.hermes');
 }
-
-// Same hygiene heuristic as the memory store (it is not a security boundary): entries are replayed into prompts.
-const INJECTION: { re: RegExp; why: string }[] = [
-  { re: /<\s*system/i, why: 'contains a "<system" tag' },
-  { re: /<\//, why: 'contains a closing tag ("</")' },
-  { re: /ignore\s+(all\s+)?(previous|prior|above)\s+instructions/i, why: 'tries to override instructions' },
-];
 
 // eslint-disable-next-line no-control-regex
 const stripControl = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
@@ -101,9 +94,9 @@ function planOpenClaw(sc: Scanner, fromDir: string): ImportPlan {
   if (cfg !== null) {
     for (const m of cfg.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)) addEnv(plan, m[1]!);
     for (const c of CHANNELS) if (new RegExp(`["']?${c}["']?\\s*:\\s*\\{`, 'i').test(cfg)) addChannel(plan, c);
-    plan.notImported.push({ what: 'openclaw.json', why: 'models, provider settings, API keys, tool policies, cron jobs and channel tokens are not imported; configure Ruby with `ruby config` and ~/.ruby/env' });
+    plan.notImported.push({ what: 'openclaw.json', why: 'models, provider settings, API keys, tool policies, cron jobs and channel tokens are not imported; configure Ruby with `ruby setup` (keys go in the encrypted store or ~/.ruby/env)' });
     if (/"?(apiKey|token|botToken|secret)"?\s*:\s*["'][^"'$]/i.test(cfg)) {
-      plan.notImported.push({ what: 'inline secrets in openclaw.json', why: 'never imported or copied; paste them into ~/.ruby/env yourself' });
+      plan.notImported.push({ what: 'inline secrets in openclaw.json', why: 'never imported or copied; store the ones you still need with `ruby secrets set <NAME>`' });
     }
   }
   finish(sc, plan);
@@ -145,9 +138,9 @@ function planHermes(sc: Scanner, fromDir: string): ImportPlan {
   if (cfg !== null) {
     for (const c of CHANNELS) if (new RegExp(`^\\s*${c}\\s*:`, 'im').test(cfg)) addChannel(plan, c);
     for (const m of cfg.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)) addEnv(plan, m[1]!);
-    plan.notImported.push({ what: 'config.yaml', why: 'model/provider settings, MCP servers, toolsets and gateway settings are not imported; configure Ruby with `ruby config`' });
+    plan.notImported.push({ what: 'config.yaml', why: 'model/provider settings, MCP servers, toolsets and gateway settings are not imported; configure Ruby with `ruby setup` (or config.json; `ruby config explain` lists every setting)' });
   }
-  for (const [name, why] of [['cron', 'scheduled jobs: recreate them with `ruby jobs`'], ['state.db', 'session history is not imported'], ['sessions', 'session history is not imported']] as const) {
+  for (const [name, why] of [['cron', 'scheduled jobs: recreate them under "jobs" in config.json (`ruby config explain`), then check with `ruby jobs list`'], ['state.db', 'session history is not imported'], ['sessions', 'session history is not imported']] as const) {
     if (sc.exists(join(sc.root, name))) plan.notImported.push({ what: name, why });
   }
   finish(sc, plan);
@@ -168,10 +161,10 @@ function finish(sc: Scanner, plan: ImportPlan): void {
   const total = plan.skills.length;
   if (total > 50) plan.warnings.push(`${total} skills found; consider archiving the ones you do not need (ruby skills).`);
   if (plan.channels.length) {
-    plan.notImported.push({ what: `channel settings (${plan.channels.join(', ')})`, why: 'tokens and pairings are not imported; enable the matching Ruby channels (Telegram, Signal) in `ruby config` and pair again with `ruby pair`' });
+    plan.notImported.push({ what: `channel settings (${plan.channels.join(', ')})`, why: 'tokens and pairings are not imported; enable the matching Ruby channels (Telegram, Discord, Signal) with `ruby setup` and pair again with `ruby pair`' });
   }
   if (plan.envVars.length) {
-    plan.notImported.push({ what: `secrets (${plan.envVars.length} env var names)`, why: 'values are never read or copied; add the ones you still need to ~/.ruby/env yourself' });
+    plan.notImported.push({ what: `secrets (${plan.envVars.length} env var names)`, why: 'values are never read or copied; store the ones you still need with `ruby secrets set <NAME>` (or in ~/.ruby/env)' });
   }
 }
 
@@ -236,9 +229,10 @@ function memoryAction(file: 'memory' | 'user', from: string, raw: string[]): Mem
   for (const r of raw) {
     let e = clean(r).replace(/^-\s+/, '');
     if (!e) continue;
-    const hit = INJECTION.find((p) => p.re.test(e));
-    if (hit) {
-      skipped.push({ text: e.slice(0, 80), reason: hit.why });
+    // The memory store's hygiene heuristic (not a security boundary): entries are replayed into prompts.
+    const why = injectionReason(e);
+    if (why) {
+      skipped.push({ text: e.slice(0, 80), reason: why });
       continue;
     }
     if (e.length > MAX_ENTRY_CHARS) {

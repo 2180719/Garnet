@@ -15,7 +15,7 @@ import { MemoryStore, memoryTool } from './memory/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, execTool, fileTools, readArtifactTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
-import { openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
+import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
 export const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }).version;
 
@@ -60,6 +60,10 @@ export type CreateOptions = {
 export function createRuby(options: CreateOptions = {}): Ruby {
   const env = options.env ?? process.env;
   const { config, paths } = loadConfig(options.home ?? rubyHome(env));
+  if (isInside(paths.workspace, paths.home)) {
+    // File tools are scoped to the workspace; if it held config.json, secrets or skill sidecars, one approved write could grant everything.
+    throw new RubyError('config', `workspace (${paths.workspace}) must not contain Ruby's home (${paths.home}): tools could change config.json, secrets and skills there. Point "workspace" at a directory of its own.`);
+  }
   const secrets = openSecretStore(paths.home, env);
   const secret = secretLookup(env, secrets);
   mkdirSync(paths.workspace, { recursive: true });

@@ -9,7 +9,7 @@ import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
 import { init, setup } from './command.ts';
 import { readPersona, writePersona } from './persona.ts';
-import { AnswerPrompter, makeStyle, type Answer } from './prompt.ts';
+import { AnswerPrompter, makeStyle, stripKeySequences, type Answer } from './prompt.ts';
 import { runSetup, type Pairing, type SetupDeps } from './wizard.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
 
@@ -225,6 +225,27 @@ test('an invalid config is only replaced with consent, and is kept as a backup',
   assert.equal(h.config().model.provider, 'fake');
 });
 
+test('a failure while saving leaves an invalid config in place (it is only moved aside once the new one is written)', async () => {
+  const h = harness();
+  const bad = '{"version": 1, "model": {"provider": "nope"}}';
+  writeFileSync(join(h.home, 'config.json'), bad);
+  const keyFile = join(tempDir(), 'short.key');
+  writeFileSync(keyFile, 'short\n', { mode: 0o600 });
+  const run = h.run({ reset: true, provider: 'anthropic', secrets: 'encrypted', 'key-file': keyFile, telegram: false, discord: false, signal: false }, { key: KEY }, false);
+  await assert.rejects(run.done, /too short/);
+  assert.equal(readFileSync(join(h.home, 'config.json'), 'utf8'), bad);
+});
+
+test('a failing import is reported and setup carries on', async () => {
+  const h = harness({ sources: () => [{ source: 'openclaw', dir: '/home/x/.openclaw' }] });
+  h.deps.runImport = () => {
+    throw new Error('disk on fire');
+  };
+  assert.equal(await h.run({ import: true, provider: 'fake', telegram: false, discord: false, signal: false }).done, 0);
+  assert.match(h.out(), /Import failed: disk on fire/);
+  assert.equal(h.config().model.provider, 'fake');
+});
+
 test('a locked store is not offered; storing encrypted removes a plain-text copy from the env file', async () => {
   const locked = harness();
   writeFileSync(join(locked.home, 'secrets'), '{}');
@@ -373,4 +394,9 @@ test('non-interactive: the service is only touched with --service (install, or r
   const fresh = harness();
   assert.equal(await fresh.run({ provider: 'fake', service: true }, {}, false).done, 0);
   assert.equal(fresh.svc.installs, 1);
+});
+
+test('hidden input ignores arrow keys and paste markers', () => {
+  assert.equal(stripKeySequences('sk-\x1b[Dab\x1bOHc\x1b[200~def\x1b[201~\x1b[1;5C'), 'sk-abcdef');
+  assert.equal(stripKeySequences('plain-value_123'), 'plain-value_123');
 });

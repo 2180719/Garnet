@@ -50,8 +50,11 @@ main() {
     shift
   done
   case $name in
-    ''|*/*|*' '*) die "--name must be a plain command name." ;;
+    ''|-*|*/*|*[!A-Za-z0-9._-]*) die "--name must be a plain command name (letters, digits, . _ -)." ;;
   esac
+  # The shim stores these paths, so a relative --dir or --bin-dir must not depend on where this ran.
+  dir=$(absolute "$dir")
+  bin_dir=$(absolute "$bin_dir")
 
   setup_colors
   printf '\n%s◆ RUBY%s %s/ INSTALL%s\n\n' "$accent" "$reset" "$muted" "$reset"
@@ -118,6 +121,13 @@ setup_colors() {
   fi
 }
 
+absolute() {
+  case $1 in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$PWD" "$1" ;;
+  esac
+}
+
 step() { printf '%s==>%s %s\n' "$accent" "$reset" "$1"; }
 ok() { printf '  %s✓%s %s\n' "$green" "$reset" "$1"; }
 warn() { printf '  %s!%s %s\n' "$yellow" "$reset" "$1" >&2; }
@@ -135,6 +145,9 @@ check_node() {
   major=${node_version%%.*}
   rest=${node_version#*.}
   minor=${rest%%.*}
+  case $major$minor in
+    ''|*[!0-9]*) node_help "Could not read the Node.js version ($node_version)." ;;
+  esac
   if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 18 ]; }; then
     node_help "Node.js $node_version is too old."
   fi
@@ -189,6 +202,8 @@ write_shim() {
     printf '# Uses the Node.js found at install time, or node on PATH if that is gone. Override with RUBY_NODE.\n'
     printf 'node=%s\n' "$(quote "$node_path")"
     printf '[ -x "$node" ] || node=node\n'
+    printf '# Lets `doctor` recognise this command when it is not called ruby.\n'
+    printf 'RUBY_COMMAND_NAME=%s; export RUBY_COMMAND_NAME\n' "$(quote "$name")"
     printf 'exec "${RUBY_NODE:-$node}" --disable-warning=ExperimentalWarning %s "$@"\n' "$(quote "$dir/src/cli/bin.ts")"
   } >"$tmp"
   chmod 755 "$tmp"

@@ -12,6 +12,8 @@ export type KdfParams = { N: number; r: number; p: number };
 export const DEFAULT_KDF: KdfParams = { N: 2 ** 15, r: 8, p: 1 };
 /** Upper bounds accepted when reading, so a crafted file cannot make Ruby allocate gigabytes. */
 const MAX_KDF: KdfParams = { N: 2 ** 20, r: 16, p: 4 };
+/** scrypt needs about 128 * N * r bytes; the bounds above alone would allow 2 GiB. 256 MiB is 8x the default. */
+const MAX_KDF_BYTES = 256 * 1024 * 1024;
 
 /** Shortest passphrase or key accepted for writing (reads accept whatever unlocks the file). */
 export const MIN_KEY_CHARS = 12;
@@ -97,7 +99,9 @@ export function unseal(text: string, unlock: Unlock, file = 'the secret store'):
   const k = env.kdf;
   if (env.cipher !== 'aes-256-gcm' || !k || k.name !== 'scrypt') throw bad('unsupported cipher or key derivation');
   const intIn = (v: unknown, lo: number, hi: number) => Number.isInteger(v) && (v as number) >= lo && (v as number) <= hi;
-  if (!intIn(k.N, 2, MAX_KDF.N) || (k.N & (k.N - 1)) !== 0 || !intIn(k.r, 1, MAX_KDF.r) || !intIn(k.p, 1, MAX_KDF.p)) throw bad('key derivation parameters out of range');
+  if (!intIn(k.N, 2, MAX_KDF.N) || (k.N & (k.N - 1)) !== 0 || !intIn(k.r, 1, MAX_KDF.r) || !intIn(k.p, 1, MAX_KDF.p) || 128 * k.N * k.r > MAX_KDF_BYTES) {
+    throw bad('key derivation parameters out of range');
+  }
   const b64 = (v: unknown, len?: number) => {
     if (typeof v !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(v)) throw bad('bad encoding');
     const buf = Buffer.from(v, 'base64');
@@ -121,9 +125,10 @@ export function unseal(text: string, unlock: Unlock, file = 'the secret store'):
   const parsed = JSON.parse(plain) as { secrets?: unknown };
   const secrets = parsed.secrets;
   if (!secrets || typeof secrets !== 'object' || Array.isArray(secrets)) throw bad('bad payload');
+  // defineProperty, not assignment: a secret named "__proto__" must be an ordinary entry.
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(secrets)) {
-    if (validSecretName(name) && typeof value === 'string') out[name] = value;
+    if (validSecretName(name) && typeof value === 'string') Object.defineProperty(out, name, { value, enumerable: true, writable: true, configurable: true });
   }
   return out;
 }

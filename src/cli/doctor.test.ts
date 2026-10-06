@@ -156,6 +156,17 @@ test('PATH: finds this install’s shim, and warns when another `ruby` (the lang
   assert.equal(f.fix, `Put ${ours} earlier in PATH.`);
 });
 
+test('PATH: an install under another command name (install.sh --name) is checked by that name', async () => {
+  const d = deps();
+  const ours = tempDir();
+  writeFileSync(join(ours, 'rubyagent'), `#!/bin/sh\nexec node ${d.entry} "$@"\n`, { mode: 0o755 });
+  d.env.PATH = ours;
+  d.env.RUBY_COMMAND_NAME = 'rubyagent';
+  const f = find(await diagnose(d), 'path')[0]!;
+  assert.equal(f.status, 'ok');
+  assert.match(f.message, /`rubyagent` on PATH is this install/);
+});
+
 test('formatting and exit code: symbols plus words, fixes indented, 1 when anything fails', async () => {
   const text = formatFindings(
     [
@@ -174,4 +185,20 @@ test('formatting and exit code: symbols plus words, fixes indented, 1 when anyth
   out = '';
   assert.equal(await doctor(['--json'], io, d), 1);
   assert.ok(Array.isArray(JSON.parse(out)));
+});
+
+test('a workspace containing home fails; an API bound beyond loopback is a warning', async () => {
+  const d = deps();
+  mkdirSync(d.home, { recursive: true, mode: 0o700 });
+  configure(d.home, (c) => {
+    c.model.provider = 'fake';
+    c.workspace = '..';
+    c.api.enabled = true;
+    c.api.host = '0.0.0.0';
+  });
+  const fs = await diagnose(d);
+  assert.match(find(fs, 'workspace')[0]!.message, /contains Ruby's home/);
+  assert.equal(find(fs, 'workspace')[0]!.status, 'fail');
+  assert.equal(find(fs, 'api')[0]!.status, 'warn');
+  assert.match(find(fs, 'api')[0]!.message, /0\.0\.0\.0/);
 });

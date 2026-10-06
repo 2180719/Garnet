@@ -138,6 +138,16 @@ export function wantsColor(stream: { isTTY?: boolean }, env: NodeJS.ProcessEnv =
 const cancelled = () => new RubyError('cancelled', 'Setup cancelled.');
 
 /**
+ * Removes terminal key sequences (arrows, Home, F-keys, bracketed-paste
+ * markers) from raw hidden input, so pressing an arrow key while typing a
+ * secret does not add "[D" to it.
+ */
+export function stripKeySequences(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;:?<>=]*[ -/]*[@-~]|\x1bO.|\x1b./gs, '');
+}
+
+/**
  * Prompts on a terminal. Plain line input for text, numbered menus for
  * choices (type the number or the name), and hidden input for secrets that
  * shows one dot per character so pasting is visible but never the value.
@@ -236,8 +246,8 @@ export class TerminalPrompter implements Prompter {
         else resolve(value.trim());
       };
       const onData = (text: string) => {
-        // Bracketed-paste markers are not part of the value.
-        for (const ch of text.replace(/\x1b\[20[01]~/g, '')) {
+        // Key sequences and bracketed-paste markers are not part of the value.
+        for (const ch of stripKeySequences(text)) {
           if (ch === '\r' || ch === '\n' || ch === '\u0004') return finish();
           if (ch === '\u0003') return finish(cancelled());
           if (ch === '\u007f' || ch === '\b') {

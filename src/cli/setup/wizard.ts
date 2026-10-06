@@ -4,8 +4,8 @@
 // Nothing is written until the owner saves; secrets go to the encrypted store
 // or the env file, never into config.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
 import {
   defaultConfig,
   parseConfig,
@@ -17,7 +17,7 @@ import {
   type RubyConfig,
 } from '../../config/index.ts';
 import { RubyError, errorMessage } from '../../contracts/index.ts';
-import { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore, secretsFile, unlockFrom, writePrivateFile, type KdfParams } from '../../secrets/index.ts';
+import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, unlockFrom, writePrivateFile, type KdfParams } from '../../secrets/index.ts';
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram, type CheckResult, type FetchFn } from './checks.ts';
@@ -89,11 +89,6 @@ const validUrl = (v: string): string | null => {
 };
 const required = (what: string) => (v: string) => (v.trim() ? null : `Enter ${what}.`);
 const validEnvName = (v: string) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) ? null : 'Use letters, digits and _ (like an environment variable).');
-
-const inside = (dir: string, path: string) => {
-  const rel = relative(resolve(dir), resolve(path));
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-};
 
 export function providerOf(m: RubyConfig['model']): ProviderChoice {
   if (m.provider !== 'openai-compatible') return m.provider;
@@ -208,9 +203,18 @@ async function importStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Prom
     const look = await p.confirm({ id: 'import', message: `Found ${name} at ${dir}. Preview what Ruby can import?`, help: 'Memory, persona and skills. Secrets are never copied.', default: true, auto: false });
     if (!look) continue;
     const persona = { get: () => st.config.persona, set: (v: string) => void (st.config.persona = v) };
-    if (deps.runImport([source, '--from', dir], persona) !== 0) continue;
+    // An import is optional: a failure is reported and setup carries on.
+    const run = (args: string[]): number => {
+      try {
+        return deps.runImport(args, persona);
+      } catch (e) {
+        io.err(`  ${deps.style.bad('✗')} Import failed: ${errorMessage(e)}\n`);
+        return 1;
+      }
+    };
+    if (run([source, '--from', dir]) !== 0) continue;
     if (await p.confirm({ id: 'import-apply', message: `Import from ${name} now?`, help: 'Memory and skills are written right away; the persona is saved with the rest of setup.', default: true })) {
-      deps.runImport([source, '--from', dir, '--apply'], persona);
+      run([source, '--from', dir, '--apply']);
       st.changed = true;
     }
   }
@@ -348,7 +352,7 @@ async function chooseStorage(p: Prompter, io: Io, deps: SetupDeps, st: State): P
       message: 'Key file that unlocks the store',
       help: `Created with mode 600. Back it up: without it the store cannot be read. ${KEY_FILE_ENV} pointing at it goes in ${deps.home}/env.`,
       default: deps.defaultKeyFile,
-      validate: (v) => (!isAbsolute(v) ? 'Use an absolute path.' : inside(deps.home, v) ? `Keep it outside ${deps.home}, away from the store it unlocks.` : null),
+      validate: (v) => (!isAbsolute(v) ? 'Use an absolute path.' : isInside(deps.home, v) ? `Keep it outside ${deps.home}, away from the store it unlocks.` : null),
     });
     st.keyFile = path;
   }
@@ -508,11 +512,6 @@ async function channelsStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Pr
 function save(io: Io, deps: SetupDeps, st: State): void {
   const s = deps.style;
   const config = parseConfig(st.config); // throws before anything is written if invalid
-  if (st.resetFrom) {
-    const backup = `${st.resetFrom}.bak-${(deps.now?.() ?? new Date()).toISOString().replace(/[:.]/g, '-')}`;
-    renameSync(st.resetFrom, backup);
-    io.out(`  Moved the old config to ${backup}.\n`);
-  }
   if (st.keyFile) {
     if (!existsSync(st.keyFile)) {
       mkdirSync(resolve(st.keyFile, '..'), { recursive: true, mode: 0o700 });
@@ -542,6 +541,12 @@ function save(io: Io, deps: SetupDeps, st: State): void {
   if (plain.length) {
     setInEnvFile(deps.home, Object.fromEntries(plain.map(([n, v]) => [n, v.value])));
     io.out(`  ${s.ok('✓')} Wrote ${plain.map(([n]) => n).join(', ')} to ${deps.home}/env (mode 600).\n`);
+  }
+  // Last, so a failure above leaves an invalid config.json where it was.
+  if (st.resetFrom) {
+    const backup = `${st.resetFrom}.bak-${(deps.now?.() ?? new Date()).toISOString().replace(/[:.]/g, '-')}`;
+    copyFileSync(st.resetFrom, backup);
+    io.out(`  Kept the old config as ${backup}.\n`);
   }
   writeConfig(deps.home, config);
   mkdirSync(pathsFor(deps.home, config).workspace, { recursive: true });

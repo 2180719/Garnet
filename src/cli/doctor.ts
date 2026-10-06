@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util';
 import { CONFIG_VERSION, parseConfig, parseEnv, rubyHome, type RubyConfig } from '../config/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
-import { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore, unlockWarnings } from '../secrets/index.ts';
+import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
 import { defaultEntry, planService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
@@ -130,6 +130,15 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       }
     }
 
+    // Workspace and API exposure
+    const workspace = resolve(d.home, config.workspace ?? 'workspace');
+    if (isInside(workspace, d.home)) {
+      add('workspace', 'fail', `${workspace} contains Ruby's home, so file tools could change config.json and secrets; Ruby refuses to start`, 'Point "workspace" in config.json at a directory of its own (or remove it for the default).');
+    }
+    if (config.api.enabled && !LOOPBACK.includes(config.api.host)) {
+      add('api', 'warn', `The API listens on ${config.api.host}:${config.api.port}, reachable from other machines (it needs a key, and has no TLS)`, 'Bind to 127.0.0.1 and use Tailscale or a reverse proxy with TLS.');
+    }
+
     // Channels
     const ch = config.channels;
     const enabled = (['telegram', 'discord', 'signal'] as const).filter((n) => ch[n].enabled);
@@ -146,7 +155,6 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     if (config.permissions.exec === 'deny') add('sandbox', 'info', 'Shell commands are off (permissions.exec = deny), so no sandbox is needed');
     else if (config.sandbox.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker.');
     else {
-      const workspace = resolve(d.home, config.workspace ?? 'workspace');
       const r = await d.sandboxCheck(config, workspace).catch((e: unknown) => ({ ok: false, detail: errorMessage(e) }));
       // The sandbox's own detail already says how to fix it.
       add('sandbox', r.ok ? 'ok' : 'fail', `Docker sandbox: ${r.detail}`);
@@ -167,10 +175,12 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
 }
 
 function pathFinding(d: DoctorDeps, installDir: string): Finding {
+  // install.sh --name <other> sets RUBY_COMMAND_NAME in its shim.
+  const name = /^[A-Za-z0-9._-]+$/.test(d.env.RUBY_COMMAND_NAME ?? '') ? d.env.RUBY_COMMAND_NAME! : 'ruby';
   const dirs = (d.env.PATH ?? '').split(delimiter).filter(Boolean);
   const found: string[] = [];
   for (const dir of dirs) {
-    const p = join(dir, 'ruby');
+    const p = join(dir, name);
     try {
       accessSync(p, constants.X_OK);
       if (statSync(p).isFile()) found.push(p);
@@ -187,13 +197,13 @@ function pathFinding(d: DoctorDeps, installDir: string): Finding {
     }
   };
   const first = found[0];
-  if (!first) return { area: 'path', status: 'warn', message: '`ruby` is not on your PATH', fix: `Run install.sh, or \`npm link\` in ${installDir}; until then use \`npm run ruby --\`.` };
-  if (ours(first)) return { area: 'path', status: 'ok', message: `\`ruby\` on PATH is this install (${first})` };
+  if (!first) return { area: 'path', status: 'warn', message: `\`${name}\` is not on your PATH`, fix: `Run install.sh, or \`npm link\` in ${installDir}; until then use \`npm run ruby --\`.` };
+  if (ours(first)) return { area: 'path', status: 'ok', message: `\`${name}\` on PATH is this install (${first})` };
   const later = found.slice(1).find(ours);
   return {
     area: 'path',
     status: 'warn',
-    message: `\`ruby\` on your PATH is ${first}, not this install${later ? ` (which is at ${later}, later in PATH)` : ''}; it may be the Ruby programming language`,
+    message: `\`${name}\` on your PATH is ${first}, not this install${later ? ` (which is at ${later}, later in PATH)` : ''}; it may be the Ruby programming language`,
     fix: later ? `Put ${dirname(later)} earlier in PATH.` : 'Reinstall with `install.sh --name <other-name>`, or use `npm run ruby --`.',
   };
 }

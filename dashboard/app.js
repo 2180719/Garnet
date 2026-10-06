@@ -1,5 +1,6 @@
 // Entry point: auth, shell, hash router, theme, easter eggs.
-import { api, hooks, session } from './api.js';
+import { api, enc, hooks, requestAs, session } from './api.js';
+import { credentialIn, exchangeLoginKey } from './login.js';
 import { dailyQuote, easterEgg, watchKonami } from './achv.js';
 import { gem, h, icon, loading, moon, errorBox, sun } from './ui.js';
 
@@ -14,19 +15,41 @@ let cleanups = [];
 let notice = '';
 
 // ---- auth ----
-function takeKeyFromHash() {
-  const m = /(?:^#|&)key=(ruby_[A-Za-z0-9_]+)/.exec(location.hash);
-  if (!m) return;
-  session.set(m[1]);
+/**
+ * Signs in from a `#login=` link (one-time: exchanged for a session key, see
+ * login.js) or a `#key=` link. The fragment is removed from the address bar
+ * and this tab's history before anything else. Returns whether a key was set.
+ */
+async function signInFromHash() {
+  const found = credentialIn(location.hash);
+  if (!found) return false;
   history.replaceState(null, '', `${location.pathname}${location.search}#/overview`);
+  if (found.kind === 'key') {
+    session.set(found.key);
+    return true;
+  }
+  try {
+    session.set(await exchangeLoginKey(found.key, requestAs), true);
+    return true;
+  } catch (e) {
+    session.clear();
+    notice = e.status === 401 ? 'This login link has expired or was already used. Run `ruby dashboard` for a new one.' : e.message;
+    return false;
+  }
 }
 
-function signOut(message = '') {
-  session.clear();
-  notice = message;
+function leaveShell() {
   runCleanups();
   nav++;
   shell = null;
+}
+
+function signOut(message = '', revoke = false) {
+  // A key minted from a login link is only for this tab: revoke it (best effort) rather than leave it valid.
+  if (revoke && session.minted && session.id) api.del(`/api/keys/${enc(session.id)}`).catch(() => {});
+  session.clear();
+  notice = message;
+  leaveShell();
   history.replaceState(null, '', `${location.pathname}${location.search}`);
   showLogin();
 }
@@ -89,7 +112,7 @@ function showShell() {
   const side = h('aside', { class: 'side', id: 'side', 'aria-label': 'Sidebar' },
     h('div', { class: 'brand' }, gemBtn(), h('a', { href: '#/overview' }, 'Ruby')), nav,
     h('div', { class: 'side-foot' }, h('p', { class: 'quote' }, `“${dailyQuote()}”`),
-      h('div', { class: 'who' }, themeBtn(), h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => signOut('You have been signed out.') }, icon('out'), 'Sign out'))));
+      h('div', { class: 'who' }, themeBtn(), h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => signOut('You have been signed out.', true) }, icon('out'), 'Sign out'))));
   const main = h('main', { class: 'main', id: 'main', tabindex: '-1' });
   const top = h('header', { class: 'top' }, h('div', { class: 'brand' }, h('a', { href: '#/overview' }, 'Ruby'), gemBtn()), h('div', { class: 'tools' }, themeBtn(), menu));
   menu.addEventListener('click', () => {
@@ -154,18 +177,18 @@ async function hashChange() {
     if (mine === nav && shell) shell.main.replaceChildren(h('div', { class: 'page' }, errorBox(e, hashChange)));
   }
 }
-addEventListener('hashchange', () => {
-  if (/(?:^#|&)key=ruby_/.test(location.hash)) { // a login link opened in a tab that is already showing the dashboard
-    takeKeyFromHash();
-    if (shell) signOut();
-    showShell();
+addEventListener('hashchange', async () => {
+  if (credentialIn(location.hash)) { // a login link opened in a tab that is already showing the dashboard
+    leaveShell();
+    if (await signInFromHash()) showShell();
+    else showLogin();
     return;
   }
   hashChange();
 });
 
 document.querySelector('.skip').addEventListener('click', (e) => { e.preventDefault(); document.getElementById('main')?.focus(); });
-takeKeyFromHash();
 watchKonami();
+await signInFromHash();
 if (session.key) showShell();
 else showLogin();

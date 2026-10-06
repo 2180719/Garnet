@@ -12,4 +12,4 @@ export {
   type SecretStoreOptions,
   type Unlock,
 } from './store.ts';
-export { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore, secretLookup, secretsFile, unlockFrom, unlockWarnings, type SecretLookup } from './unlock.ts';
+export { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretLookup, secretsFile, unlockFrom, unlockWarnings, type SecretLookup } from './unlock.ts';

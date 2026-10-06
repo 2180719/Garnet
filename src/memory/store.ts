@@ -34,6 +34,11 @@ const INJECTION_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /ignore\s+(all\s+)?(previous|prior|above)\s+instructions/i, why: 'tries to override instructions' },
 ];
 
+/** Why `text` trips the injection heuristic, or null. Shared by everything that replays text into prompts (skills, the importer). */
+export function injectionReason(text: string): string | null {
+  return INJECTION_PATTERNS.find(({ re }) => re.test(text))?.why ?? null;
+}
+
 export function isMemoryFile(x: unknown): x is MemoryFile {
   return x === 'memory' || x === 'user';
 }
@@ -173,11 +178,8 @@ export class MemoryStore {
         `Entry is ${one.length} chars; the maximum is ${MAX_ENTRY_CHARS}. Shorten it to the durable fact.`,
       );
     }
-    for (const { re, why } of INJECTION_PATTERNS) {
-      if (re.test(one)) {
-        throw new RubyError('invalid_input', `Entry rejected: it ${why}. Memory holds plain facts, not instructions to the system.`);
-      }
-    }
+    const why = injectionReason(one);
+    if (why) throw new RubyError('invalid_input', `Entry rejected: it ${why}. Memory holds plain facts, not instructions to the system.`);
     return `- ${one}`;
   }
 
