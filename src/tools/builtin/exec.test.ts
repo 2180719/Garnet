@@ -169,3 +169,16 @@ test('the local backend is always networked; docker is networked unless network 
   assert.equal(new DockerSandbox({ workspace: ws }).networked, false);
   assert.equal(new DockerSandbox({ workspace: ws, network: 'bridge' }).networked, true);
 });
+
+test('run_command over ssh: describes the remote workdir honestly and marks output untrusted', async () => {
+  const ws = tempDir();
+  const ssh = new FakeSandbox(ws) as unknown as { kind: string; networked: boolean };
+  ssh.kind = 'ssh';
+  ssh.networked = true;
+  const tool = execTool(ssh as unknown as Sandbox);
+  assert.match(tool.description, /remote host over ssh/);
+  assert.match(tool.description, /not the local workspace/);
+  assert.ok(!tool.description.includes('isolated Linux container'));
+  const out = await tool.run({ command: 'echo hi', cwd: '.', timeout_seconds: 5 }, { workspace: ws, signal: new AbortController().signal } as never);
+  assert.deepEqual(out.untrusted, { source: 'command with network access' });
+});

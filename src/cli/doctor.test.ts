@@ -332,3 +332,80 @@ test('media: an absolute or relative-with-slash command is access-checked direct
   assert.ok(media.some((f) => f.status === 'ok' && f.message.includes('PDF text extraction')), 'absolute path found with an empty PATH');
   assert.ok(media.some((f) => f.status === 'fail' && /Transcription command .*missing is not an executable file/.test(f.message)));
 });
+
+const sshConfig = (c: GarnetConfig, ssh: Partial<GarnetConfig['sandbox']['ssh']> = {}) => {
+  c.permissions.exec = 'ask';
+  c.sandbox.backend = 'ssh';
+  c.sandbox.ssh = { ...c.sandbox.ssh, host: 'build.example.com', user: 'garnet', workdir: '/srv/garnet', agent: true, ...ssh };
+};
+
+test('ssh sandbox: probed only when exec is allowed; the result and the fix are reported', async () => {
+  const off = deps();
+  configure(off.home, (c) => {
+    sshConfig(c);
+    c.permissions.exec = 'deny';
+  });
+  assert.equal(find(await diagnose(off), 'sandbox')[0]!.status, 'info');
+  assert.equal(off.sandboxChecks, 0, 'exec denied: ssh is not probed');
+
+  const seen: string[] = [];
+  const d = deps({
+    sandboxCheck: async (config) => {
+      seen.push(config.sandbox.backend);
+      return { ok: true, detail: 'ssh garnet@build.example.com:22, workdir /srv/garnet, host key checking strict.' };
+    },
+  });
+  configure(d.home, (c) => sshConfig(c));
+  const fs = await diagnose(d);
+  assert.deepEqual(seen, ['ssh']);
+  assert.equal(find(fs, 'sandbox').length, 1);
+  assert.equal(find(fs, 'sandbox')[0]!.status, 'ok');
+  assert.match(find(fs, 'sandbox')[0]!.message, /^SSH sandbox: ssh garnet@build/);
+
+  const down = deps({ sandboxCheck: async () => ({ ok: false, detail: 'ssh to garnet@build.example.com:22 failed (exit 255: Host key verification failed.). Verify the key.' }) });
+  configure(down.home, (c) => sshConfig(c));
+  const f = find(await diagnose(down), 'sandbox')[0]!;
+  assert.equal(f.status, 'fail');
+  assert.match(f.message, /SSH sandbox: .*Host key verification failed/);
+});
+
+test('ssh sandbox: a missing passphrase secret fails without probing, a present one is looked up but never printed', async () => {
+  const d = deps();
+  configure(d.home, (c) => sshConfig(c, { agent: false, identityFile: '/k', passphraseEnv: 'GARNET_SSH_KEY_PASSPHRASE' }));
+  let f = find(await diagnose(d), 'sandbox')[0]!;
+  assert.equal(f.status, 'fail');
+  assert.match(f.message, /GARNET_SSH_KEY_PASSPHRASE is not set/);
+  assert.equal(d.sandboxChecks, 0);
+
+  let resolved: string | undefined;
+  const e = deps({
+    env: { PATH: '', GARNET_SSH_KEY_PASSPHRASE: 'pw-NEVER-PRINT' },
+    sandboxCheck: async (_c, _w, secret) => {
+      resolved = secret('GARNET_SSH_KEY_PASSPHRASE');
+      return { ok: true, detail: 'ssh ok' };
+    },
+  });
+  configure(e.home, (c) => sshConfig(c, { agent: false, identityFile: '/k', passphraseEnv: 'GARNET_SSH_KEY_PASSPHRASE' }));
+  const fs = await diagnose(e);
+  assert.equal(resolved, 'pw-NEVER-PRINT');
+  assert.equal(JSON.stringify(fs).includes('pw-NEVER-PRINT'), false);
+  f = find(fs, 'sandbox')[0]!;
+  assert.equal(f.status, 'ok');
+});
+
+test('ssh sandbox: unsafe host key checking is a warning, and a backend that throws is a failure', async () => {
+  const d = deps({ sandboxCheck: async () => ({ ok: true, detail: 'ssh ok' }) });
+  configure(d.home, (c) => sshConfig(c, { hostKeyChecking: 'off' }));
+  const fs = find(await diagnose(d), 'sandbox');
+  assert.deepEqual(fs.map((f) => f.status), ['warn', 'ok']);
+  assert.match(fs[0]!.message, /impersonate/);
+  assert.match(fs[0]!.fix!, /strict/);
+
+  const boom = deps({
+    sandboxCheck: async () => {
+      throw new Error('boom');
+    },
+  });
+  configure(boom.home, (c) => sshConfig(c));
+  assert.match(find(await diagnose(boom), 'sandbox')[0]!.message, /boom/);
+});

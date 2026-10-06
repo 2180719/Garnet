@@ -37,7 +37,7 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/service/` | systemd/launchd service definitions and install. |
 | `src/migrate/` | `garnet import openclaw|hermes`: memory, persona and skills from other harnesses (dry run by default, never secrets). |
 | `src/media/` | Attachments: content-addressed file store, type sniffing, voice-note transcription (OpenAI-compatible endpoint or local command), text extraction, the `send_file` tool. |
-| `src/sandbox/` | Command execution: Docker (isolated, non-root, no network by default) or local (not a boundary). |
+| `src/sandbox/` | Command execution behind one `Sandbox` interface: Docker (isolated, non-root, no network by default), SSH (remote host, as strong as the remote account) or local (not a boundary). |
 | `src/secrets/` | Optional encrypted secret store (`<GARNET_HOME>/secrets`, scrypt + AES-256-GCM) and secret-name resolution: environment first, then the store. |
 | `src/achievements/` | Local achievements and easter eggs for the dashboard. |
 | `src/backend.ts` | Composition-root implementation of the dashboard/admin API. |
