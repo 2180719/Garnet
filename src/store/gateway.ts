@@ -259,6 +259,44 @@ export class GatewayStore {
     };
   }
 
+  /** The private chat that most recently wrote into a session (for sessions bound to a shared route). */
+  chatForSession(sessionId: string): ChatRef | undefined {
+    const r = this.db
+      .prepare('SELECT channel, account, chat_id, sender_id FROM inbox WHERE session_id = ? AND is_private = 1 ORDER BY received_at DESC, rowid DESC LIMIT 1')
+      .get(sessionId) as Row | undefined;
+    return r && chatFrom(r);
+  }
+
+  /**
+   * Private chats with paired identities, most recently active first: one row
+   * per chat. The chat ID comes from real inbound traffic, which matters where
+   * it differs from the sender ID (Discord DMs).
+   */
+  pairedChats(): (ChatRef & { displayName: string | null; lastAt: string })[] {
+    const rows = this.db
+      .prepare(
+        `SELECT i.channel, i.account, i.chat_id, i.sender_id, d.display_name, MAX(i.received_at) AS last_at, MAX(i.rowid) AS last_row
+         FROM inbox i JOIN identities d ON d.channel = i.channel AND d.sender_id = i.sender_id
+         WHERE i.is_private = 1
+         GROUP BY i.channel, i.account, i.chat_id, i.sender_id
+         ORDER BY last_at DESC, last_row DESC`,
+      )
+      .all() as Row[];
+    return rows.map((r) => ({ ...chatFrom(r), displayName: (r.display_name as string | null) ?? null, lastAt: r.last_at as string }));
+  }
+
+  /** Records a message Ruby sent on its own (send_message). */
+  recordSent(m: { sessionId: string; channel: string; account: string; chatId: string; deliveryId: string }): void {
+    this.db
+      .prepare('INSERT INTO sent_messages (sent_at, session_id, channel, account, chat_id, delivery_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(nowIso(), m.sessionId, m.channel, m.account, m.chatId, m.deliveryId);
+  }
+
+  /** How many messages Ruby sent on its own since `since` (ISO). */
+  sentSince(since: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM sent_messages WHERE sent_at > ?').get(since) as { n: number }).n;
+  }
+
   /** Forgets a conversation binding. The session and its events stay; the next message starts a fresh session. */
   removeConversation(key: string): boolean {
     return this.db.prepare('DELETE FROM conversations WHERE key = ?').run(key).changes > 0;
@@ -274,4 +312,14 @@ const pairingFrom = (r: Row): PairingCode => ({
   chatId: r.chat_id as string,
   createdAt: r.created_at as string,
   expiresAt: r.expires_at as string,
+});
+
+/** A private chat on a channel, with the paired sender who uses it. */
+export type ChatRef = { channel: string; account: string; chatId: string; senderId: string };
+
+const chatFrom = (r: Row): ChatRef => ({
+  channel: r.channel as string,
+  account: r.account as string,
+  chatId: r.chat_id as string,
+  senderId: r.sender_id as string,
 });

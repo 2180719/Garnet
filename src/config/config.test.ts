@@ -107,3 +107,20 @@ test('setInEnvFile replaces, de-duplicates and appends, keeps other lines, quote
   assert.throws(() => setInEnvFile(home, { 'BAD-NAME': 'x' }), /Invalid variable name/);
   assert.throws(() => setInEnvFile(home, { A: 'two\nlines' }), /single line/);
 });
+
+test('owner timezone, one-shot, message and script jobs validate', () => {
+  assert.equal(parseConfig({ version: CONFIG_VERSION, timezone: 'Europe/London' }).timezone, 'Europe/London');
+  assert.throws(() => parseConfig({ version: CONFIG_VERSION, timezone: 'Mars/Olympus' }), /timezone: Unknown IANA time zone/);
+  const c = defaultConfig();
+  assert.equal(c.timezone, undefined, 'unset means the host zone');
+  assert.equal(c.scheduler.maxAgentJobs, 25);
+  assert.equal(c.gateway.messagesPerHour, 20);
+  const jobs = (j: object) => parseConfig({ version: CONFIG_VERSION, jobs: [{ id: 'j', ...j }] }).jobs[0]!;
+  assert.equal(jobs({ kind: 'once', at: '2026-12-24T09:00:00+01:00', message: 'Hi' }).at, '2026-12-24T09:00:00+01:00');
+  assert.equal(jobs({ kind: 'heartbeat', everyMinutes: 30, script: { command: 'date' } }).script?.timeoutSeconds, 60);
+  assert.throws(() => jobs({ kind: 'once', message: 'Hi' }), /once jobs need `at`/);
+  assert.throws(() => jobs({ kind: 'once', at: '2026-12-24 09:00', message: 'Hi' }), /at/);
+  assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30 }), /exactly one of instructions, message or script/);
+  assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30, message: 'a', instructions: 'b' }), /exactly one of/);
+  assert.throws(() => jobs({ kind: 'heartbeat', everyMinutes: 30, message: 'a', notify: { channel: 'irc', chatId: '1' } }), /notify.channel must be/);
+});

@@ -78,22 +78,39 @@ export class ToolExecutor {
       return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
     }
 
-    const decision = this.deps.policy.check(tool.capability);
+    // The strictest verdict across every capability this call needs.
+    const rank = { allow: 0, ask: 1, deny: 2 } as const;
+    let capability = tool.capability;
+    let decision: { verdict: 'allow' | 'ask' | 'deny'; reason: string } = { verdict: 'allow', reason: 'no permission needed' };
+    try {
+      for (const cap of tool.capabilitiesFor ? tool.capabilitiesFor(input) : [tool.capability]) {
+        const d = this.deps.policy.check(cap);
+        if (rank[d.verdict] > rank[decision.verdict] || (d.verdict === decision.verdict && cap === 'exec')) [decision, capability] = [d, cap];
+      }
+    } catch (e) {
+      return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+    }
     if (decision.verdict === 'deny') {
       return fail('denied', `Not permitted: ${decision.reason}. Do not retry; tell the owner if this is needed.`);
     }
     if (decision.verdict === 'ask') {
+      let summary: string;
+      try {
+        // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
+        summary = tool.summarize ? tool.summarize(input, fullCtx) : describe(tool.name, input, targets, ctx.workspace, capability === 'exec' ? 10_000 : 120);
+      } catch (e) {
+        return fail(isRubyError(e) ? e.category : 'invalid_input', errorMessage(e));
+      }
       let answer: ApprovalDecision;
       try {
         answer = await this.deps.approver({
           sessionId: ctx.sessionId,
           callId: call.id,
           tool: tool.name,
-          capability: tool.capability,
+          capability,
           targets,
           input,
-          // Commands are shown in full: a truncated command could hide its dangerous part from the owner.
-          summary: describe(tool.name, input, targets, ctx.workspace, tool.capability === 'exec' ? 10_000 : 120),
+          summary,
         });
       } catch (e) {
         return fail('internal', `Could not ask the owner for approval: ${errorMessage(e)}. The operation did not run.`);

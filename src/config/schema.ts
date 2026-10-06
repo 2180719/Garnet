@@ -16,15 +16,28 @@ const capabilityGrant = z.object({
   'schedule.edit': permission.default('deny'),
 });
 
-const jobSchema = z
+/** Channels a job or `send_message` can deliver to (paired chats only). */
+export const NOTIFY_CHANNELS = ['telegram', 'signal', 'discord'] as const;
+
+export const jobSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9-]{1,40}$/).describe('Short unique name.'),
     enabled: z.boolean().default(true).describe('Disabled jobs never run and never call the model.'),
-    kind: z.enum(['cron', 'heartbeat']).describe('cron: calendar times. heartbeat: every N minutes.'),
+    kind: z.enum(['cron', 'heartbeat', 'once']).describe('cron: calendar times. heartbeat: every N minutes. once: a single run at `at` (reminders).'),
     cron: z.string().optional().describe('5-field cron expression (minute hour day month weekday), for kind=cron.'),
     everyMinutes: z.number().int().min(5).max(10_080).optional().describe('Interval for kind=heartbeat.'),
-    timezone: z.string().optional().describe('IANA time zone, e.g. Europe/London. Defaults to the host zone.'),
-    instructions: z.string().min(1).max(4000).describe('What Ruby should do on each run.'),
+    at: z.iso.datetime({ offset: true }).optional().describe('When a kind=once job runs: an ISO date-time with a zone offset, e.g. 2026-10-07T09:00:00+01:00.'),
+    timezone: z.string().optional().describe('IANA time zone, e.g. Europe/London. Defaults to the top-level timezone, then the host zone.'),
+    instructions: z.string().min(1).max(4000).optional().describe('What Ruby should do on each run (runs the agent). Give exactly one of instructions, message or script.'),
+    message: z.string().min(1).max(4000).optional().describe('Fixed text sent as is on each run, without calling the model (cheap reminders).'),
+    script: z
+      .object({
+        command: z.string().min(1).max(10_000).describe('Shell command (sh -c) run in the command sandbox, starting in the workspace.'),
+        timeoutSeconds: z.number().int().min(1).max(600).default(60).describe('The command is killed after this long.'),
+      })
+      .strict()
+      .optional()
+      .describe('Script-only job: runs the command and never calls the model. Non-empty output is sent (with notifyWhen on_change, only when it changed). Needs exec to be allow or ask.'),
     check: z
       .discriminatedUnion('type', [
         z.object({ type: z.literal('file_changed'), path: z.string().describe('Workspace-relative file to watch.') }),
@@ -44,13 +57,16 @@ const jobSchema = z
       .object({ channel: z.string(), chatId: z.string(), account: z.string().default('default') })
       .optional()
       .describe('Where to send results. Without it, results are only kept in run history.'),
-    notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Ruby has something worth reporting.'),
+    notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Ruby has something worth reporting (script jobs: when the output changed).'),
     catchUp: z.boolean().default(true).describe('After downtime, run missed occurrences once (coalesced). Otherwise skip them.'),
   })
   .strict()
   .superRefine((j, ctx) => {
     if (j.kind === 'cron' && !j.cron) ctx.addIssue({ code: 'custom', path: ['cron'], message: 'cron jobs need a cron expression' });
     if (j.kind === 'heartbeat' && !j.everyMinutes) ctx.addIssue({ code: 'custom', path: ['everyMinutes'], message: 'heartbeats need everyMinutes' });
+    if (j.kind === 'once' && !j.at) ctx.addIssue({ code: 'custom', path: ['at'], message: 'once jobs need `at` (an ISO date-time with offset)' });
+    const actions = [j.instructions, j.message, j.script].filter((a) => a !== undefined).length;
+    if (actions !== 1) ctx.addIssue({ code: 'custom', path: ['instructions'], message: 'give exactly one of instructions, message or script' });
     if (j.cron) {
       try {
         parseCron(j.cron);
@@ -59,6 +75,9 @@ const jobSchema = z
       }
     }
     if (j.timezone && !validTimeZone(j.timezone)) ctx.addIssue({ code: 'custom', path: ['timezone'], message: `Unknown time zone "${j.timezone}"` });
+    if (j.notify && !(NOTIFY_CHANNELS as readonly string[]).includes(j.notify.channel)) {
+      ctx.addIssue({ code: 'custom', path: ['notify', 'channel'], message: `notify.channel must be ${NOTIFY_CHANNELS.join(', ')}` });
+    }
   });
 
 export type JobConfig = z.infer<typeof jobSchema>;
@@ -70,6 +89,11 @@ export const configSchema = z
       .string()
       .optional()
       .describe('Directory tools may work in. Defaults to <home>/workspace.'),
+    timezone: z
+      .string()
+      .refine(validTimeZone, 'Unknown IANA time zone')
+      .optional()
+      .describe("Your IANA time zone, e.g. Europe/London. Schedules and reminders use it. Defaults to the host's zone."),
     model: z
       .object({
         provider: z
@@ -207,6 +231,7 @@ export const configSchema = z
       .object({
         maxConcurrent: z.number().int().min(1).max(64).default(4).describe('Tasks that may run at once across all conversations.'),
         pairingTtlMinutes: z.number().int().min(1).max(1440).default(60).describe('How long a pairing code stays valid.'),
+        messagesPerHour: z.number().int().min(1).max(1000).default(20).describe('Messages Ruby may send on its own with send_message per hour, across all chats. Replies and job results are not counted.'),
       })
       .prefault({})
       .describe('Message routing and delivery.'),
@@ -231,6 +256,7 @@ export const configSchema = z
       .object({
         enabled: z.boolean().default(true).describe('Global switch for cron jobs and heartbeats. Off stops all new scheduled runs.'),
         tickSeconds: z.number().int().min(5).max(300).default(30).describe('How often the scheduler checks for due jobs.'),
+        maxAgentJobs: z.number().int().min(0).max(500).default(25).describe('Jobs Ruby may create from chat with the schedule tool (0 turns that off). Jobs in this file do not count.'),
       })
       .prefault({})
       .describe('Scheduled work.'),
@@ -262,11 +288,6 @@ export const configSchema = z
     }
     if (c.channels.signal.enabled && !c.channels.signal.account) {
       ctx.addIssue({ code: 'custom', path: ['channels', 'signal', 'account'], message: "Signal needs the bot's number" });
-    }
-    for (const [i, j] of c.jobs.entries()) {
-      if (j.notify && !['telegram', 'signal', 'discord'].includes(j.notify.channel)) {
-        ctx.addIssue({ code: 'custom', path: ['jobs', i, 'notify', 'channel'], message: 'notify.channel must be telegram, signal or discord' });
-      }
     }
   });
 

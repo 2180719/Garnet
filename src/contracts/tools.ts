@@ -41,6 +41,15 @@ export type ToolDefinition<I = any> = {
   description: string;
   input: z.ZodType<I>;
   capability: Capability;
+  /**
+   * Capabilities this particular call needs, when they depend on the input
+   * (e.g. `schedule` needs `exec` too for a script job, and nothing to list
+   * jobs). Defaults to `[capability]`; the strictest verdict wins. An empty
+   * list means the call only reads Ruby's own state and needs no permission.
+   */
+  capabilitiesFor?: (input: I) => Capability[];
+  /** Plain-language description of the call for approval prompts. Must show everything consequential in full. */
+  summarize?: (input: I, ctx: ToolContext) => string;
   /** Paths/hosts the call touches, used for scoped policy checks. */
   targets?: (input: I, ctx: ToolContext) => string[];
   /** True when repeating the call cannot cause a duplicate external effect. */
