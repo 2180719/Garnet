@@ -166,6 +166,27 @@ const MIGRATIONS: string[] = [
   ALTER TABLE outbox ADD COLUMN attachments TEXT;
   CREATE INDEX inbox_by_session ON inbox(session_id);
   `,
+  `
+  -- Jobs created from chat (schedule tool), CLI or dashboard; config.json jobs stay in config.
+  CREATE TABLE agent_jobs (
+    id TEXT PRIMARY KEY,
+    definition TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  -- Messages Ruby sent on its own (send_message), for rate limits and audit.
+  CREATE TABLE sent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sent_at TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    account TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    delivery_id TEXT NOT NULL
+  );
+  CREATE INDEX sent_messages_by_time ON sent_messages(sent_at);
+  `,
 ];
 
 export type Db = DatabaseSync;

@@ -3,9 +3,9 @@
 import { Achievements, type Stats } from './achievements/index.ts';
 import { changedProtectedPaths, configSchema, loadConfig, PROTECTED_CONFIG_PATHS, parseConfig, redact, writeConfig } from './config/index.ts';
 import { RubyError, type ContentBlock, type SessionEvent } from './contracts/index.ts';
-import { approvePairing, type AdminBackend, type Gateway, type Scope } from './gateway/index.ts';
+import { approvePairing, ChatDirectory, type AdminBackend, type Gateway, type Scope } from './gateway/index.ts';
 import { isMemoryFile } from './memory/index.ts';
-import type { Scheduler } from './scheduler/index.ts';
+import { describeNext, describeSchedule, parseWhen, type JobEntry, type Scheduler } from './scheduler/index.ts';
 import { StatsStore } from './store/index.ts';
 import type { Ruby } from './main.ts';
 
@@ -41,9 +41,28 @@ function eventView(e: SessionEvent): unknown {
 
 const AUDIT_PATH_SECRETS = /(\/api\/pairing\/)[^/]+/;
 
+/** A job for the dashboard: its definition, where it came from, and its schedule and next run in words. */
+function jobView(e: JobEntry, now: Date, label: (n: { channel: string; account: string; chatId: string }) => string): Record<string, unknown> {
+  return {
+    ...e.job,
+    origin: e.origin,
+    zone: e.zone,
+    state: e.state,
+    done: e.done,
+    schedule: describeSchedule(e.job, e.zone, now),
+    next: e.next?.toISOString() ?? null,
+    nextText: e.next ? describeNext(e.next, e.zone, now) : null,
+    notifyLabel: e.job.notify ? label(e.job.notify) : null,
+  };
+}
+
 export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler, version: string): AdminBackend & { unlockEasterEgg(id: string): boolean } {
   const stats = new StatsStore(ruby.db);
   const achievements = new Achievements(ruby.db);
+  const notifyLabel = (n: { channel: string; account: string; chatId: string }): string => {
+    const known = ruby.directory.chats().find((c) => c.channel === n.channel && c.chatId === n.chatId);
+    return ChatDirectory.label(known ?? { ...n, senderId: null, name: null });
+  };
   const startedAt = new Date().toISOString();
   stats.setMetaOnce('first_start', startedAt);
   const memFile = (f: string) => {
@@ -83,7 +102,7 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
       counts: stats.counts(),
       pendingApprovals: ruby.approvals.pending().length,
       health: gateway.health(),
-      scheduler: { enabled: ruby.config.scheduler.enabled, jobs: ruby.config.jobs.length },
+      scheduler: { enabled: ruby.config.scheduler.enabled, jobs: ruby.jobBook.jobs().length },
       api: { host: ruby.config.api.host, port: ruby.config.api.port },
     }),
     // The file, not the startup config: after a PUT the page must show what was saved.
@@ -133,15 +152,38 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
       else ruby.skills[action](name);
       return { ok: true };
     },
-    jobs: () => ({
-      enabled: ruby.config.scheduler.enabled,
-      jobs: ruby.config.jobs.map((j) => ({ ...j, state: ruby.jobStore.state(j.id), runs: ruby.jobStore.runs(j.id, 10) })),
-    }),
+    jobs: () => {
+      const now = new Date();
+      return {
+        enabled: ruby.config.scheduler.enabled,
+        timezone: ruby.timezone,
+        problems: ruby.jobBook.problems(),
+        jobs: ruby.jobBook.list().map((e) => ({ ...jobView(e, now, notifyLabel), runs: ruby.jobStore.runs(e.job.id, 10) })),
+      };
+    },
     jobAction: async (id, action) => {
-      if (!ruby.config.jobs.some((j) => j.id === id)) throw new RubyError('invalid_input', `No job "${id}".`);
-      if (action === 'resume') scheduler.resume(id);
+      if (!ruby.jobBook.find(id)) throw new RubyError('invalid_input', `No job "${id}".`);
+      if (action === 'resume') ruby.jobBook.resume(id);
+      else if (action === 'pause') ruby.jobBook.pause(id);
       else await scheduler.runNow(id);
       return { state: ruby.jobStore.state(id), last: ruby.jobStore.runs(id, 1)[0] ?? null };
+    },
+    updateJob: (id, body) => {
+      const b = (body ?? {}) as { when?: unknown; instructions?: unknown; message?: unknown };
+      const patch: Record<string, unknown> = {};
+      const found = ruby.jobBook.find(id);
+      if (!found) throw new RubyError('invalid_input', `No job "${id}".`);
+      if (typeof b.when === 'string' && b.when.trim()) {
+        const w = parseWhen(b.when, { now: new Date(), zone: ruby.jobBook.zoneOf(found.job) });
+        Object.assign(patch, w.kind === 'once' ? { kind: 'once', at: w.at.toISOString() } : w.kind === 'heartbeat' ? { kind: 'heartbeat', everyMinutes: w.everyMinutes } : { kind: 'cron', cron: w.cron });
+      }
+      if (typeof b.instructions === 'string' && b.instructions.trim()) patch.instructions = b.instructions.trim();
+      if (typeof b.message === 'string' && b.message.trim()) patch.message = b.message.trim();
+      return jobView(ruby.jobBook.update(id, patch, 'owner'), new Date(), notifyLabel);
+    },
+    deleteJob: (id) => {
+      ruby.jobBook.remove(id);
+      return { deleted: true };
     },
     keys: () => ({ keys: ruby.keys.list() }),
     createKey: (name, scopes: Scope[], days) => ruby.keys.create(name, scopes, days),

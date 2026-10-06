@@ -105,7 +105,7 @@ test('hermes cron/jobs.json becomes disabled Ruby jobs; what cannot map is skipp
   const digest = by('Inbox digest').job!;
   assert.equal(digest.kind, 'heartbeat');
   assert.equal(digest.everyMinutes, 30);
-  assert.match(digest.instructions, /^Use the skill email-triage \(call skill_view first\)\.\n\nDigest the inbox\.$/);
+  assert.match(digest.instructions ?? "", /^Use the skill email-triage \(call skill_view first\)\.\n\nDigest the inbox\.$/);
   assert.deepEqual(digest.notify, { channel: 'telegram', chatId: '999888777', account: 'default' }); // bare "telegram" = home channel
   assert.match(by('Inbox digest').notes.join(), /was paused/);
   assert.equal(by('Remind me').job, null);
@@ -316,7 +316,7 @@ test('openclaw state database: automations, heartbeat checklist and approved sen
   assert.equal(hb.kind, 'heartbeat');
   assert.equal(hb.everyMinutes, 30);
   assert.equal(hb.notifyWhen, 'on_change');
-  assert.match(hb.instructions, /- scan inbox\n- reply NOTHING_TO_REPORT if quiet/);
+  assert.match(hb.instructions ?? "", /- scan inbox\n- reply NOTHING_TO_REPORT if quiet/);
   assert.deepEqual(hb.notify, { channel: 'telegram', chatId: '111222333', account: 'default' }); // ownerAllowFrom
   const mb = by('Morning brief').job!;
   assert.equal(mb.cron, '0 7 * * *');

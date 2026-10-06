@@ -19,6 +19,7 @@ import {
 import type { Agent, LaneQueue, RuntimeEvent } from '../runtime/index.ts';
 import type { FailedFile, MediaIngest, MediaInput } from '../media/index.ts';
 import type { ApprovalStore, GatewayStore, InboxRow, PairingCode, SessionStore } from '../store/index.ts';
+import { ChatDirectory, chatOfKey, conversationKeyFor } from './directory.ts';
 
 export type Route = { match: { channel: string; chatId?: string | undefined }; conversation: string };
 export type LogFn = (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -106,9 +107,11 @@ export class Gateway {
   private started = false;
   private readonly log: LogFn;
   private readonly now: () => Date;
+  private readonly directory: ChatDirectory;
 
   constructor(deps: GatewayDeps) {
     this.deps = deps;
+    this.directory = new ChatDirectory({ store: deps.store, sessions: deps.sessions, routes: deps.routes ?? [] });
     for (const c of deps.channels) this.channels.set(channelKey(c.channel, c.account), c);
     this.log = deps.log ?? (() => {});
     this.now = deps.now ?? (() => new Date());
@@ -198,7 +201,7 @@ export class Gateway {
   chat(
     conversationKey: string,
     input: ChatInput,
-    options: { signal?: AbortSignal; onEvent?: (e: RuntimeEvent) => void; source: string },
+    options: { signal?: AbortSignal; onEvent?: (e: RuntimeEvent) => void; source: string; /** Untrusted sources carried into this task (a job created by a tainted conversation). */ taint?: readonly string[] },
   ): Promise<ChatResult> {
     return this.deps.lanes.run(conversationKey, async () => {
       const sessionId = this.sessionFor(conversationKey, options.source);
@@ -279,23 +282,18 @@ export class Gateway {
   notify(
     target: { channel: string; account: string; chatId: string },
     text: string,
-    record?: { from: string },
+    record?: { from: string; skipSession?: string },
     attachments?: OutboundMessage['attachments'],
-  ): void {
-    this.deps.store.enqueue({ ...target, text, ...(attachments?.length ? { attachments } : {}) });
+  ): string {
+    const out = this.deps.store.enqueue({ ...target, text, ...(attachments?.length ? { attachments } : {}) });
     void this.deliver();
-    if (!record) return;
+    if (!record) return out.deliveryId;
     const key = this.conversationKeyFor(target.channel, target.account, target.chatId);
+    // On the conversation's lane, so the note never lands in the middle of a running turn.
     void this.deps.lanes
-      .run(key, async () => {
-        const sessionId = this.sessionFor(key, target.channel);
-        this.deps.sessions.append(sessionId, {
-          type: 'user_message',
-          message: { role: 'user', content: [{ type: 'text', text: `[Context note, not written by your owner: you sent them this message from ${record.from}.]\n${text}` }] },
-          source: 'notification',
-        });
-      })
+      .run(key, async () => this.directory.record(target, text, record))
       .catch((e) => this.log('warn', `recording a notification in ${key}: ${errorMessage(e)}`));
+    return out.deliveryId;
   }
 
   /** Channel liveness and delivery backlog, for health endpoints. */
@@ -573,11 +571,7 @@ export class Gateway {
   }
 
   private conversationKeyFor(channel: string, account: string, chatId: string): string {
-    const routes = this.deps.routes ?? [];
-    const route =
-      routes.find((r) => r.match.channel === channel && r.match.chatId === chatId) ??
-      routes.find((r) => r.match.channel === channel && r.match.chatId === undefined);
-    return route ? `route:${route.conversation}` : `${channel}:${account}:${chatId}`;
+    return conversationKeyFor(this.deps.routes ?? [], { channel, account, chatId });
   }
 
   private sessionFor(key: string, channel: string): string {
@@ -701,13 +695,6 @@ function approvalText(code: string, summary: string, approved: boolean): string 
   return approved
     ? `[Owner approved ${code}: ${summary}] Go ahead with exactly that operation, then continue.`
     : `[Owner declined ${code}: ${summary}] Do not do that. Continue without it, or explain what you need.`;
-}
-
-/** Parses a per-chat conversation key (`channel:account:chatId`); other keys (routes, jobs, API) return null. */
-function chatOfKey(key: string): { channel: string; account: string; chatId: string } | null {
-  const [channel, account, ...rest] = key.split(':');
-  if (!channel || !account || rest.length === 0 || ['route', 'job', 'api', 'dashboard'].includes(channel)) return null;
-  return { channel, account, chatId: rest.join(':') };
 }
 
 const channelKey = (channel: string, account: string) => `${channel}:${account}`;

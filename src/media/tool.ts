@@ -14,7 +14,7 @@ export type SendFileDeps = {
   /** Largest file a channel accepts from a bot; undefined when the channel cannot send files. */
   maxUploadBytes: (channel: string) => number | undefined;
   /** Queues the message durably; the gateway's delivery loop sends it. */
-  enqueue: (target: ChatTarget, text: string, attachments: OutboundAttachment[]) => void;
+  enqueue: (target: ChatTarget, text: string, attachments: OutboundAttachment[], sessionId: string) => void;
 };
 
 /**
@@ -50,7 +50,7 @@ export function sendFileTool(deps: SendFileDeps): ToolDefinition<{ path: string;
       if (info.size > max) throw new RubyError('invalid_input', `"${path}" is ${formatBytes(info.size)}; ${target.channel} accepts at most ${formatBytes(max)} here.`);
       const ref = deps.media.put({ data: await readFile(real), name: real.split(/[\\/]/).pop() });
       const attachment: OutboundAttachment = { path: deps.media.path(ref.id), name: ref.name ?? `file${ref.id.slice(-6)}`, mimeType: ref.mimeType, kind: ref.kind, size: ref.size };
-      deps.enqueue(target, caption ?? '', [attachment]);
+      deps.enqueue(target, caption ?? '', [attachment], ctx.sessionId);
       return { content: `Queued ${attachment.name} (${ref.mimeType}, ${formatBytes(ref.size)}) for ${target.channel}. It is delivered in order with replies.`, data: { mediaId: ref.id } };
     },
   };

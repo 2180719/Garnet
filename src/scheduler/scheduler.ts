@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
-import { billedTokens, errorMessage, RubyError, type TaskRecord } from '../contracts/index.ts';
+import { billedTokens, errorMessage, isRubyError, RubyError, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
 import { resolveInWorkspace } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
 
@@ -13,17 +13,29 @@ const ACK_MAX_CHARS = 300;
 const FAILURE_THRESHOLD = 3;
 /** Abort reason for runs cancelled because Ruby is shutting down (not the job's fault). */
 const SHUTDOWN = 'shutdown';
+/** Abort reason for runs whose job was deleted while they ran. */
+const DELETED = 'deleted';
+/** Longest script output sent to a chat. */
+const MAX_SCRIPT_MESSAGE = 3500;
 
 export type RunJob = (job: JobConfig, text: string, signal: AbortSignal) => Promise<{ task: TaskRecord; text: string }>;
 export type Notify = (job: JobConfig, text: string) => void;
 export type CheckFn = (job: JobConfig, signal: AbortSignal) => Promise<string>;
+/** Runs a script job's command in the sandbox. Absent when exec is denied. */
+export type RunScript = (
+  job: JobConfig,
+  signal: AbortSignal,
+) => Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean; cancelled: boolean }>;
 
 export type SchedulerDeps = {
-  jobs: JobConfig[];
+  /** The jobs to schedule, re-read on every tick (stored jobs can change while Ruby runs). */
+  jobs: JobConfig[] | (() => JobConfig[]);
   store: JobStore;
   run: RunJob;
   notify: Notify;
   workspace: string;
+  /** Script jobs fail with a clear error without it. */
+  runScript?: RunScript | null;
   enabled?: boolean;
   tickSeconds?: number;
   now?: () => Date;
@@ -36,6 +48,21 @@ export type SchedulerDeps = {
 };
 
 const hostZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/** What one run did, before the shared bookkeeping (failure counting, pausing, notifying). */
+type Outcome = {
+  status: JobRunStatus;
+  failed: boolean;
+  taskId?: string;
+  tokens?: number;
+  note?: string;
+  /** Text for the owner, or null to stay quiet. */
+  message: string | null;
+  /** New value for the job's change-detection state, saved only on success. */
+  checkValue?: string | null;
+  /** Error reason used in the "paused" notice. */
+  reason?: string;
+};
 
 /**
  * Whether a reply means "nothing to report": `NOTHING_TO_REPORT` as the whole
@@ -56,9 +83,9 @@ export function quietReply(reply: string): { nothing: boolean; text: string } {
 }
 
 /**
- * Enqueues cron jobs and heartbeats into the normal agent runtime. Disabled
- * jobs, paused jobs, unchanged pre-checks and exhausted daily budgets never
- * call the model.
+ * Enqueues cron jobs, heartbeats, one-shot reminders and script-only jobs.
+ * Disabled jobs, paused jobs, unchanged pre-checks and exhausted daily budgets
+ * never call the model; message and script jobs never do.
  */
 export class Scheduler {
   private readonly deps: SchedulerDeps;
@@ -72,6 +99,14 @@ export class Scheduler {
     this.deps = deps;
     this.now = deps.now ?? (() => new Date());
     this.log = deps.log ?? (() => {});
+  }
+
+  private jobs(): JobConfig[] {
+    return typeof this.deps.jobs === 'function' ? this.deps.jobs() : this.deps.jobs;
+  }
+
+  private zone(job: JobConfig): string {
+    return job.timezone ?? this.deps.timeZone ?? hostZone();
   }
 
   start(): void {
@@ -95,8 +130,18 @@ export class Scheduler {
 
   /** Starts every due job; returns once they have all been started (not finished). */
   async tick(): Promise<void> {
+    let jobs: JobConfig[];
+    try {
+      jobs = this.jobs();
+    } catch (e) {
+      this.log('error', `could not load jobs: ${errorMessage(e)}`);
+      return;
+    }
+    // A job deleted while it runs (from chat, the CLI or the dashboard) is stopped.
+    const ids = new Set(jobs.map((j) => j.id));
+    for (const id of this.running.keys()) if (!ids.has(id)) this.cancel(id);
     if (this.deps.enabled === false) return;
-    for (const job of this.deps.jobs) {
+    for (const job of jobs) {
       if (!job.enabled || this.running.has(job.id)) continue;
       const state = this.deps.store.state(job.id);
       if (state.paused) continue;
@@ -108,16 +153,16 @@ export class Scheduler {
         this.deps.store.claim(`${job.id}@${due.at.toISOString()}`, job.id, due.at.toISOString(), 'missed', 'Missed while Ruby was not running; catch-up is off.');
         continue;
       }
-      this.launch(job, due.at);
+      void this.launch(job, due.at, due.missed ? 'late' : '');
     }
   }
 
   /** Runs a job now, outside its schedule (CLI, dashboard). */
   runNow(jobId: string): Promise<void> {
-    const job = this.deps.jobs.find((j) => j.id === jobId);
+    const job = this.jobs().find((j) => j.id === jobId);
     if (!job) return Promise.reject(new RubyError('invalid_input', `No job "${jobId}"`));
     if (this.running.has(job.id)) return Promise.reject(new RubyError('conflict', `Job "${jobId}" is already running`));
-    return this.launch(job, this.now(), 'manual');
+    return this.launch(job, this.now(), '', 'manual');
   }
 
   resume(jobId: string): void {
@@ -125,15 +170,40 @@ export class Scheduler {
     this.deps.store.saveState({ ...state, paused: false, consecutiveFailures: 0 });
   }
 
+  /** Stops a running occurrence because its job was deleted. Returns whether one was running. */
+  cancel(jobId: string): boolean {
+    const c = this.running.get(jobId);
+    c?.abort(DELETED);
+    return !!c;
+  }
+
+  isRunning(jobId: string): boolean {
+    return this.running.has(jobId);
+  }
+
   /** Latest occurrence that is due and not yet scheduled. On first sight of a job, starts from now (no backfill). */
   private dueOccurrence(job: JobConfig, last: string | null): { at: Date; missed: boolean } | null {
     const now = this.now();
+    const tick = (this.deps.tickSeconds ?? 30) * 1000;
+    if (job.kind === 'once') {
+      const at = new Date(job.at!);
+      if (last && new Date(last) >= at) return null;
+      if (!last) {
+        // First sight (a config job): a time that had already passed is recorded, never run late.
+        if (at.getTime() < now.getTime() - 2 * tick) {
+          this.deps.store.saveState({ ...this.deps.store.state(job.id), lastScheduledFor: at.toISOString() });
+          this.deps.store.claim(`${job.id}@${at.toISOString()}`, job.id, at.toISOString(), 'missed', 'Its time had already passed when Ruby first saw it.');
+          return null;
+        }
+      }
+      if (at > now) return null;
+      return { at, missed: now.getTime() - at.getTime() > 2 * tick };
+    }
     if (!last) {
       // Remember "now" as the starting point so the first occurrence after it runs.
       this.deps.store.saveState({ ...this.deps.store.state(job.id), lastScheduledFor: now.toISOString() });
       return null;
     }
-    const tick = (this.deps.tickSeconds ?? 30) * 1000;
     if (job.kind === 'heartbeat') {
       const every = job.everyMinutes! * 60_000;
       const slot = Math.floor(now.getTime() / every) * every;
@@ -141,7 +211,7 @@ export class Scheduler {
       return { at: new Date(slot), missed: now.getTime() - slot > 2 * tick };
     }
     const cron = parseCron(job.cron!);
-    const zone = job.timezone ?? this.deps.timeZone ?? hostZone();
+    const zone = this.zone(job);
     let at = nextRun(cron, new Date(last), zone);
     if (!at || at > now) return null;
     // Coalesce missed occurrences into the latest one.
@@ -153,12 +223,12 @@ export class Scheduler {
     return { at, missed: now.getTime() - at.getTime() > 2 * tick };
   }
 
-  private launch(job: JobConfig, at: Date, suffix = ''): Promise<void> {
+  private launch(job: JobConfig, at: Date, late: '' | 'late', suffix = ''): Promise<void> {
     const occurrenceId = `${job.id}@${at.toISOString()}${suffix ? `#${suffix}` : ''}`;
     if (!this.deps.store.claim(occurrenceId, job.id, at.toISOString())) return Promise.resolve();
     const controller = new AbortController();
     this.running.set(job.id, controller);
-    const p = this.execute(job, at, occurrenceId, controller).finally(() => {
+    const p = this.execute(job, at, occurrenceId, controller, late === 'late').finally(() => {
       this.running.delete(job.id);
       this.inflight.delete(p);
     });
@@ -166,7 +236,7 @@ export class Scheduler {
     return p;
   }
 
-  private async execute(job: JobConfig, at: Date, occurrenceId: string, controller: AbortController): Promise<void> {
+  private async execute(job: JobConfig, at: Date, occurrenceId: string, controller: AbortController, late: boolean): Promise<void> {
     const { store } = this.deps;
     const state = store.state(job.id);
     const finish = (status: JobRunStatus, fields: { taskId?: string; tokens?: number; note?: string } = {}) => store.finish(occurrenceId, status, fields);
@@ -179,8 +249,15 @@ export class Scheduler {
 
     const timeout = setTimeout(() => controller.abort(), job.timeoutMinutes * 60_000);
     timeout.unref();
-    let newCheckValue: string | null = null;
+    const stopped = (fields: { taskId?: string; tokens?: number } = {}): boolean => {
+      const reason = controller.signal.reason;
+      if (reason === SHUTDOWN) finish('interrupted', { ...fields, note: 'Stopped because Ruby shut down.' });
+      else if (reason === DELETED) finish('cancelled', { ...fields, note: 'The job was deleted while it ran.' });
+      // A restart or a deletion is not a job failure: record it, but do not count it towards pausing or message the owner.
+      return reason === SHUTDOWN || reason === DELETED;
+    };
     try {
+      let newCheckValue: string | null = null;
       if (job.check) {
         newCheckValue = await (this.deps.check ?? this.builtinCheck)(job, controller.signal);
         if (newCheckValue === state.checkValue) {
@@ -188,41 +265,26 @@ export class Scheduler {
           return;
         }
       }
-      const zone = job.timezone ?? this.deps.timeZone ?? hostZone();
-      const p = zonedParts(at, zone);
-      const when = `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')} ${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')} ${zone}`;
-      const text = [
-        `[Scheduled job "${job.id}" for ${when}.${job.check ? ' Its pre-check detected a change.' : ''}]`,
-        job.instructions,
-        job.notifyWhen === 'on_change' ? `If nothing needs your owner's attention, reply with exactly ${NOTHING}.` : '',
-      ]
-        .filter(Boolean)
-        .join('\n\n');
-      const { task, text: reply } = await this.deps.run(job, text, controller.signal);
-      const tokens = billedTokens(task.usage);
-      if (task.status === 'cancelled' && controller.signal.reason === SHUTDOWN) {
-        // A restart is not a job failure: record it, but do not count it towards pausing or message the owner.
-        finish('interrupted', { taskId: task.id, tokens, note: 'Stopped because Ruby shut down.' });
-        return;
-      }
-      const failed = task.status === 'failed' || task.status === 'cancelled';
-      finish(task.status, { taskId: task.id, tokens, ...(task.reason ? { note: task.reason } : {}) });
+      const outcome = job.message !== undefined
+        ? this.messageOutcome(job, at, late)
+        : job.script
+          ? await this.scriptOutcome(job, state.checkValue, controller.signal)
+          : await this.agentOutcome(job, at, late, controller.signal, newCheckValue);
+      if (outcome.status === 'cancelled' && stopped({ ...(outcome.taskId ? { taskId: outcome.taskId } : {}), tokens: outcome.tokens ?? 0 })) return;
+      finish(outcome.status, { ...(outcome.taskId ? { taskId: outcome.taskId } : {}), tokens: outcome.tokens ?? 0, ...(outcome.note ? { note: outcome.note } : {}) });
       const fresh = store.state(job.id);
-      fresh.consecutiveFailures = failed ? fresh.consecutiveFailures + 1 : 0;
-      if (!failed && newCheckValue !== null) fresh.checkValue = newCheckValue;
+      fresh.consecutiveFailures = outcome.failed ? fresh.consecutiveFailures + 1 : 0;
+      if (!outcome.failed && outcome.checkValue !== undefined) fresh.checkValue = outcome.checkValue;
       if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) {
         fresh.paused = true;
-        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${task.reason ?? 'unknown'}. Resume with: ruby jobs resume ${job.id}`);
+        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${outcome.reason ?? 'unknown'}. Resume with: ruby jobs resume ${job.id}`);
       }
       store.saveState(fresh);
-      const quiet = quietReply(reply);
-      // Completed runs with nothing to report stay quiet unless the job asks for every result.
-      if (task.status !== 'completed' || job.notifyWhen === 'always' || !quiet.nothing) this.notify(job, `[${job.id}] ${task.status === 'completed' ? quiet.text : reply}`);
+      if (outcome.message !== null) this.notify(job, outcome.message);
     } catch (e) {
-      if (controller.signal.reason === SHUTDOWN) {
-        finish('interrupted', { note: 'Stopped because Ruby shut down.' });
-        return;
-      }
+      // Only an abort counts as stopped: a genuine error that races a shutdown is still a failure.
+      const aborted = e === controller.signal.reason || (e as Error)?.name === 'AbortError' || isRubyError(e, 'cancelled');
+      if (aborted && stopped()) return;
       finish('failed', { note: errorMessage(e) });
       const fresh = store.state(job.id);
       fresh.consecutiveFailures += 1;
@@ -235,6 +297,71 @@ export class Scheduler {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private when(job: JobConfig, at: Date): string {
+    const zone = this.zone(job);
+    const p = zonedParts(at, zone);
+    return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')} ${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')} ${zone}`;
+  }
+
+  /** A fixed reminder: sent as is, never calls the model. */
+  private messageOutcome(job: JobConfig, at: Date, late: boolean): Outcome {
+    const lateNote = late ? ` (due ${this.when(job, at)}; Ruby was not running then)` : '';
+    return { status: 'completed', failed: false, note: 'Message sent.', message: `⏰ ${job.message}${lateNote}` };
+  }
+
+  /** A script-only job: runs the command, never calls the model, sends non-empty (and, for on_change, new) output. */
+  private async scriptOutcome(job: JobConfig, lastHash: string | null, signal: AbortSignal): Promise<Outcome> {
+    if (!this.deps.runScript) {
+      const reason = 'Script jobs need the exec permission (allow or ask) in config.json; it is deny.';
+      return { status: 'failed', failed: true, note: reason, reason, message: `[${job.id}] ${reason}` };
+    }
+    const r = await this.deps.runScript(job, signal);
+    if (r.cancelled || signal.aborted) return { status: 'cancelled', failed: true, note: 'Cancelled.', reason: 'cancelled', message: null };
+    if (r.timedOut || r.exitCode !== 0) {
+      const why = r.timedOut ? `timed out after ${job.script!.timeoutSeconds}s` : `exit code ${r.exitCode ?? 'none (killed)'}`;
+      const detail = (r.stderr.trim() || r.stdout.trim()).slice(-500);
+      const reason = `the script failed (${why})${detail ? `: ${detail}` : ''}`;
+      return { status: 'failed', failed: true, note: reason, reason, message: `[${job.id}] The script failed (${why}).${detail ? `\n${detail}` : ''}` };
+    }
+    const out = r.stdout.trim();
+    if (!out) return { status: 'completed', failed: false, note: 'No output; nothing sent.', message: null, checkValue: null };
+    const hash = createHash('sha256').update(out).digest('hex');
+    if (job.notifyWhen === 'on_change' && hash === lastHash) {
+      return { status: 'skipped_unchanged', failed: false, note: 'Output unchanged; nothing sent.', message: null };
+    }
+    const text = out.length > MAX_SCRIPT_MESSAGE ? `${out.slice(0, MAX_SCRIPT_MESSAGE)}\n… (${out.length - MAX_SCRIPT_MESSAGE} more characters)` : out;
+    return { status: 'completed', failed: false, note: 'Output sent.', message: `[${job.id}] ${text}`, checkValue: hash };
+  }
+
+  /** A normal job: runs the agent with the job's instructions. */
+  private async agentOutcome(job: JobConfig, at: Date, late: boolean, signal: AbortSignal, newCheckValue: string | null): Promise<Outcome> {
+    const text = [
+      `[Scheduled job "${job.id}" for ${this.when(job, at)}.${late ? ' It runs late because Ruby was not running at that time.' : ''}${job.check ? ' Its pre-check detected a change.' : ''}]`,
+      job.instructions,
+      job.notifyWhen === 'on_change' ? `If nothing needs your owner's attention, reply with exactly ${NOTHING}.` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    const { task, text: reply } = await this.deps.run(job, text, signal);
+    const tokens = billedTokens(task.usage);
+    if (task.status === 'cancelled' && (signal.reason === SHUTDOWN || signal.reason === DELETED)) {
+      return { status: 'cancelled', failed: false, taskId: task.id, tokens, message: null };
+    }
+    const failed = task.status === 'failed' || task.status === 'cancelled';
+    const q = quietReply(reply);
+    // Completed runs with nothing to report stay quiet unless the job asks for every result.
+    const quiet = task.status === 'completed' && job.notifyWhen !== 'always' && q.nothing;
+    return {
+      status: task.status as TaskStatus as JobRunStatus,
+      failed,
+      taskId: task.id,
+      tokens,
+      ...(task.reason ? { note: task.reason, reason: task.reason } : {}),
+      message: quiet ? null : `[${job.id}] ${task.status === 'completed' ? q.text : reply}`,
+      ...(newCheckValue !== null ? { checkValue: newCheckValue } : {}),
+    };
   }
 
   private notify(job: JobConfig, text: string): void {

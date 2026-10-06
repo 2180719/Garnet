@@ -4,7 +4,7 @@ A persistent personal agent you can actually read.
 
 Ruby runs on your own VPS or computer and is designed to be reached through Telegram, Signal, Discord, an opt-in dashboard, or a key-gated API. It is small enough to audit, secure by default, and careful with tokens.
 
-> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), web fetch and search with prompt-injection containment, bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord (with photos, files and voice notes in, and files out), a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
+> **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), web fetch and search with prompt-injection containment, bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord (with photos, files and voice notes in, and files out), a key-gated OpenAI-compatible API, cron jobs and heartbeats, reminders and schedules created from chat, script-only jobs, messages Ruby sends on its own (with your approval), Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
 
 ## Install
 
@@ -78,6 +78,15 @@ ruby secrets list                      # names only
 ```
 
 `RUBY_SECRETS_PASSPHRASE` works instead of a key file. Environment variables always win over stored secrets, so existing setups keep working unchanged.
+
+### Reminders and schedules
+
+Ask in chat: "remind me at 5pm to call mom", "every weekday at 9 summarize my notes folder", "check this page every 30 minutes and tell me when it changes". Ruby asks for your approval first (`schedule.edit` is `ask` by default), shows the next run in your time zone, and sends results back to the chat you asked from. Set your zone once with `"timezone": "Europe/London"` in `config.json` (default: the host's).
+
+- **Reminders** send fixed text and never call the model.
+- **Script-only jobs** run a command in the sandbox and send its output only when it is non-empty (or changed). They need `exec` set to `allow` or `ask`, and you approve the exact command.
+- `ruby jobs` lists every job (from config, chat or the CLI) with its next run; `ruby jobs add|edit|pause|resume|delete` manage them, and so does the dashboard's Schedules page. Jobs in `config.json` stay yours: Ruby can pause them but not change them.
+- Ruby can also message you on its own with `send_message` (`message.send` is `ask` by default), only to paired chats, at most `gateway.messagesPerHour` times an hour.
 
 ### Use the API (optional, off by default)
 

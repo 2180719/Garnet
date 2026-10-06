@@ -245,3 +245,25 @@ test('redactingLog hides key-shaped values before they reach the sink', async ()
   redactingLog((_l, m) => seen.push(m))('info', `key ruby_${'a'.repeat(8)}_${'b'.repeat(32)} and sk-abcdefghijklmnopqrstuvwxyz`);
   assert.ok(!seen[0]!.includes('ruby_a') && !seen[0]!.includes('sk-abc'));
 });
+
+test('jobs page API: provenance and next run in words; pause, edit and delete stored jobs; config jobs are read-only', async () => {
+  const s = await boot();
+  s.ruby.jobBook.create({ id: 'stretch', kind: 'cron', cron: '0 15 * * *', message: 'Stretch' }, { by: 'agent', sessionId: 's1', conversation: 'telegram:default:42', at: new Date().toISOString() });
+  const list = (await (await s.call('GET', '/api/jobs', s.reader)).json()) as any;
+  const stretch = list.jobs.find((j: any) => j.id === 'stretch');
+  assert.equal(stretch.origin.by, 'agent');
+  assert.equal(stretch.schedule, 'every day at 15:00');
+  assert.match(stretch.nextText, /at 15:00 \(.+, in /);
+  assert.equal(list.jobs.find((j: any) => j.id === 'tea').origin.by, 'config');
+  assert.equal((await s.call('POST', '/api/jobs/stretch/pause', s.reader)).status, 403, 'changes need admin');
+  assert.equal(((await (await s.call('POST', '/api/jobs/stretch/pause', s.admin)).json()) as any).state.paused, true);
+  const edited = (await (await s.call('PUT', '/api/jobs/stretch', s.admin, { when: 'weekdays at 10:30', message: 'Stand up' })).json()) as any;
+  assert.equal(edited.schedule, 'every weekday at 10:30');
+  assert.equal(edited.message, 'Stand up');
+  assert.equal((await s.call('PUT', '/api/jobs/stretch', s.admin, { when: 'whenever' })).status, 400);
+  const tea = await s.call('DELETE', '/api/jobs/tea', s.admin);
+  assert.equal(tea.status, 403);
+  assert.match(((await tea.json()) as any).error.message, /config\.json/);
+  assert.equal((await s.call('DELETE', '/api/jobs/stretch', s.admin)).status, 200);
+  assert.equal(s.ruby.jobBook.find('stretch'), undefined);
+});

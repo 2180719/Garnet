@@ -3,23 +3,33 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
 import { loadConfig, redact, rubyHome, type Paths, type RubyConfig } from './config/index.ts';
-import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter } from './contracts/index.ts';
-import { ApiKeys, ApiServer, DemoChat, Gateway, persistentApprover, staticFiles, type LogFn } from './gateway/index.ts';
+import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
+import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, openDb, SessionStore, type Db } from './store/index.ts';
-import { Scheduler } from './scheduler/index.ts';
+import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { SkillStore, skillTools } from './skills/index.ts';
-import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type ChatTarget, type Transcriber } from './media/index.ts';
+import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, type Sandbox } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
 export const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }).version;
+
+/** Proactive sends for tools: queue a message to a chat and, with `record`, note it in that chat's conversation. */
+export type Outbound = {
+  notify: (
+    target: { channel: string; account: string; chatId: string },
+    text: string,
+    record?: { from: string; skipSession?: string },
+    attachments?: OutboundMessage['attachments'],
+  ) => string;
+};
 
 export type Ruby = {
   config: RubyConfig;
@@ -38,6 +48,14 @@ export type Ruby = {
   sandbox: Sandbox | null;
   approvals: ApprovalStore;
   jobStore: JobStore;
+  /** Config jobs plus jobs created from chat, CLI or dashboard. */
+  jobBook: JobBook;
+  /** Paired chats and delivery targets for proactive messages. */
+  directory: ChatDirectory;
+  /** The owner's time zone (config `timezone`, else the host's). */
+  timezone: string;
+  /** Proactive sends; rebound to `Gateway.notify` by `buildService`. */
+  outbound: Outbound;
   ownerPolicy: Policy;
   makeAgent: (policy: Policy, budget: Budget) => Agent;
   memory: MemoryStore;
@@ -78,16 +96,65 @@ export function createRuby(options: CreateOptions = {}): Ruby {
   const skills = new SkillStore({ root: join(paths.home, 'skills') });
   const artifacts = new ArtifactStore(join(paths.home, 'artifacts'));
   const gatewayStore = new GatewayStore(db);
+  const jobStore = new JobStore(db);
+  const timezone = ownerTimeZone(config);
+  const jobBook = new JobBook({ configJobs: config.jobs, store: jobStore, timezone, maxAgentJobs: config.scheduler.maxAgentJobs });
+  const directory = new ChatDirectory({ store: gatewayStore, sessions: store, routes: config.routes });
+  // Proactive sends (send_message, send_file). Without a gateway in this process (terminal chat, CLI) the message
+  // is queued for the running service and recorded directly; buildService rebinds this to Gateway.notify.
+  const outbound: Outbound = {
+    notify: (target, text, record, attachments) => {
+      const out = gatewayStore.enqueue({ ...target, text, ...(attachments?.length ? { attachments } : {}) });
+      if (record) directory.record(target, text, record);
+      return out.deliveryId;
+    },
+  };
   const registry = new ToolRegistry();
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills), readArtifactTool(artifacts)]) registry.register(tool);
+  // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
+  if (config.permissions['schedule.edit'] !== 'deny') {
+    const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
+    registry.register(
+      scheduleTool({
+        book: jobBook,
+        originOf: (sessionId) => {
+          const o = directory.origin(sessionId);
+          return { conversation: o.conversation, isJob: o.isJob, chat: o.chat && target(o.chat) };
+        },
+        resolveTarget: (to, sessionId) => target(directory.resolve(to, sessionId)),
+        labelOf: (n) => {
+          const known = directory.chats().find((c) => c.channel === n.channel && c.chatId === n.chatId);
+          return ChatDirectory.label(known ?? { ...n, senderId: null, name: null });
+        },
+      }),
+    );
+  }
+  const messagesPerHour = config.gateway.messagesPerHour;
+  if (config.permissions['message.send'] !== 'deny') {
+    registry.register(sendMessageTool({ directory, store: gatewayStore, perHour: messagesPerHour, notify: (t, text, record) => outbound.notify(t, text, record) }));
+  }
   const mediaStore = config.media.enabled ? new MediaStore(join(paths.home, 'media'), config.media.maxBytes) : null;
   if (mediaStore) {
     registry.register(
       sendFileTool({
         media: mediaStore,
-        target: (sessionId) => chatTargetFor(config, gatewayStore, sessionId),
+        target: (sessionId) => {
+          // The chat this conversation is in, or a job's delivery chat (config or stored job).
+          const o = directory.origin(sessionId);
+          if (o.isJob) {
+            const n = jobBook.find(o.conversation!.slice('job:'.length))?.job.notify;
+            if (!n) return null;
+            return { channel: n.channel, account: n.channel === 'signal' ? (config.channels.signal.account ?? n.account) : n.account, chatId: n.chatId };
+          }
+          return o.chat && { channel: o.chat.channel, account: o.chat.account, chatId: o.chat.chatId };
+        },
         maxUploadBytes: (channel) => UPLOAD_LIMITS[channel],
-        enqueue: (target, text, attachments) => void gatewayStore.enqueue({ ...target, text, attachments }),
+        // Files share send_message's hourly limit and its log.
+        enqueue: (target, text, attachments, sessionId) => {
+          assertSendAllowed(gatewayStore, messagesPerHour, new Date());
+          const deliveryId = outbound.notify(target, text, undefined, attachments);
+          gatewayStore.recordSent({ sessionId, ...target, deliveryId });
+        },
       }),
     );
   }
@@ -143,7 +210,11 @@ export function createRuby(options: CreateOptions = {}): Ruby {
     store,
     gatewayStore,
     approvals,
-    jobStore: new JobStore(db),
+    jobStore,
+    jobBook,
+    directory,
+    timezone,
+    outbound,
     ownerPolicy,
     makeAgent,
     keyStore,
@@ -214,23 +285,6 @@ export function createTranscriber(config: RubyConfig, secret: SecretLookup): Tra
   }
   return new OpenAITranscriber({ baseUrl: t.baseUrl, path: t.path, apiKey, model: t.model, language: t.language, timeoutMs });
 }
-
-/**
- * Where a file sent from a session goes: a job's notify chat for job
- * sessions, otherwise the chat the session last heard from. Terminal, API and
- * dashboard sessions have none.
- */
-function chatTargetFor(config: RubyConfig, store: GatewayStore, sessionId: string): ChatTarget | null {
-  const key = store.keyForSession(sessionId);
-  if (key?.startsWith('job:')) {
-    const job = config.jobs.find((j) => `job:${j.id}` === key);
-    if (!job?.notify) return null;
-    const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
-    return { channel: job.notify.channel, account, chatId: job.notify.chatId };
-  }
-  return store.lastChatForSession(sessionId) ?? null;
-}
-
 /** The website demo uses its own cheap model with the same provider and credentials. */
 function createDemo(ruby: Ruby): DemoChat {
   const d = ruby.config.api.demo;
@@ -259,14 +313,25 @@ export function createChannels(config: RubyConfig, secret: SecretLookup): Channe
 
 export type Service = { gateway: Gateway; api: ApiServer | null; scheduler: Scheduler; stop: () => Promise<void> };
 
-/** Each job runs as its own agent: its grant intersected with the owner's permissions, and its own budget. */
-function jobAgents(ruby: Ruby): Map<string, Agent> {
-  const agents = new Map<string, Agent>();
-  for (const job of ruby.config.jobs) {
+/**
+ * Each job runs as its own agent: its grant intersected with the owner's
+ * permissions, and its own budget. Built on first use (jobs created from chat
+ * appear while Ruby runs) and rebuilt when the job's grant or budget changes.
+ */
+function jobAgents(ruby: Ruby): (key: string) => Agent | undefined {
+  const agents = new Map<string, { sig: string; agent: Agent }>();
+  return (key) => {
+    if (!key.startsWith('job:')) return undefined;
+    const job = ruby.jobBook.find(key.slice(4))?.job;
+    if (!job) return undefined;
+    const sig = JSON.stringify([job.permissions, job.budget, job.timeoutMinutes]);
+    const cached = agents.get(key);
+    if (cached?.sig === sig) return cached.agent;
     const policy = ruby.ownerPolicy.intersect(new Policy(job.permissions));
-    agents.set(`job:${job.id}`, ruby.makeAgent(policy, { ...ruby.config.budgets, maxTokens: job.budget.maxTokensPerRun, maxWallMs: job.timeoutMinutes * 60_000 }));
-  }
-  return agents;
+    const agent = ruby.makeAgent(policy, { ...ruby.config.budgets, maxTokens: job.budget.maxTokensPerRun, maxWallMs: job.timeoutMinutes * 60_000 });
+    agents.set(key, { sig, agent });
+    return agent;
+  };
 }
 
 /** Wraps a logger so every message is redacted before it is written. */
@@ -278,13 +343,13 @@ export function redactingLog(log: LogFn): LogFn {
 export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter[], deliver: boolean): { gateway: Gateway; scheduler: Scheduler; channels: ChannelAdapter[] } {
   const { config } = ruby;
   const log = redactingLog(rawLog);
-  const agents = jobAgents(ruby);
+  const agentFor = jobAgents(ruby);
   const gateway = new Gateway({
     store: ruby.gatewayStore,
     approvals: ruby.approvals,
     sessions: ruby.store,
     agent: ruby.agent,
-    agentFor: (key) => agents.get(key),
+    agentFor,
     lanes: new LaneQueue(config.gateway.maxConcurrent),
     channels,
     routes: config.routes,
@@ -294,15 +359,22 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
     log,
     ...(ruby.media ? { media: ruby.media } : {}),
   });
+  const sandbox = ruby.sandbox;
   const scheduler = new Scheduler({
-    jobs: config.jobs,
+    jobs: () => ruby.jobBook.jobs(),
+    // Script-only jobs run in the same sandbox as run_command, and only when exec is not denied.
+    runScript: sandbox ? (job, signal) => sandbox.run({ command: job.script!.command, cwd: '.', timeoutMs: job.script!.timeoutSeconds * 1000, signal }) : null,
     store: ruby.jobStore,
     workspace: ruby.paths.workspace,
     enabled: config.scheduler.enabled,
     tickSeconds: config.scheduler.tickSeconds,
     timeZone: ownerTimeZone(config),
     log,
-    run: (job, text, signal) => gateway.chat(`job:${job.id}`, text, { signal, source: 'scheduler' }),
+    run: (job, text, signal) => {
+      // A job created by a conversation that had read untrusted content carries that taint into every run.
+      const taint = ruby.jobBook.taintOf(job.id);
+      return gateway.chat(`job:${job.id}`, text, { signal, source: 'scheduler', ...(taint.length ? { taint } : {}) });
+    },
     notify: (job, text) => {
       if (!job.notify) return;
       const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
@@ -310,6 +382,9 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
       gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text, { from: `scheduled job "${job.id}"` });
     },
   });
+  ruby.jobBook.onRemoved((id) => scheduler.cancel(id));
+  // Tools now send through the gateway: delivery right away, and notes recorded on the conversation's lane.
+  ruby.outbound.notify = (target, text, record, attachments) => gateway.notify(target, text, record, attachments);
   return { gateway, scheduler, channels };
 }
 
@@ -353,9 +428,11 @@ export async function startService(ruby: Ruby, rawLog: LogFn, overrides: { chann
     await gateway.stop(0);
     throw e;
   }
-  if (config.jobs.length) {
-    log('info', `Scheduler: ${config.jobs.filter((j) => j.enabled).length} of ${config.jobs.length} job(s) enabled${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
+  const jobs = ruby.jobBook.jobs();
+  if (jobs.length) {
+    log('info', `Scheduler: ${jobs.filter((j) => j.enabled).length} of ${jobs.length} job(s) enabled (${ruby.timezone})${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
   }
+  for (const p of ruby.jobBook.problems()) log('warn', `job ${p.id} is not scheduled: ${p.problem}`);
   if (channels.length === 0 && !api) log('warn', 'No channels or API enabled; Ruby is idle. Enable one in config.json.');
   return {
     gateway,

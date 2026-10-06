@@ -18,7 +18,11 @@ export interface AdminBackend {
   skill(name: string): unknown;
   skillAction(name: string, action: 'accept' | 'reject' | 'archive' | 'unarchive'): unknown;
   jobs(): unknown;
-  jobAction(id: string, action: 'run' | 'resume'): Promise<unknown>;
+  jobAction(id: string, action: 'run' | 'resume' | 'pause'): Promise<unknown>;
+  /** Changes a stored job's schedule (`when`, natural language) or what it does; config.json jobs are refused. */
+  updateJob(id: string, body: unknown): unknown;
+  /** Deletes a stored job; config.json jobs are refused. */
+  deleteJob(id: string): unknown;
   keys(): unknown;
   createKey(name: string, scopes: Scope[], expiresInDays?: number): unknown;
   revokeKey(id: string): boolean;
@@ -103,7 +107,9 @@ export function adminRoutes(b: AdminBackend): AdminRoute[] {
       b.skillAction(params[0]!, params[1] as 'accept' | 'reject' | 'archive' | 'unarchive'),
     ),
     r('GET', /^\/api\/jobs$/, 'read', () => b.jobs()),
-    r('POST', new RegExp(`^/api/jobs/${NAME}/(run|resume)$`), 'admin', ({ params }) => b.jobAction(params[0]!, params[1] as 'run' | 'resume')),
+    r('POST', new RegExp(`^/api/jobs/${NAME}/(run|resume|pause)$`), 'admin', ({ params }) => b.jobAction(params[0]!, params[1] as 'run' | 'resume' | 'pause')),
+    r('PUT', new RegExp(`^/api/jobs/${NAME}$`), 'admin', async ({ params, body }) => b.updateJob(params[0]!, await body())),
+    r('DELETE', new RegExp(`^/api/jobs/${NAME}$`), 'admin', ({ params }) => b.deleteJob(params[0]!)),
     r('GET', /^\/api\/keys$/, 'admin', () => b.keys()),
     r('POST', /^\/api\/keys$/, 'admin', async ({ body }) => {
       const v = (await body()) as { name?: unknown; scopes?: unknown; expiresInDays?: unknown };
