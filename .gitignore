@@ -1,0 +1,7 @@
+node_modules/
+.ruby-data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.claude/worktrees/

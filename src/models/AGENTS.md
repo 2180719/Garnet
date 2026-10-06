@@ -1,0 +1,9 @@
+# models
+
+Provider adapters implementing `ModelAdapter` from contracts.
+
+- `FakeModel`: scripted and offline, for tests and `--fake`. Records every request.
+- `AnthropicModel`: official SDK, streaming, with a cache breakpoint on the system prompt plus automatic conversation caching, `eager_input_streaming` tools, server-side refusal fallback (`fallbacks: "default"`) and configurable effort. SDK retries are off; the runtime retries.
+- Adapter rules: end every stream with exactly one `done` or `error` event; never throw for provider failures; map errors to `provider_transient`/`provider_fatal`/`cancelled`; keep unknown blocks as `provider` blocks in their original position so history replays byte-for-byte.
+- Tests use recorded SSE through an injected `fetch`; never call the network in `npm test`.
+- `OpenAICompatibleModel`: OpenAI Chat Completions over global `fetch` (OpenRouter, Ollama, llama.cpp, vLLM, LM Studio). Streams SSE with `stream_options.include_usage`; sends `max_tokens`; `Authorization` only when an API key is set, `X-Title: Ruby` only for openrouter.ai. Tool results become `role: tool` messages emitted before the turn's user text; foreign provider blocks are dropped and it creates none. Cached prompt tokens are subtracted from `inputTokens` and reported as `cacheReadTokens`; missing usage stays `null`. Unparseable tool arguments are passed through as the raw string for the executor's repair step. Mid-stream `data: {"error":...}` lines map to `provider_fatal` (or transient when they say overloaded/rate limit).
