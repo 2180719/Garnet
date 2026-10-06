@@ -437,6 +437,45 @@ test('wake-up: choosing "Wake it up" skips the form questions and starts the cha
   assert.match(h.out(), /Garnet is ready\./);
 });
 
+test('wake-up: the chat runs before the service is installed, so the service starts with the new persona', async () => {
+  const h = harness();
+  const order: string[] = [];
+  h.deps.wake = async () => {
+    // What the agent saves through set_profile.
+    const c = h.config();
+    c.persona = writePersona(c.persona, { name: 'Ruby', owner: 'Sam', notes: '' });
+    c.timezone = 'Europe/Lisbon';
+    writeConfig(h.home, c);
+    order.push('wake');
+    return 0;
+  };
+  const install = h.deps.service!.install;
+  h.deps.service!.install = async (...a: Parameters<typeof install>) => {
+    // The service reads config once at start: it must already hold what the chat saved.
+    const seen = parseConfig(JSON.parse(readFileSync(join(h.home, 'config.json'), 'utf8')));
+    order.push(`install:${readPersona(seen.persona).name}:${seen.timezone}`);
+    return install(...a);
+  };
+  const { done } = h.run({ ...FAKE_ANSWERS, service: true, onboarding: 'wake' });
+  assert.equal(await done, 0);
+  assert.deepEqual(order, ['wake', 'install:Ruby:Europe/Lisbon']);
+});
+
+test('wake-up: not offered when memory.write is denied (the agent could not save anything)', async () => {
+  const h = harness();
+  const c = defaultConfig();
+  c.model.provider = 'fake';
+  c.permissions['memory.write'] = 'deny';
+  writeConfig(h.home, c);
+  let woke = 0;
+  h.deps.wake = async () => ++woke * 0;
+  const { p, done } = h.run({ section: ['persona', 'done'], onboarding: 'wake', name: 'Juno' });
+  assert.equal(await done, 0);
+  assert.equal(woke, 0);
+  assert.equal(p.asked.includes('onboarding'), false);
+  assert.equal(readPersona(h.config().persona).name, 'Juno');
+});
+
 test('wake-up: the quick form stays the default and works exactly as before', async () => {
   const h = harness();
   let woke = 0;

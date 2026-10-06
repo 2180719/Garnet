@@ -170,9 +170,11 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
   }
 
   save(io, deps, st);
+  // The wake-up chat writes persona and time zone to the saved config, and the service reads config once at start,
+  // so the chat runs before the service is installed or restarted. Pairing needs the running service, so it stays after.
+  if (st.wake) await wakeStep(io, deps, st);
   const service = await serviceStep(p, io, deps, st, wantService);
   await pairingStep(p, io, deps, st, service);
-  if (st.wake) await wakeStep(io, deps, st);
   io.out(nextSteps(st, deps, service));
   return 0;
 }
@@ -485,13 +487,14 @@ async function personaStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Pro
   else st.config.persona = persona;
 }
 
-/** The wake-up chat needs a model that can answer: the offline demo, a local server, or a key that is already available. */
+/** The wake-up chat needs a model that can answer (the offline demo, a local server, or a key that is already available) and permission to save (`memory.write`). */
 function wakeReady(deps: SetupDeps, st: State): boolean {
+  if (st.config.permissions['memory.write'] === 'deny') return false;
   const provider = providerOf(st.config.model);
   return provider === 'fake' || provider === 'local' || lookup(deps, st, st.config.model.apiKeyEnv).found;
 }
 
-/** Runs after everything is saved. A failure never undoes setup: the form is one command away. */
+/** Runs right after the config is saved, before the service starts. A failure never undoes setup: the form is one command away. */
 async function wakeStep(io: Io, deps: SetupDeps, st: State): Promise<void> {
   const s = deps.style;
   io.out(`\n${s.accent('◆')} ${s.bold('Waking your assistant up')}\n  ${s.muted('Say /exit when you are done. If the model cannot use its tools, you will get the short form instead.')}\n\n`);
