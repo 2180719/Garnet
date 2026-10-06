@@ -4,7 +4,7 @@
 
 import { createInterface } from 'node:readline';
 import { errorMessage, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
-import type { Ruby } from '../../main.ts';
+import type { Garnet } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
 import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
@@ -14,7 +14,7 @@ import { formatTokens, sanitize, truncate } from './text.ts';
 import { makeTheme } from './theme.ts';
 
 export type PlainOptions = {
-  ruby: Ruby;
+  garnet: Garnet;
   sessionId: string;
   input: NodeJS.ReadableStream;
   out: (text: string) => void;
@@ -68,7 +68,7 @@ export class PlainChat {
   };
 
   async run(): Promise<number> {
-    const { ruby } = this.o;
+    const { garnet } = this.o;
     const onSigint = () => {
       if (this.current) {
         this.current.abort();
@@ -79,7 +79,7 @@ export class PlainChat {
     };
     process.on('SIGINT', onSigint);
     try {
-      this.o.err(`Ruby (${ruby.model.id}) · session ${this.sessionId}\nType a message. /help for commands, /exit to quit, Ctrl+C to interrupt.\n\n`);
+      this.o.err(`Garnet (${garnet.model.id}) · session ${this.sessionId}\nType a message. /help for commands, /exit to quit, Ctrl+C to interrupt.\n\n`);
       for (;;) {
         const raw = await this.ask(this.o.prompt ? 'you › ' : '');
         if (raw === null) return 0;
@@ -87,7 +87,7 @@ export class PlainChat {
         const slash = parseSlash(raw);
         if (slash) {
           const result = await executeCommand(slash, {
-            ruby, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog, attachments: this.attachments,
+            garnet, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog, attachments: this.attachments,
             switchTo: (id) => (this.sessionId = id),
           });
           if (result.effect === 'exit') return 0;
@@ -126,12 +126,12 @@ export class PlainChat {
       }
     };
     try {
-      const prepared = await prepareTurn(this.o.ruby, this.sessionId, text, this.attachments.splice(0), this.current.signal);
+      const prepared = await prepareTurn(this.o.garnet, this.sessionId, text, this.attachments.splice(0), this.current.signal);
       if ('reply' in prepared) {
         this.o.out(`${prepared.reply}\n`);
         return;
       }
-      const task = await this.o.ruby.agent.run(this.sessionId, prepared.turn, { signal: this.current.signal, onEvent, source: 'cli' });
+      const task = await this.o.garnet.agent.run(this.sessionId, prepared.turn, { signal: this.current.signal, onEvent, source: 'cli' });
       if (wroteText) this.o.out('\n');
       const u = task.usage;
       this.o.err(`  [${task.status}${task.reason ? `: ${sanitize(task.reason)}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens]\n\n`);

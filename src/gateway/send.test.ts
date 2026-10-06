@@ -45,7 +45,7 @@ test('send_message queues durably, records the text in the target chat, and is r
   assert.match(r.content, /Queued for fake \(Ada\)/);
   await t.gateway.deliver();
   assert.deepEqual(t.channel.sent.filter((m) => m.chatId === 'dm-ada').map((m) => m.text).at(-1), 'The build finished.');
-  // Ada's conversation now shows what Ruby sent, so "tell me more" has context.
+  // Ada's conversation now shows what Garnet sent, so "tell me more" has context.
   await t.lanes.idle();
   const last = t.sessions.events(t.adaSession).at(-1)!;
   assert.equal(last.type, 'user_message');
@@ -86,7 +86,7 @@ test('gateway.notify with a source records job results in the chat conversation'
   const last = t.sessions.events(t.adaSession).at(-1)!;
   assert.match(last.type === 'user_message' ? textOf(last.message) : '', /scheduled job "news"/);
   assert.equal(last.type === 'user_message' && last.source, 'notification');
-  // A chat that never wrote to Ruby gets a conversation on first notice.
+  // A chat that never wrote to Garnet gets a conversation on first notice.
   t.gateway.notify({ channel: 'fake', account: 'default', chatId: 'new-chat' }, 'Hi', { from: 'scheduled job "x"' });
   await t.lanes.idle();
   assert.ok(t.store.conversation('fake:default:new-chat'));

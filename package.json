@@ -1,5 +1,5 @@
 {
-  "name": "ruby-agent",
+  "name": "garnet-agent",
   "version": "0.1.0",
   "description": "A persistent personal agent you can actually read.",
   "license": "Apache-2.0",
@@ -9,10 +9,10 @@
     "node": ">=22.18"
   },
   "bin": {
-    "ruby": "src/cli/bin.ts"
+    "garnet": "src/cli/bin.ts"
   },
   "scripts": {
-    "ruby": "node --disable-warning=ExperimentalWarning src/cli/bin.ts",
+    "garnet": "node --disable-warning=ExperimentalWarning src/cli/bin.ts",
     "test": "node --disable-warning=ExperimentalWarning --test \"src/**/*.test.ts\" \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "lint": "node scripts/lint.ts",

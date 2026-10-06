@@ -189,7 +189,7 @@ test('sends Authorization with a key, X-Title only for openrouter, and extra hea
   await collect(model(ok, seen, { baseUrl: 'https://openrouter.ai/api/v1/', apiKey: 'sk-secret', extraHeaders: { 'HTTP-Referer': 'r' } }));
   assert.equal(seen[0]!.url, 'https://openrouter.ai/api/v1/chat/completions');
   assert.equal(seen[0]!.headers.Authorization, 'Bearer sk-secret');
-  assert.equal(seen[0]!.headers['X-Title'], 'Ruby');
+  assert.equal(seen[0]!.headers['X-Title'], 'Garnet');
   assert.equal(seen[0]!.headers['HTTP-Referer'], 'r');
 });
 

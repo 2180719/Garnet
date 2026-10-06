@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 
 export type MemoryFile = 'memory' | 'user';
 export type MemoryWriteResult = { content: string; used: number; limit: number };
@@ -91,7 +91,7 @@ export class MemoryStore {
     const entry = this.#sanitize(text);
     const lines = this.#lines(ns, file);
     if (lines.some((l) => l === entry)) {
-      throw new RubyError('invalid_input', `That entry already exists in ${FILE_NAMES[file]}. Do not add duplicates.`);
+      throw new GarnetError('invalid_input', `That entry already exists in ${FILE_NAMES[file]}. Do not add duplicates.`);
     }
     return this.#commit(ns, file, [...lines, entry]);
   }
@@ -101,7 +101,7 @@ export class MemoryStore {
     const lines = this.#lines(ns, file);
     const idx = this.#match(lines, oldText, file);
     if (lines.some((l, i) => i !== idx && l === entry)) {
-      throw new RubyError('invalid_input', `That entry already exists in ${FILE_NAMES[file]}. Do not add duplicates.`);
+      throw new GarnetError('invalid_input', `That entry already exists in ${FILE_NAMES[file]}. Do not add duplicates.`);
     }
     const next = [...lines];
     next[idx] = entry;
@@ -141,9 +141,9 @@ export class MemoryStore {
 
   /** Restore a saved version. The current content is versioned first, so rollback is itself undoable. */
   rollback(ns: string, file: MemoryFile, id: string): MemoryWriteResult {
-    if (!VERSION_ID.test(id)) throw new RubyError('invalid_input', `"${id}" is not a valid version id. Use history() to list them.`);
+    if (!VERSION_ID.test(id)) throw new GarnetError('invalid_input', `"${id}" is not a valid version id. Use history() to list them.`);
     if (!this.#versionIds(ns, file).includes(id)) {
-      throw new RubyError('invalid_input', `No version "${id}" for ${FILE_NAMES[file]}. Use history() to list them.`);
+      throw new GarnetError('invalid_input', `No version "${id}" for ${FILE_NAMES[file]}. Use history() to list them.`);
     }
     return this.write(ns, file, this.#readVersion(ns, file, id));
   }
@@ -152,13 +152,13 @@ export class MemoryStore {
 
   #dir(ns: string): string {
     if (typeof ns !== 'string' || !NAMESPACE.test(ns)) {
-      throw new RubyError('invalid_input', `Invalid memory namespace "${String(ns)}": use 1-40 chars of a-z, 0-9 and "-".`);
+      throw new GarnetError('invalid_input', `Invalid memory namespace "${String(ns)}": use 1-40 chars of a-z, 0-9 and "-".`);
     }
     return join(this.#root, ns);
   }
 
   #path(ns: string, file: MemoryFile): string {
-    if (!isMemoryFile(file)) throw new RubyError('invalid_input', `Unknown memory file "${String(file)}": use "memory" or "user".`);
+    if (!isMemoryFile(file)) throw new GarnetError('invalid_input', `Unknown memory file "${String(file)}": use "memory" or "user".`);
     return join(this.#dir(ns), FILE_NAMES[file]);
   }
 
@@ -171,22 +171,22 @@ export class MemoryStore {
 
   #sanitize(text: string): string {
     const one = stripControl(String(text).replace(/\s+/g, ' ')).trim().replace(/^-\s+/, '');
-    if (!one) throw new RubyError('invalid_input', 'Entry text is empty.');
+    if (!one) throw new GarnetError('invalid_input', 'Entry text is empty.');
     if (one.length > MAX_ENTRY_CHARS) {
-      throw new RubyError(
+      throw new GarnetError(
         'invalid_input',
         `Entry is ${one.length} chars; the maximum is ${MAX_ENTRY_CHARS}. Shorten it to the durable fact.`,
       );
     }
     const why = injectionReason(one);
-    if (why) throw new RubyError('invalid_input', `Entry rejected: it ${why}. Memory holds plain facts, not instructions to the system.`);
+    if (why) throw new GarnetError('invalid_input', `Entry rejected: it ${why}. Memory holds plain facts, not instructions to the system.`);
     return `- ${one}`;
   }
 
   /** Index of the single entry containing oldText; throws with candidates otherwise. */
   #match(lines: string[], oldText: string, file: MemoryFile): number {
     const needle = stripControl(String(oldText).replace(/\s+/g, ' ')).trim();
-    if (!needle) throw new RubyError('invalid_input', 'old_text is empty.');
+    if (!needle) throw new GarnetError('invalid_input', 'old_text is empty.');
     const hits: number[] = [];
     lines.forEach((l, i) => {
       if (l.startsWith('- ') && l.includes(needle)) hits.push(i);
@@ -194,7 +194,7 @@ export class MemoryStore {
     if (hits.length === 1) return hits[0]!;
     const show = (idxs: number[]) => idxs.slice(0, 5).map((i) => `  ${preview(lines[i]!)}`).join('\n');
     if (hits.length > 1) {
-      throw new RubyError(
+      throw new GarnetError(
         'invalid_input',
         `old_text matches ${hits.length} entries in ${FILE_NAMES[file]}; use a longer, unique substring:\n${show(hits)}`,
       );
@@ -204,7 +204,7 @@ export class MemoryStore {
       .map((l, i) => ({ l, i }))
       .filter(({ l }) => l.startsWith('- ') && words.some((w) => l.toLowerCase().includes(w)))
       .map(({ i }) => i);
-    throw new RubyError(
+    throw new GarnetError(
       'invalid_input',
       near.length
         ? `old_text matches no entry in ${FILE_NAMES[file]}. Near matches:\n${show(near)}`
@@ -217,7 +217,7 @@ export class MemoryStore {
     const limit = this.#limits[file];
     if (content.length > limit) {
       const over = content.length - limit;
-      throw new RubyError(
+      throw new GarnetError(
         'invalid_input',
         `${FILE_NAMES[file]} would be ${content.length}/${limit} chars (${over} over the limit). ` +
           `Consolidate or replace existing entries first (use replace or remove), then retry.`,

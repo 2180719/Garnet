@@ -35,10 +35,10 @@ export default async function mount(root, ctx) {
     try {
       const { pending } = await api.get('/api/approvals');
       ctx.setBadge(pending.length);
-      list.replaceChildren(...(pending.length ? pending.map((a) => card(a, load)) : [empty('Nothing to approve', 'When Ruby wants to do something that needs your say-so, it shows up here and in your chats.')]));
+      list.replaceChildren(...(pending.length ? pending.map((a) => card(a, load)) : [empty('Nothing to approve', 'When Garnet wants to do something that needs your say-so, it shows up here and in your chats.')]));
     } catch (e) { list.replaceChildren(errorBox(e, load)); }
   };
-  root.append(pageHead('Approvals', 'Actions Ruby paused on until you decide. An approval is a single-use grant for exactly that tool and input.',
+  root.append(pageHead('Approvals', 'Actions Garnet paused on until you decide. An approval is a single-use grant for exactly that tool and input.',
     h('button', { class: 'btn btn-ghost', type: 'button', onclick: load }, 'Refresh')), list);
   await load();
   ctx.every(15_000, () => { if (!list.querySelector('button:disabled')) load(); });

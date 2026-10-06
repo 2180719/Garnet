@@ -13,9 +13,9 @@ export function formatPlan(plan: ImportPlan): string {
   if (!plan.memory.length) L.push('  nothing found');
   for (const m of plan.memory) {
     const label = m.file === 'memory' ? 'MEMORY.md' : 'USER.md';
-    L.push(`  ${m.from} -> Ruby ${label}: ${m.entries.length} entries; ${m.fitCount} fit the ${m.cap}-char cap (most recent kept)`);
+    L.push(`  ${m.from} -> Garnet ${label}: ${m.entries.length} entries; ${m.fitCount} fit the ${m.cap}-char cap (most recent kept)`);
     if (m.fitCount < m.entries.length) {
-      L.push(`    ${m.entries.length - m.fitCount} older entries will not fit; the full file is archived (see below). Curate with \`ruby memory edit ${m.file}\`.`);
+      L.push(`    ${m.entries.length - m.fitCount} older entries will not fit; the full file is archived (see below). Curate with \`garnet memory edit ${m.file}\`.`);
       L.push(`    All of it needs about ${m.needed} chars${m.needed > 20_000 ? ' (more than the 20,000 maximum)' : ''}: --raise-caps raises the cap${m.needed > 20_000 ? ' to 20,000' : ''}.`);
     }
     if (m.shortened) L.push(`    ${m.shortened} entries are over 500 chars and will be shortened.`);
@@ -26,8 +26,8 @@ export function formatPlan(plan: ImportPlan): string {
   if (!plan.persona) L.push('  nothing found');
   else {
     L.push(`  ${plan.persona.from.join(' + ')} -> config persona (${plan.persona.text.length}/4000 chars${plan.persona.truncated ? ', TRUNCATED; originals archived' : ''})`);
-    if (plan.name) L.push(`  Assistant name: ${plan.name} (Ruby will introduce itself by this name)`);
-    L.push('  Merged into a persona that only has `ruby setup` basics; any other existing persona is kept unless you pass --persona merge|replace.');
+    if (plan.name) L.push(`  Assistant name: ${plan.name} (Garnet will introduce itself by this name)`);
+    L.push('  Merged into a persona that only has `garnet setup` basics; any other existing persona is kept unless you pass --persona merge|replace.');
   }
 
   L.push('', 'Skills');
@@ -47,7 +47,7 @@ export function formatPlan(plan: ImportPlan): string {
     L.push(`  ${s.name}${rename}: ${one(s.description)}${tags.length ? ` [${tags.join('; ')}]` : ''}`);
     if (s.missing.length) L.push(`    needs: ${s.missing.join('; ')}`);
   }
-  if (plan.skills.length) L.push('  Skills that already exist in Ruby are left untouched.');
+  if (plan.skills.length) L.push('  Skills that already exist in Garnet are left untouched.');
 
   L.push('', 'Jobs (added DISABLED: review, then set "enabled": true in config.json)');
   if (!plan.jobs.length) L.push('  none found');
@@ -75,7 +75,7 @@ export function formatPlan(plan: ImportPlan): string {
   if (!plan.notImported.length) L.push('  nothing notable');
   for (const n of plan.notImported) L.push(`  ${n.what}: ${n.why}`);
   if (plan.envVars.length) {
-    L.push('', 'Environment variables you may need (names only; set the values yourself with `ruby secrets set <NAME>`):');
+    L.push('', 'Environment variables you may need (names only; set the values yourself with `garnet secrets set <NAME>`):');
     L.push(`  ${plan.envVars.join(', ')}`);
   }
   if (plan.warnings.length) {
@@ -97,10 +97,10 @@ export function formatResult(r: ApplyResult): string {
   const requested = r.pairings.filter((p) => p.status !== 'not-requested');
   for (const p of requested) L.push(`  paired ${p.channel} ${p.senderId}: ${p.status === 'added' ? 'added' : 'already paired'}`);
   const skipped = r.pairings.length - requested.length;
-  if (skipped) L.push(`  pairings: ${skipped} allowlisted sender(s) not paired (re-run with --pairings, or \`ruby pair add <channel> <id>\`)`);
+  if (skipped) L.push(`  pairings: ${skipped} allowlisted sender(s) not paired (re-run with --pairings, or \`garnet pair add <channel> <id>\`)`);
   const by = (st: string) => r.copied.filter((c) => c.status === st).length;
   L.push(`  files: ${by('copied')} copied, ${by('exists')} already there, ${by('failed')} failed`);
   for (const c of r.copied.filter((x) => x.status === 'failed')) L.push(`    ${c.dest}: ${c.detail}`);
-  if (r.jobs.some((j) => j.status === 'added')) L.push('  Imported jobs are disabled. Check each with `ruby jobs list`, then enable it in config.json and restart Ruby.');
+  if (r.jobs.some((j) => j.status === 'added')) L.push('  Imported jobs are disabled. Check each with `garnet jobs list`, then enable it in config.json and restart Garnet.');
   return `${L.join('\n')}\n`;
 }

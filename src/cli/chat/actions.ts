@@ -1,18 +1,18 @@
-// Executes slash commands against Ruby. Shared by the interactive and plain chats.
+// Executes slash commands against Garnet. Shared by the interactive and plain chats.
 
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, resolve } from 'node:path';
 import { errorMessage, formatBytes, type ContentBlock, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
 import { detectMime } from '../../media/index.ts';
-import type { Ruby } from '../../main.ts';
+import type { Garnet } from '../../main.ts';
 import type { ParsedSlash } from './commands.ts';
 import { helpRows, sessionTotals, toolExpandedRows, transcriptRows } from './render.ts';
 import { formatDuration, formatTokens, padEnd, sanitize, truncate, wrapText } from './text.ts';
 import type { Theme } from './theme.ts';
 
 export type CommandContext = {
-  ruby: Ruby;
+  garnet: Garnet;
   sessionId: string;
   theme: Theme;
   width: number;
@@ -32,15 +32,15 @@ export type PendingFile = { data: Uint8Array; name: string; mimeType: string };
  * in it is readable (then the model is not called).
  */
 export async function prepareTurn(
-  ruby: Ruby,
+  garnet: Garnet,
   sessionId: string,
   text: string,
   files: PendingFile[],
   signal: AbortSignal,
 ): Promise<{ turn: string | ContentBlock[] } | { reply: string }> {
-  if (files.length === 0 || !ruby.media) return { turn: text };
-  const blocks: ContentBlock[] = [...(text ? [{ type: 'text' as const, text }] : []), ...(await ruby.media.ingest(files, { sessionId, signal }))];
-  const reply = ruby.media.unreadableReply(blocks);
+  if (files.length === 0 || !garnet.media) return { turn: text };
+  const blocks: ContentBlock[] = [...(text ? [{ type: 'text' as const, text }] : []), ...(await garnet.media.ingest(files, { sessionId, signal }))];
+  const reply = garnet.media.unreadableReply(blocks);
   return reply ? { reply } : { turn: blocks };
 }
 
@@ -60,7 +60,7 @@ export type CommandResult = { rows: (width: number) => string[]; effect?: 'exit'
 const none = (): string[] => [];
 
 export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: CommandContext): Promise<CommandResult> {
-  const { ruby, theme: t } = ctx;
+  const { garnet, theme: t } = ctx;
   if ('unknown' in parsed) return { rows: (w: number) => ['', `  ${t.error('✗')} Unknown command /${sanitize(parsed.unknown)}. Type ${t.bold('/help')} for the list.`] };
   const { command, args } = parsed;
   switch (command.name) {
@@ -71,12 +71,12 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
     case 'clear':
       return { rows: none, effect: 'clear' };
     case 'new': {
-      const s = ruby.store.createSession('Terminal chat');
+      const s = garnet.store.createSession('Terminal chat');
       ctx.switchTo(s.id);
       return { rows: (w: number) => ['', `  ${t.accent('◆')} New session ${t.bold(s.id)}`, ''] };
     }
     case 'sessions': {
-      const rows = ruby.store.listSessions(15);
+      const rows = garnet.store.listSessions(15);
       if (!rows.length) return { rows: (w: number) => ['', t.muted('  No sessions yet.')] };
       const list = (w: number) => rows.map((s) => {
         const mark = s.id === ctx.sessionId ? t.accent('●') : ' ';
@@ -86,21 +86,21 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
     }
     case 'resume': {
       if (!args) return { rows: (w: number) => ['', t.muted('  Usage: /resume <session-id>  (see /sessions)')] };
-      const s = ruby.store.getSession(args);
+      const s = garnet.store.getSession(args);
       if (!s) return { rows: (w: number) => ['', `  ${t.error('✗')} No session "${sanitize(args)}". See /sessions.`] };
       ctx.switchTo(s.id);
-      const events = ruby.store.events(s.id);
+      const events = garnet.store.events(s.id);
       return { rows: (w: number) => ['', ...transcriptRows(events, t, w), `  ${t.accent('◆')} Resumed ${t.bold(s.id)}`, ''] };
     }
     case 'model': {
-      const m = ruby.model;
+      const m = garnet.model;
       const row = (k: string, v: string) => `  ${padEnd(k, 16)}${v}`;
       return {
         rows: (w: number) => [
           '', t.bold('  Model'),
           row('id', m.id),
           row('context window', `${formatTokens(m.capabilities.contextWindow)} tokens`),
-          row('max output', `${formatTokens(ruby.config.model.maxOutputTokens)} tokens per model call`),
+          row('max output', `${formatTokens(garnet.config.model.maxOutputTokens)} tokens per model call`),
           row('streaming', m.capabilities.streaming ? 'yes' : 'no'),
           row('prompt caching', m.capabilities.promptCaching ? 'yes' : 'no'),
           ...wrapText(t.muted('  The model is set in config.json (model.provider, model.name) and fixed for this chat; restart to change it.'), w),
@@ -109,11 +109,11 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
       };
     }
     case 'usage': {
-      const totals = sessionTotals(ruby.store.events(ctx.sessionId));
+      const totals = sessionTotals(garnet.store.events(ctx.sessionId));
       const u = totals.usage;
-      const b = ruby.config.budgets;
+      const b = garnet.config.budgets;
       const row = (k: string, v: string) => `  ${padEnd(k, 18)}${v}`;
-      const window = ruby.model.capabilities.contextWindow;
+      const window = garnet.model.capabilities.contextWindow;
       return {
         rows: (w: number) => [
           '', t.bold('  This session'),
@@ -127,14 +127,14 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
           row('model calls', String(b.maxModelCalls)),
           row('tool calls', String(b.maxToolCalls)),
           row('time', formatDuration(b.maxWallMs)),
-          ...wrapText(t.muted('  "?" means the provider did not report a value; Ruby never counts unknown as zero.'), w),
+          ...wrapText(t.muted('  "?" means the provider did not report a value; Garnet never counts unknown as zero.'), w),
           '',
         ],
       };
     }
     case 'attach': {
       const pending = ctx.attachments;
-      const media = ruby.media;
+      const media = garnet.media;
       if (!media || !pending) return { rows: (w: number) => ['', `  ${t.error('✗')} Attachments are off (media.enabled in config.json).`] };
       if (!args) {
         if (!pending.length) return { rows: (w: number) => ['', t.muted('  Usage: /attach <path>  (drag a file into the terminal to paste its path). /attach clear removes attached files.')] };
@@ -162,7 +162,7 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
       }
     }
     case 'compact': {
-      const outcome = await ruby.agent.compact(ctx.sessionId, ctx.signal ? { signal: ctx.signal } : {});
+      const outcome = await garnet.agent.compact(ctx.sessionId, ctx.signal ? { signal: ctx.signal } : {});
       const msg = {
         compacted: `${t.ok('✓')} Compacted older turns into a summary; the next message starts from it.`,
         nothing_to_compact: `${t.muted('·')} Nothing to compact yet: only the most recent turns are in the history.`,

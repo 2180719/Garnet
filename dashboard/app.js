@@ -33,7 +33,7 @@ async function signInFromHash() {
     return true;
   } catch (e) {
     session.clear();
-    notice = e.status === 401 ? 'This login link has expired or was already used. Run `ruby dashboard` for a new one.' : e.message;
+    notice = e.status === 401 ? 'This login link has expired or was already used. Run `garnet dashboard` for a new one.' : e.message;
     return false;
   }
 }
@@ -56,20 +56,20 @@ function signOut(message = '', revoke = false) {
 hooks.unauthorized = () => { if (shell) signOut('Your API key was rejected or has expired. Sign in with a fresh key.'); };
 
 function showLogin() {
-  document.title = 'Sign in · Ruby';
-  const input = h('input', { id: 'key', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'ruby_…', required: true, 'aria-describedby': 'key-help' });
+  document.title = 'Sign in · Garnet';
+  const input = h('input', { id: 'key', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'garnet_…', required: true, 'aria-describedby': 'key-help' });
   const msg = h('div', { role: 'alert' }, notice ? h('p', { class: 'banner err' }, notice) : null);
   notice = '';
   const go = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Sign in');
   const form = h('form', { class: 'stack' },
     h('div', { class: 'field' }, h('label', { for: 'key' }, 'API key'), input,
-      h('span', { class: 'hint', id: 'key-help' }, 'On the machine running Ruby, run ', h('code', null, 'ruby dashboard'), ' and open the link it prints. Or paste a key here.')),
+      h('span', { class: 'hint', id: 'key-help' }, 'On the machine running Garnet, run ', h('code', null, 'garnet dashboard'), ' and open the link it prints. Or paste a key here.')),
     go, msg);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const k = input.value.trim();
     msg.replaceChildren();
-    if (!/^ruby_[A-Za-z0-9]+_[A-Za-z0-9]+$/.test(k)) { msg.append(h('p', { class: 'banner err' }, 'That does not look like a Ruby key (ruby_<id>_<secret>).')); return; }
+    if (!/^garnet_[A-Za-z0-9]+_[A-Za-z0-9]+$/.test(k)) { msg.append(h('p', { class: 'banner err' }, 'That does not look like a Garnet key (garnet_<id>_<secret>).')); return; }
     go.disabled = true;
     session.set(k);
     try {
@@ -82,7 +82,7 @@ function showLogin() {
     } finally { go.disabled = false; }
   });
   root.replaceChildren(h('main', { class: 'login', id: 'main' }, h('div', { class: 'card' },
-    gem(), h('div', null, h('h1', null, 'Ruby'), h('p', { class: 'muted' }, 'Sign in to your dashboard. Keys stay in this tab and are never sent anywhere but your Ruby.')), form)));
+    gem(), h('div', null, h('h1', null, 'Garnet'), h('p', { class: 'muted' }, 'Sign in to your dashboard. Keys stay in this tab and are never sent anywhere but your Garnet.')), form)));
   input.focus();
 }
 
@@ -93,7 +93,7 @@ function toggleTheme() {
   const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
   const next = dark ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
-  try { localStorage.setItem('ruby-theme', next); } catch { /* ignore */ }
+  try { localStorage.setItem('garnet-theme', next); } catch { /* ignore */ }
 }
 
 function showShell() {
@@ -104,17 +104,17 @@ function showShell() {
     last = now;
     if (clicks >= 7) { clicks = 0; easterEgg('gem-polisher', 'Gem Polisher'); }
   };
-  const gemBtn = () => h('button', { class: 'gem-btn', type: 'button', 'aria-label': 'Ruby gem', onclick: onGem }, gem());
+  const gemBtn = () => h('button', { class: 'gem-btn', type: 'button', 'aria-label': 'Garnet gem', onclick: onGem }, gem());
   const themeBtn = () => h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Toggle light or dark theme', onclick: toggleTheme }, moon(), sun());
   const menu = h('button', { class: 'icon-btn', type: 'button', 'aria-expanded': 'false', 'aria-controls': 'side', 'aria-label': 'Menu' }, icon('menu'));
   const nav = h('nav', { class: 'nav', 'aria-label': 'Dashboard' }, NAV.map(([id, label]) =>
     h('a', { href: `#/${id}`, 'data-page': id }, icon(id), h('span', null, label), id === 'approvals' ? h('span', { class: 'count', id: 'badge', hidden: true }) : null)));
   const side = h('aside', { class: 'side', id: 'side', 'aria-label': 'Sidebar' },
-    h('div', { class: 'brand' }, gemBtn(), h('a', { href: '#/overview' }, 'Ruby')), nav,
+    h('div', { class: 'brand' }, gemBtn(), h('a', { href: '#/overview' }, 'Garnet')), nav,
     h('div', { class: 'side-foot' }, h('p', { class: 'quote' }, `“${dailyQuote()}”`),
       h('div', { class: 'who' }, themeBtn(), h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => signOut('You have been signed out.', true) }, icon('out'), 'Sign out'))));
   const main = h('main', { class: 'main', id: 'main', tabindex: '-1' });
-  const top = h('header', { class: 'top' }, h('div', { class: 'brand' }, h('a', { href: '#/overview' }, 'Ruby'), gemBtn()), h('div', { class: 'tools' }, themeBtn(), menu));
+  const top = h('header', { class: 'top' }, h('div', { class: 'brand' }, h('a', { href: '#/overview' }, 'Garnet'), gemBtn()), h('div', { class: 'tools' }, themeBtn(), menu));
   menu.addEventListener('click', () => {
     const open = side.classList.toggle('open');
     menu.setAttribute('aria-expanded', String(open));
@@ -151,7 +151,7 @@ async function hashChange() {
     else a.removeAttribute('aria-current');
   }
   const label = NAV.find(([n]) => n === id)[1];
-  document.title = `${label} · Ruby`;
+  document.title = `${label} · Garnet`;
   const page$ = h('div', { class: 'page' }, loading());
   shell.main.replaceChildren(page$);
   const ctx = {

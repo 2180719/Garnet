@@ -8,7 +8,7 @@ import { WAL_SIZE_LIMIT_BYTES } from './db.ts';
 import { KeyStore, openDb, SessionStore, transaction } from './index.ts';
 
 test('events append in order and survive reopening', () => {
-  const file = join(tempDir(), 'ruby.db');
+  const file = join(tempDir(), 'garnet.db');
   let db = openDb(file);
   let store = new SessionStore(db);
   const s = store.createSession('t');
@@ -35,7 +35,7 @@ test('unfinished tasks are found for recovery', () => {
 });
 
 test('the API audit log is pruned by age and by row count', () => {
-  const db = openDb(join(tempDir(), 'ruby.db'));
+  const db = openDb(join(tempDir(), 'garnet.db'));
   const keys = new KeyStore(db);
   const insert = db.prepare('INSERT INTO api_audit (at, key_id, ip, method, path, status) VALUES (?, NULL, NULL, ?, ?, 200)');
   insert.run('2020-01-01T00:00:00.000Z', 'GET', '/old');
@@ -46,7 +46,7 @@ test('the API audit log is pruned by age and by row count', () => {
 });
 
 test('the WAL is checkpointed and truncated after a burst of writes', () => {
-  const file = join(tempDir(), 'ruby.db');
+  const file = join(tempDir(), 'garnet.db');
   const db = openDb(file);
   assert.deepEqual({ ...db.prepare('PRAGMA journal_size_limit').get() }, { journal_size_limit: WAL_SIZE_LIMIT_BYTES });
   assert.deepEqual({ ...db.prepare('PRAGMA wal_autocheckpoint').get() }, { wal_autocheckpoint: 1000 });
@@ -64,7 +64,7 @@ test('the WAL is checkpointed and truncated after a burst of writes', () => {
 });
 
 test('opening an up-to-date database from a second connection applies no migration again', () => {
-  const file = join(tempDir(), 'ruby.db');
+  const file = join(tempDir(), 'garnet.db');
   openDb(file).close();
   const a = openDb(file);
   const b = openDb(file); // e.g. a CLI command while the service runs

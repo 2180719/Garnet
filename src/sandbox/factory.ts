@@ -1,4 +1,4 @@
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import { DockerSandbox, type DockerSandboxOptions } from './docker.ts';
 import { LocalSandbox } from './local.ts';
 import type { Sandbox } from './sandbox.ts';
@@ -10,7 +10,7 @@ export type SandboxOptions = DockerSandboxOptions;
 export function createSandbox(kind: SandboxKind, opts: SandboxOptions): Sandbox {
   if (kind === 'docker') return new DockerSandbox(opts);
   if (kind === 'local') return new LocalSandbox({ workspace: opts.workspace, maxOutputBytes: opts.maxOutputBytes, spawn: opts.spawn });
-  throw new RubyError('config', `Unknown sandbox backend "${String(kind)}".`);
+  throw new GarnetError('config', `Unknown sandbox backend "${String(kind)}".`);
 }
 
 /**
@@ -20,10 +20,10 @@ export function createSandbox(kind: SandboxKind, opts: SandboxOptions): Sandbox 
  */
 export async function assertSandboxReady(sandbox: Sandbox, opts: { requireIsolated?: boolean } = {}): Promise<void> {
   if (opts.requireIsolated && !sandbox.isolated) {
-    throw new RubyError('config', `An isolated sandbox is required but the "${sandbox.kind}" backend is not isolated.`);
+    throw new GarnetError('config', `An isolated sandbox is required but the "${sandbox.kind}" backend is not isolated.`);
   }
   const status = await sandbox.check();
-  if (!status.ok) throw new RubyError('config', `The ${sandbox.kind} sandbox is unavailable: ${status.detail}`);
+  if (!status.ok) throw new GarnetError('config', `The ${sandbox.kind} sandbox is unavailable: ${status.detail}`);
 }
 
 /** createSandbox + assertSandboxReady. Docker requires isolation by default. */

@@ -127,12 +127,12 @@ test('pdftotext, when installed, extracts the fixture', { skip: !hasCommand('pdf
 });
 
 test('local commands: no shell, minimal environment, timeouts, missing binaries', async () => {
-  process.env.RUBY_TEST_SECRET = 'sekrit';
+  process.env.GARNET_TEST_SECRET = 'sekrit';
   try {
-    const env = new CommandTranscriber([process.execPath, '-e', 'process.stdout.write(String(process.env.RUBY_TEST_SECRET) + " " + process.argv[1].endsWith(".ogg"))'], 10_000);
+    const env = new CommandTranscriber([process.execPath, '-e', 'process.stdout.write(String(process.env.GARNET_TEST_SECRET) + " " + process.argv[1].endsWith(".ogg"))'], 10_000);
     assert.equal(await env.transcribe({ data: fixture('voice.ogg'), mimeType: 'audio/ogg' }, ctx.signal), 'undefined true', 'keys in the environment are not passed on; the temp file has a matching extension');
   } finally {
-    delete process.env.RUBY_TEST_SECRET;
+    delete process.env.GARNET_TEST_SECRET;
   }
   const whisper = new CommandTranscriber([process.execPath, '-e', 'console.log("[00:00:00.000 --> 00:00:02.000]  Hello there.\\n[00:00:02.000 --> 00:00:03.500]  Bye.")'], 10_000);
   assert.equal(await whisper.transcribe({ data: fixture('voice.ogg'), mimeType: 'audio/ogg' }, ctx.signal), 'Hello there.\nBye.');

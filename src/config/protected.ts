@@ -3,7 +3,7 @@
  *
  * An `admin` API key is a bearer token that may live in a dashboard link, so a
  * leak must not become host compromise. These fields decide where secrets are
- * read from and sent, what runs on the host, and who can reach Ruby, so editing
+ * read from and sent, what runs on the host, and who can reach Garnet, so editing
  * them stays with someone who has shell access (editing config.json).
  * A `*` matches one path segment; a leading `*` in a segment (`*Env`) matches
  * any key ending in that suffix.

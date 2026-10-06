@@ -1,8 +1,8 @@
-// `ruby chat`: the interactive terminal UI on a TTY, a plain line chat otherwise.
+// `garnet chat`: the interactive terminal UI on a TTY, a plain line chat otherwise.
 
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { createRuby, type CreateOptions, type Ruby } from '../../main.ts';
+import { createGarnet, type CreateOptions, type Garnet } from '../../main.ts';
 import { FakeModel } from '../../models/index.ts';
 import type { Approver } from '../../policy/index.ts';
 import { InteractiveChat, type TtyInput, type TtyOutput } from './app.ts';
@@ -20,13 +20,13 @@ export type ChatIo = {
 };
 
 export type ChatOverrides = {
-  /** Builds Ruby (tests pass a home directory, an in-memory database or a scripted model). */
-  createRuby?: (options: CreateOptions) => Ruby;
+  /** Builds Garnet (tests pass a home directory, an in-memory database or a scripted model). */
+  createGarnet?: (options: CreateOptions) => Garnet;
   /** Install process signal handlers in interactive mode (default true). */
   processHooks?: boolean;
 };
 
-export const CHAT_USAGE = 'Usage: ruby chat [--fake] [--session <id>] [--plain]\n';
+export const CHAT_USAGE = 'Usage: garnet chat [--fake] [--session <id>] [--plain]\n';
 
 export async function chat(args: string[], io: ChatIo, overrides: ChatOverrides = {}): Promise<number> {
   let values: { fake?: boolean; session?: string; plain?: boolean; help?: boolean };
@@ -37,7 +37,7 @@ export async function chat(args: string[], io: ChatIo, overrides: ChatOverrides 
     return 2;
   }
   if (values.help) {
-    io.out(`${CHAT_USAGE}\n  --fake           use the offline fake model\n  --session <id>   continue an earlier session (see \`ruby sessions\`)\n  --plain          line-based output even on a terminal\n`);
+    io.out(`${CHAT_USAGE}\n  --fake           use the offline fake model\n  --session <id>   continue an earlier session (see \`garnet sessions\`)\n  --plain          line-based output even on a terminal\n`);
     return 0;
   }
   const { stdin, stdout, env } = io;
@@ -45,35 +45,35 @@ export async function chat(args: string[], io: ChatIo, overrides: ChatOverrides 
 
   // The runtime needs an approver before the UI exists; this forwards to it.
   let approve: Approver = async () => 'denied';
-  const ruby = (overrides.createRuby ?? createRuby)({
+  const garnet = (overrides.createGarnet ?? createGarnet)({
     ...(values.fake ? { model: new FakeModel() } : {}),
     approver: (req) => approve(req),
   });
   try {
-    const existing = values.session ? ruby.store.getSession(values.session) : undefined;
+    const existing = values.session ? garnet.store.getSession(values.session) : undefined;
     if (values.session && !existing) {
-      io.err(`No session "${values.session}". Run \`ruby sessions\` to list them.\n`);
+      io.err(`No session "${values.session}". Run \`garnet sessions\` to list them.\n`);
       return 1;
     }
-    const session = existing ?? ruby.store.createSession('Terminal chat');
+    const session = existing ?? garnet.store.createSession('Terminal chat');
     if (interactive && stdout) {
       const app = new InteractiveChat({
-        ruby,
+        garnet,
         sessionId: session.id,
         resumed: Boolean(existing),
         stdin,
         stdout,
         theme: themeFor(env, true),
-        history: new InputHistory(join(ruby.paths.home, 'chat_history.jsonl')),
+        history: new InputHistory(join(garnet.paths.home, 'chat_history.jsonl')),
         processHooks: overrides.processHooks ?? true,
       });
       approve = app.approve;
       return await app.run();
     }
-    const plain = new PlainChat({ ruby, sessionId: session.id, input: stdin, out: io.out, err: io.err, prompt: Boolean(stdin.isTTY) });
+    const plain = new PlainChat({ garnet, sessionId: session.id, input: stdin, out: io.out, err: io.err, prompt: Boolean(stdin.isTTY) });
     approve = plain.approve;
     return await plain.run();
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }

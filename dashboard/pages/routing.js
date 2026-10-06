@@ -36,18 +36,18 @@ export default async function mount(root) {
             h('div', { class: 'row' }, h('code', null, x.code),
               h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await api.post(`/api/pairing/${enc(x.code)}/approve`); toast('Paired', 'ok'); await load(); }) }, 'Approve'),
               h('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await api.del(`/api/pairing/${enc(x.code)}`); toast('Request denied', 'ok'); await load(); }) }, 'Deny')))))
-            : empty('No pending requests', 'Unknown senders get a code when they message Ruby.')),
+            : empty('No pending requests', 'Unknown senders get a code when they message Garnet.')),
         h('section', { class: 'stack', 'aria-labelledby': 'h-id' }, h('h2', { id: 'h-id' }, 'Paired identities'),
           d.identities.length ? h('div', { class: 'list' }, d.identities.map((i) => h('div', { class: 'card item' },
             h('div', { class: 'meta' }, h('span', { class: 'title' }, i.displayName || i.senderId), h('span', { class: 'small muted' }, `${i.channel} · ${i.senderId} · paired ${fmtDate(i.createdAt)}`)),
             h('div', { class: 'row' }, pill(i.role, 'accent'), h('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: async (ev) => {
               const btn = ev.currentTarget;
-              if (!(await confirmDialog({ title: 'Revoke this identity?', body: `${i.displayName || i.senderId} on ${i.channel} will no longer be able to talk to Ruby.`, confirm: 'Revoke', danger: true }))) return;
+              if (!(await confirmDialog({ title: 'Revoke this identity?', body: `${i.displayName || i.senderId} on ${i.channel} will no longer be able to talk to Garnet.`, confirm: 'Revoke', danger: true }))) return;
               await busy(btn, async () => { await api.del(`/api/identities/${enc(i.channel)}/${enc(i.senderId)}`); toast('Revoked', 'ok'); await load(); });
             } }, 'Revoke')))))
-            : empty('Nobody is paired yet', 'Message your Ruby bot to start pairing.')));
+            : empty('Nobody is paired yet', 'Message your Garnet bot to start pairing.')));
     } catch (e) { out.replaceChildren(errorBox(e, () => load())); }
   };
-  root.append(pageHead('Routing', 'How chats map to conversations, and who may talk to Ruby.'), out);
+  root.append(pageHead('Routing', 'How chats map to conversations, and who may talk to Garnet.'), out);
   await load(0);
 }

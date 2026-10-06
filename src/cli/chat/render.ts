@@ -18,7 +18,7 @@ export function prefixRows(rows: string[], first: string, rest: string): string[
 export function banner(theme: Theme, width: number, model: string, sessionId: string, resumed: boolean): string[] {
   const rule = theme.rule('─'.repeat(Math.min(width, 48)));
   return [
-    `${theme.bold(theme.accent(`${MARK} RUBY`))} ${theme.muted('/ terminal chat')}`,
+    `${theme.bold(theme.accent(`${MARK} GARNET`))} ${theme.muted('/ terminal chat')}`,
     rule,
     truncate(`${theme.muted('model')}   ${model}`, width),
     truncate(`${theme.muted('session')} ${sessionId}${resumed ? theme.muted(' (resumed)') : ''}`, width),
@@ -33,7 +33,7 @@ export function userBlock(text: string, theme: Theme, width: number, source?: st
   return ['', ...prefixRows(rows.map((r, i) => theme.bold(r) + (i === rows.length - 1 ? label : '')), `${theme.accent('›')} `, '  ')];
 }
 
-/** Assistant markdown with the Ruby mark on the first row. */
+/** Assistant markdown with the Garnet mark on the first row. */
 export function assistantRows(rows: string[], theme: Theme, first: boolean): string[] {
   return prefixRows(rows, first ? `${theme.accent(MARK)} ` : '  ', '  ');
 }

@@ -4,7 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import type { Readable } from 'node:stream';
-import { RubyError } from '../../contracts/index.ts';
+import { GarnetError } from '../../contracts/index.ts';
 import { isPublicAddress } from './address.ts';
 
 export type ResolvedAddress = { address: string; family: 4 | 6 };
@@ -92,14 +92,14 @@ export class WebFetcher {
         if (REDIRECTS.has(res.statusCode ?? 0) && location) {
           res.destroy();
           if (redirects.length >= this.o.maxRedirects) {
-            throw new RubyError('tool_failed', `Stopped after ${this.o.maxRedirects} redirects (last one pointed to ${clip(location)}).`);
+            throw new GarnetError('tool_failed', `Stopped after ${this.o.maxRedirects} redirects (last one pointed to ${clip(location)}).`);
           }
           redirects.push(url.href);
           let next: URL;
           try {
             next = parseTarget(new URL(location, url).href);
           } catch (e) {
-            throw new RubyError('denied', `Refused a redirect from ${url.host}: ${(e as Error).message}`);
+            throw new GarnetError('denied', `Refused a redirect from ${url.host}: ${(e as Error).message}`);
           }
           // 303, and 301/302 after a POST, turn into a GET (as browsers do); 307/308 keep the method and body.
           if (res.statusCode === 303 || ((res.statusCode === 301 || res.statusCode === 302) && method === 'POST')) {
@@ -123,10 +123,10 @@ export class WebFetcher {
         };
       }
     } catch (e) {
-      if (deadline.aborted && !req.signal?.aborted) throw new RubyError('timeout', `Fetching ${url.host} took longer than ${Math.round(this.o.timeoutMs / 1000)}s.`);
-      if (req.signal?.aborted) throw new RubyError('cancelled', 'The fetch was cancelled.');
-      if (e instanceof RubyError) throw e;
-      throw new RubyError('tool_failed', networkError(e, url));
+      if (deadline.aborted && !req.signal?.aborted) throw new GarnetError('timeout', `Fetching ${url.host} took longer than ${Math.round(this.o.timeoutMs / 1000)}s.`);
+      if (req.signal?.aborted) throw new GarnetError('cancelled', 'The fetch was cancelled.');
+      if (e instanceof GarnetError) throw e;
+      throw new GarnetError('tool_failed', networkError(e, url));
     }
   }
 
@@ -141,16 +141,16 @@ export class WebFetcher {
         addresses = await abortable(this.resolve(host), signal);
       } catch (e) {
         if (signal.aborted) throw e;
-        throw new RubyError('tool_failed', `Could not resolve the host name ${host} (${(e as { code?: string }).code ?? 'DNS error'}). Check the address.`);
+        throw new GarnetError('tool_failed', `Could not resolve the host name ${host} (${(e as { code?: string }).code ?? 'DNS error'}). Check the address.`);
       }
     }
-    if (addresses.length === 0) throw new RubyError('tool_failed', `The host name ${host} has no addresses.`);
+    if (addresses.length === 0) throw new GarnetError('tool_failed', `The host name ${host} has no addresses.`);
     if (!trusted) {
       // Every address must be public: a resolver that answers with a public and a private one is refused outright.
       const bad = addresses.find((a) => !this.allow(a.address));
       if (bad) {
         const what = bad.address === host ? host : `${host} (${bad.address})`;
-        throw new RubyError('denied', `Refused: ${what} is a private, local or reserved address. web_fetch only reaches public internet hosts. Do not retry with another form of this address.`);
+        throw new GarnetError('denied', `Refused: ${what} is a private, local or reserved address. web_fetch only reaches public internet hosts. Do not retry with another form of this address.`);
       }
     }
     return addresses[0]!;
@@ -158,7 +158,7 @@ export class WebFetcher {
 
   private send(url: URL, pinned: ResolvedAddress, r: { method: string; headers: Record<string, string>; body: string | undefined; signal: AbortSignal }): Promise<IncomingMessage> {
     const headers: OutgoingHttpHeaders = {
-      'user-agent': this.o.userAgent ?? 'Ruby/1.0 (personal agent; +https://github.com/2180719/Ruby)',
+      'user-agent': this.o.userAgent ?? 'Garnet/1.0 (personal agent; +https://github.com/2180719/Garnet)',
       accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8,*/*;q=0.5',
       'accept-encoding': 'gzip, deflate, br',
       ...lower(r.headers),
@@ -184,12 +184,12 @@ export function parseTarget(raw: string): URL {
   try {
     url = new URL(raw);
   } catch {
-    throw new RubyError('invalid_input', `"${clip(raw)}" is not a valid URL. Use a full address such as https://example.com/page.`);
+    throw new GarnetError('invalid_input', `"${clip(raw)}" is not a valid URL. Use a full address such as https://example.com/page.`);
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new RubyError('invalid_input', `Only http and https URLs can be fetched, not ${url.protocol.replace(':', '')}.`);
+    throw new GarnetError('invalid_input', `Only http and https URLs can be fetched, not ${url.protocol.replace(':', '')}.`);
   }
-  if (url.username || url.password) throw new RubyError('invalid_input', 'URLs with a user name or password are not fetched.');
+  if (url.username || url.password) throw new GarnetError('invalid_input', 'URLs with a user name or password are not fetched.');
   url.hash = '';
   return url;
 }
@@ -219,7 +219,7 @@ async function readBody(res: IncomingMessage, maxBytes: number, signal: AbortSig
   } catch (e) {
     if (signal.aborted) throw e;
     // A broken compressed stream after some data: keep what decoded cleanly.
-    if (size === 0) throw new RubyError('tool_failed', `The response body could not be read (${(e as Error).message}).`);
+    if (size === 0) throw new GarnetError('tool_failed', `The response body could not be read (${(e as Error).message}).`);
     truncated = true;
   } finally {
     res.destroy();

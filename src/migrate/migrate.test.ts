@@ -14,7 +14,7 @@ const put = (root: string, rel: string, text: string) => {
 };
 const skillMd = (name: string, desc: string, body = 'Do the thing.\n') => `---\nname: ${name}\ndescription: ${desc}\n---\n\n${body}`;
 
-function ruby() {
+function garnet() {
   const home = tempDir();
   const memory = new MemoryStore({ root: join(home, 'memory') });
   const skills = new SkillStore({ root: join(home, 'skills') });
@@ -38,7 +38,7 @@ function openclawTree() {
   put(root, 'workspace/memory/2026-01-02.md', 'daily note\n');
   put(root, 'workspace/skills/Weekly Report!/SKILL.md', skillMd('Weekly Report!', 'Write the weekly report'));
   put(root, 'workspace/skills/Weekly Report!/scripts/run.sh', 'echo hi\n');
-  put(root, 'workspace/skills/existing/SKILL.md', skillMd('existing', 'Clashes with Ruby'));
+  put(root, 'workspace/skills/existing/SKILL.md', skillMd('existing', 'Clashes with Garnet'));
   put(root, 'workspace/skills/dupe-a/SKILL.md', skillMd('Same Name', 'first'));
   put(root, 'workspace/skills/dupe-b/SKILL.md', skillMd('same_name', 'second'));
   put(root, '.env', 'ANTHROPIC_API_KEY=sk-ant-REALSECRET\nTELEGRAM_BOT_TOKEN=12345:ABC\n');
@@ -82,14 +82,14 @@ test('openclaw plan', () => {
   const text = formatPlan(plan);
   assert.ok(!text.includes('REALSECRET') && !text.includes('999:XYZ') && !text.includes('12345:ABC'));
   assert.match(text, /ANTHROPIC_API_KEY/);
-  assert.match(text, /~\/\.ruby\/env/);
+  assert.match(text, /~\/\.garnet\/env/);
   assert.ok(!JSON.stringify(plan).includes('REALSECRET'));
 });
 
 test('openclaw apply: contents, provenance, secrets untouched, idempotent', () => {
   const root = openclawTree();
-  const r = ruby();
-  r.skills.create('existing', 'Ruby own', 'Ruby body', 'user');
+  const r = garnet();
+  r.skills.create('existing', 'Garnet own', 'Garnet body', 'user');
   r.memory.write('default', 'memory', '- Likes tea\n- Existing fact');
   const plan = planImport('openclaw', root);
   const res = applyImport(plan, r.deps);
@@ -100,7 +100,7 @@ test('openclaw apply: contents, provenance, secrets untouched, idempotent', () =
   assert.equal(res.persona, 'set');
   assert.equal(r.skills.read('weekly-report').description, 'Write the weekly report');
   assert.equal(r.skills.list().find((s) => s.name === 'weekly-report')!.provenance, 'user');
-  assert.equal(r.skills.read('existing').body.trim(), 'Ruby body');
+  assert.equal(r.skills.read('existing').body.trim(), 'Garnet body');
   assert.equal(res.skills.find((s) => s.name === 'existing')!.status, 'exists');
   assert.equal(res.skills.filter((s) => s.name === 'same-name').map((s) => s.status).join(), 'created,skipped');
   const imp = join(r.workspace, 'imported/openclaw/workspace');
@@ -108,7 +108,7 @@ test('openclaw apply: contents, provenance, secrets untouched, idempotent', () =
   assert.ok(existsSync(join(imp, 'memory/2026-01-02.md')));
   assert.ok(existsSync(join(imp, 'skills/Weekly Report!/scripts/run.sh')));
   assert.ok(!existsSync(join(imp, 'memory/escape.md')));
-  // secrets are nowhere in Ruby's tree
+  // secrets are nowhere in Garnet's tree
   assert.ok(!existsSync(join(r.workspace, 'imported/openclaw/.env')));
   assert.ok(!existsSync(join(r.workspace, 'imported/openclaw/openclaw.json')));
   // second apply changes nothing
@@ -143,7 +143,7 @@ test('hermes plan and apply', () => {
   assert.equal(plan.skills[0]!.description, 'Deploy the app to staging');
   assert.deepEqual(plan.channels.sort(), ['discord', 'telegram']);
   assert.ok(plan.envVars.includes('OPENROUTER_API_KEY'));
-  const r = ruby();
+  const r = garnet();
   applyImport(plan, r.deps);
   assert.equal(r.memory.read('default', 'user'), '- Prefers concise answers\n- Timezone CET');
   assert.match(r.persona()!, /You are Hermes/);
@@ -159,14 +159,14 @@ test('oversized memory keeps the most recent entries and archives the original',
   const plan = planImport('hermes', root);
   const m = plan.memory.find((x) => x.file === 'memory')!;
   assert.ok(m.fitCount < 80 && m.fitCount > 10);
-  const r = ruby();
+  const r = garnet();
   applyImport(plan, r.deps);
   const out = r.memory.read('default', 'memory');
   assert.ok(out.length <= 2200);
   assert.ok(out.includes('Fact number 079'));
   assert.ok(!out.includes('Fact number 000'));
   assert.equal(readFileSync(join(r.workspace, 'imported/hermes/memories/MEMORY.md'), 'utf8').split('§').length, 80);
-  assert.match(formatPlan(plan), /ruby memory edit/);
+  assert.match(formatPlan(plan), /garnet memory edit/);
 });
 
 test('oversized entries are shortened; a huge memory file is skipped', () => {
@@ -188,7 +188,7 @@ test('long persona is truncated to 4000 with a note and the original archived; e
   assert.ok(plan.persona!.truncated);
   assert.match(plan.persona!.text, /truncated/);
   assert.ok(plan.copies.some((c) => c.src === 'SOUL.md'));
-  const r = ruby();
+  const r = garnet();
   r.setExisting('my own persona');
   const res = applyImport(plan, r.deps);
   assert.equal(res.persona, 'kept-existing');
@@ -207,7 +207,7 @@ test('symlinked source root contents and skill dir escaping are not followed', (
 
 test('runImport is a dry run unless --apply; usage and missing dir errors', async () => {
   const root = hermesTree();
-  const r = ruby();
+  const r = garnet();
   const io = { o: '', e: '', out(t: string) { this.o += t; }, err(t: string) { this.e += t; } };
   assert.equal(await runImport(['hermes', '--from', root], io, r.deps), 0);
   assert.match(io.o, /Dry run/);

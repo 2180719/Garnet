@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { z } from 'zod';
-import { errorMessage, isRubyError, newId, RubyError, type TaskRecord } from '../contracts/index.ts';
+import { errorMessage, isGarnetError, newId, GarnetError, type TaskRecord } from '../contracts/index.ts';
 import type { KeyStore, SessionStore } from '../store/index.ts';
 import type { ChatResult, Gateway } from './gateway.ts';
 import { RateLimiter, type ApiKeys, type Scope } from './keys.ts';
@@ -20,7 +20,7 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
 const KEEPALIVE_MS = 15_000;
 /** Paths a browser app on an allowed origin may call (`api.corsOrigins`). */
 const CORS_PATHS = new Set(['/v1/chat/completions', '/v1/models']);
-/** Earlier client messages replayed into a conversation Ruby has not seen, newest kept. */
+/** Earlier client messages replayed into a conversation Garnet has not seen, newest kept. */
 const MAX_REPLAY_CHARS = 12_000;
 
 export type ApiServerDeps = {
@@ -102,7 +102,7 @@ export class ApiServer {
   /** Starts listening. Refuses a non-loopback bind unless at least one active key exists. */
   async listen(host: string, port: number): Promise<AddressInfo> {
     if (!LOOPBACK.has(host) && this.deps.keys.activeCount() === 0) {
-      throw new RubyError('config', `Refusing to listen on ${host} without an API key. Create one with \`ruby api key create\`, or bind to 127.0.0.1.`);
+      throw new GarnetError('config', `Refusing to listen on ${host} without an API key. Create one with \`garnet api key create\`, or bind to 127.0.0.1.`);
     }
     const server = createServer((req, res) => void this.handle(req, res));
     // No overall request timeout: agent tasks can run for a long time. headersTimeout bounds the
@@ -129,7 +129,7 @@ export class ApiServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', 'http://ruby.local');
+    const url = new URL(req.url ?? '/', 'http://garnet.local');
     // The rightmost X-Forwarded-For entry is the one the trusted proxy appended; anything left of it is client-controlled.
     const forwarded = this.deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1)?.trim() : '';
     const ctx: Ctx = { req, res, url, keyId: null, scopes: [], ip: forwarded || req.socket.remoteAddress || null, authAttempted: false };
@@ -152,17 +152,17 @@ export class ApiServer {
       const status =
         e instanceof HttpError
           ? e.status
-          : isRubyError(e, 'invalid_input') || isRubyError(e, 'config') || (e as { status?: number })?.status === 400
+          : isGarnetError(e, 'invalid_input') || isGarnetError(e, 'config') || (e as { status?: number })?.status === 400
             ? 400
-            : isRubyError(e, 'denied')
+            : isGarnetError(e, 'denied')
               ? 403
-              : isRubyError(e, 'conflict')
+              : isGarnetError(e, 'conflict')
                 ? 409
                 : 500;
       if (status === 500) this.deps.log?.('error', `API ${req.method} ${url.pathname}: ${errorMessage(e)}`);
       if (!res.headersSent) {
         for (const [k, v] of Object.entries(e instanceof HttpError ? e.headers : {})) res.setHeader(k, v);
-        const problems = isRubyError(e, 'config') && Array.isArray(e.detail?.problems) ? { issues: e.detail.problems } : {};
+        const problems = isGarnetError(e, 'config') && Array.isArray(e.detail?.problems) ? { issues: e.detail.problems } : {};
         send(res, status, { error: { message: status === 500 ? 'Internal error.' : errorMessage(e), type: errorType(status), ...problems } });
       } else res.end();
     } finally {
@@ -185,7 +185,7 @@ export class ApiServer {
     if (req.method !== 'OPTIONS') return false;
     res.writeHead(204, {
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Ruby-Conversation, X-OpenWebUI-Chat-Id',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Garnet-Conversation, X-Ruby-Conversation, X-OpenWebUI-Chat-Id',
       'Access-Control-Max-Age': '600',
     });
     res.end();
@@ -222,7 +222,7 @@ export class ApiServer {
     if (!row) {
       const wait = this.authFailures.take(ip);
       if (wait > 0) throw new HttpError(429, 'Too many failed attempts.', { 'Retry-After': String(Math.ceil(wait / 1000)) });
-      throw new HttpError(401, 'A valid API key is required (Authorization: Bearer ruby_…).', { 'WWW-Authenticate': 'Bearer' });
+      throw new HttpError(401, 'A valid API key is required (Authorization: Bearer garnet_…).', { 'WWW-Authenticate': 'Bearer' });
     }
     ctx.keyId = row.id;
     ctx.scopes = row.scopes;
@@ -241,7 +241,7 @@ export class ApiServer {
 
     if (method === 'GET' && path === '/v1/models') {
       if (!ctx.scopes.includes('chat') && !ctx.scopes.includes('read')) this.require(ctx, 'chat');
-      return send(res, 200, { object: 'list', data: [{ id: 'ruby', object: 'model', created: 0, owned_by: 'ruby' }] });
+      return send(res, 200, { object: 'list', data: [{ id: 'garnet', object: 'model', created: 0, owned_by: 'garnet' }] });
     }
     if (method === 'POST' && path === '/v1/chat/completions') {
       this.require(ctx, 'chat');
@@ -309,7 +309,7 @@ export class ApiServer {
 
     const { conversation, derived } = conversationFor(req, ctx.keyId ?? '', parsed.data.user, messages);
     const key = `api:${ctx.keyId}:${conversation}`;
-    // A stateless client's chat that Ruby has not seen (it began elsewhere, or its first message was
+    // A stateless client's chat that Garnet has not seen (it began elsewhere, or its first message was
     // edited): replay the earlier messages once so the answer has their context.
     const turnText = derived && !this.deps.gateway.hasConversation(key) ? withReplay(messages.slice(0, -1), text) : text;
     const input = files.length ? { text: turnText, files } : turnText;
@@ -324,7 +324,7 @@ export class ApiServer {
     if (stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
       const chunk = (delta: object, finish: string | null = null) =>
-        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'ruby', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'garnet', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
       chunk({ role: 'assistant' });
       // Comment lines keep reverse proxies and clients from timing out during long tool runs.
       const keepalive = setInterval(() => res.write(': keepalive\n\n'), this.deps.keepaliveMs ?? KEEPALIVE_MS);
@@ -339,7 +339,7 @@ export class ApiServer {
         });
       } catch (e) {
         // Headers are out: an attachment nobody can read (e.g. an image for a text-only model) is answered in the stream.
-        if (!isRubyError(e, 'invalid_input') || streamed) throw e;
+        if (!isGarnetError(e, 'invalid_input') || streamed) throw e;
         result = { text: errorMessage(e) };
       } finally {
         clearInterval(keepalive);
@@ -360,10 +360,10 @@ export class ApiServer {
       id,
       object: 'chat.completion',
       created,
-      model: 'ruby',
+      model: 'garnet',
       choices: [{ index: 0, message: { role: 'assistant', content: result.text }, finish_reason: finishReason(result.task) }],
       usage: { prompt_tokens: prompt, completion_tokens: u.outputTokens ?? 0, total_tokens: prompt + (u.outputTokens ?? 0) },
-      ruby: { task_id: result.task.id, session_id: result.sessionId, status: result.task.status },
+      garnet: { task_id: result.task.id, session_id: result.sessionId, status: result.task.status },
     });
   }
 
@@ -372,7 +372,7 @@ export class ApiServer {
     if (r.stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
       const chunk = (delta: object, finish: string | null = null) =>
-        res.write(`data: ${JSON.stringify({ id: r.id, object: 'chat.completion.chunk', created: r.created, model: 'ruby', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ id: r.id, object: 'chat.completion.chunk', created: r.created, model: 'garnet', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
       chunk({ role: 'assistant', content: r.text });
       chunk({}, 'stop');
       res.end('data: [DONE]\n\n');
@@ -382,7 +382,7 @@ export class ApiServer {
       id: r.id,
       object: 'chat.completion',
       created: r.created,
-      model: 'ruby',
+      model: 'garnet',
       choices: [{ index: 0, message: { role: 'assistant', content: r.text }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
@@ -400,14 +400,14 @@ const shortHash = (...parts: string[]) => createHash('sha256').update(parts.join
 
 /**
  * Which server-side conversation a request continues. In order:
- * 1. `X-Ruby-Conversation` (Ruby-aware clients, the dashboard): used as is.
+ * 1. `X-Garnet-Conversation` (Garnet-aware clients, the dashboard): used as is.
  * 2. `X-OpenWebUI-Chat-Id` (Open WebUI with ENABLE_FORWARD_USER_INFO_HEADERS): one conversation per chat.
  * 3. Otherwise the client is assumed to resend the whole chat each time (Open WebUI, LibreChat
  *    and most OpenAI frontends do): the conversation is a hash of the key, the `user` field and
  *    the chat's first user message, which stays the same for every turn of that chat.
  * `user` only scopes the hash: it names a person, not a chat, so keying on it alone would merge
  * every chat of that person. A client that sends only its newest message must name the
- * conversation with `X-Ruby-Conversation`, or each message starts a new one.
+ * conversation with `X-Garnet-Conversation`, or each message starts a new one.
  */
 export function conversationFor(
   req: IncomingMessage,
@@ -415,10 +415,10 @@ export function conversationFor(
   user: string | undefined,
   messages: ChatMessageIn[],
 ): { conversation: string; derived: boolean } {
-  const named = req.headers['x-ruby-conversation'];
+  const named = req.headers['x-garnet-conversation'] ?? req.headers['x-ruby-conversation'];
   if (named !== undefined) {
     const name = String(named);
-    if (!/^[a-z0-9-]{1,40}$/.test(name)) throw new HttpError(400, 'X-Ruby-Conversation must match [a-z0-9-]{1,40}.');
+    if (!/^[a-z0-9-]{1,40}$/.test(name)) throw new HttpError(400, 'X-Garnet-Conversation must match [a-z0-9-]{1,40}.');
     return { conversation: name, derived: false };
   }
   const chatId = String(req.headers['x-openwebui-chat-id'] ?? '').trim();
@@ -497,7 +497,7 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 
 /**
  * Files in an OpenAI-style content part: `image_url` and `file` parts, as
- * base64 data URLs only. Ruby never fetches a client-supplied URL (that would
+ * base64 data URLs only. Garnet never fetches a client-supplied URL (that would
  * let any chat key make the host request internal addresses). Other part
  * types are refused rather than silently dropped.
  */

@@ -42,7 +42,7 @@ const tick = async (s: ReturnType<typeof build>) => {
 };
 
 test('a run that crashes mid-occurrence is marked interrupted after restart and the slot does not run twice', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const first = build(openDb(file), ['hang']);
   await first.scheduler.tick(); // baseline
   first.advance(SLOT);
@@ -70,7 +70,7 @@ test('a run that crashes mid-occurrence is marked interrupted after restart and 
 });
 
 test('the same occurrence cannot be claimed twice, even by a second process on the same database', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const a = build(openDb(file), []);
   const b = build(openDb(file), []);
   await tick(a); // baselines
@@ -83,7 +83,7 @@ test('the same occurrence cannot be claimed twice, even by a second process on t
 });
 
 test('three consecutive failed tasks pause the job, notify the owner once, and it stays paused across restart', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const t = build(openDb(file), ['failed', 'failed', 'failed', 'ok']);
   await tick(t);
   for (let i = 0; i < 4; i++) {
@@ -115,7 +115,7 @@ test('three consecutive runs that throw also pause the job and tell the owner', 
   assert.deepEqual(t.store.runs('hb').map((r) => r.status), ['failed', 'failed', 'failed']);
   assert.equal(t.store.state('hb').paused, true);
   assert.equal(t.notes.length, 1);
-  assert.match(t.notes[0]!, /paused.*model provider exploded.*ruby jobs resume hb/);
+  assert.match(t.notes[0]!, /paused.*model provider exploded.*garnet jobs resume hb/);
 });
 
 test('a success in between resets the failure count', async () => {

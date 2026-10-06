@@ -2,20 +2,20 @@
 import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { writeConfig } from '../config/index.ts';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import { approvePairing, ChatDirectory, SCOPES, type Scope } from '../gateway/index.ts';
 import { describeNext, describeSchedule, describeTime, parseWhen, WHEN_HELP } from '../scheduler/index.ts';
-import { buildService, createRuby, startService, VERSION } from '../main.ts';
+import { buildService, createGarnet, startService, VERSION } from '../main.ts';
 import { validSenderId } from '../migrate/index.ts';
 import { defaultEntry, installedServices, installService, resolveService, restartService, serviceStatus, uninstallService, type ServiceResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 
 export async function start(io: Io): Promise<number> {
   const log = (level: string, message: string) => io.err(`${new Date().toISOString()} ${level.padEnd(5)} ${message}\n`);
-  const ruby = createRuby();
+  const garnet = createGarnet();
   try {
-    const service = await startService(ruby, log);
-    log('info', `Ruby ${VERSION} running (model ${ruby.model.id}). Ctrl+C or SIGTERM to stop.`);
+    const service = await startService(garnet, log);
+    log('info', `Garnet ${VERSION} running (model ${garnet.model.id}). Ctrl+C or SIGTERM to stop.`);
     await new Promise<void>((resolve) => {
       process.once('SIGTERM', resolve);
       process.once('SIGINT', resolve);
@@ -25,15 +25,15 @@ export async function start(io: Io): Promise<number> {
     log('info', 'Stopped.');
     return 0;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }
 
 export function pair(args: string[], io: Io): number {
   const [sub = 'list', ...rest] = args;
-  const ruby = createRuby({ noModel: true });
+  const garnet = createGarnet({ noModel: true });
   try {
-    const store = ruby.gatewayStore;
+    const store = garnet.gatewayStore;
     if (sub === 'list') {
       const pending = store.pairings(new Date().toISOString());
       const owners = store.identities();
@@ -46,7 +46,7 @@ export function pair(args: string[], io: Io): number {
     if (sub === 'approve' && rest[0]) {
       const p = approvePairing(store, rest[0]);
       if (!p) {
-        io.err('No pending request with that code (it may have expired). Run `ruby pair list`.\n');
+        io.err('No pending request with that code (it may have expired). Run `garnet pair list`.\n');
         return 1;
       }
       io.out(`Paired ${p.channel} ${p.senderName ?? ''} (${p.senderId}). They'll get a greeting from the running service.\n`);
@@ -57,15 +57,15 @@ export function pair(args: string[], io: Io): number {
       io.out(ok ? `Revoked ${rest[0]} ${rest[1]}.\n` : 'No such identity.\n');
       return ok ? 0 : 1;
     }
-    if (sub === 'add') return pairAdd(rest, ruby, io);
+    if (sub === 'add') return pairAdd(rest, garnet, io);
     io.err(PAIR_USAGE);
     return 2;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }
 
-const PAIR_USAGE = 'Usage: ruby pair list | approve <code> | add <channel> <senderId> [--name <name>] | revoke <channel> <senderId>\n';
+const PAIR_USAGE = 'Usage: garnet pair list | approve <code> | add <channel> <senderId> [--name <name>] | revoke <channel> <senderId>\n';
 const PAIR_CHANNELS = ['telegram', 'discord', 'signal'] as const;
 const ID_HELP: Record<(typeof PAIR_CHANNELS)[number], string> = {
   telegram: 'a numeric Telegram user ID (message @userinfobot to find it; @usernames are not stable IDs)',
@@ -74,11 +74,11 @@ const ID_HELP: Record<(typeof PAIR_CHANNELS)[number], string> = {
 };
 
 /**
- * `ruby pair add <channel> <senderId>`: pairs someone without the code round trip (for people you
+ * `garnet pair add <channel> <senderId>`: pairs someone without the code round trip (for people you
  * already know, e.g. from your old assistant's allowlist). A paired identity is an owner: it can
- * talk to Ruby and approve actions.
+ * talk to Garnet and approve actions.
  */
-function pairAdd(args: string[], ruby: ReturnType<typeof createRuby>, io: Io): number {
+function pairAdd(args: string[], garnet: ReturnType<typeof createGarnet>, io: Io): number {
   let parsed;
   try {
     parsed = parseArgs({ args, allowPositionals: true, options: { name: { type: 'string' } } });
@@ -106,51 +106,51 @@ function pairAdd(args: string[], ruby: ReturnType<typeof createRuby>, io: Io): n
     io.err('--name must be one line of at most 80 characters.\n');
     return 2;
   }
-  const store = ruby.gatewayStore;
+  const store = garnet.gatewayStore;
   if (store.identity(c, senderId)) {
     io.out(`${c} ${senderId} is already paired.\n`);
     return 0;
   }
   store.addIdentity(c, senderId, name);
-  io.out(`Paired ${c} ${name ? `${name} ` : ''}(${senderId}). They are an owner now: they can message Ruby and approve its actions.\n`);
-  if (!ruby.config.channels[c].enabled) io.out(`Note: the ${c} channel is not enabled yet (\`ruby setup\`).\n`);
-  if (c === 'signal' && senderId.startsWith('+')) io.out('Note: signal-cli usually reports senders by UUID; if messages from this number are not recognized, pair the UUID instead (it shows in `ruby pair list` after they message the bot).\n');
+  io.out(`Paired ${c} ${name ? `${name} ` : ''}(${senderId}). They are an owner now: they can message Garnet and approve its actions.\n`);
+  if (!garnet.config.channels[c].enabled) io.out(`Note: the ${c} channel is not enabled yet (\`garnet setup\`).\n`);
+  if (c === 'signal' && senderId.startsWith('+')) io.out('Note: signal-cli usually reports senders by UUID; if messages from this number are not recognized, pair the UUID instead (it shows in `garnet pair list` after they message the bot).\n');
   return 0;
 }
 
 export function api(args: string[], io: Io): number {
   const [sub = 'status', ...rest] = args;
-  const ruby = createRuby({ noModel: true });
+  const garnet = createGarnet({ noModel: true });
   try {
-    const { config, paths, keys } = ruby;
+    const { config, paths, keys } = garnet;
     if (sub === 'status') {
       io.out(`API ${config.api.enabled ? 'enabled' : 'disabled'} on ${config.api.host}:${config.api.port}; ${keys.activeCount()} active key(s).\n`);
       return 0;
     }
     if (sub === 'enable' || sub === 'disable') {
       writeConfig(paths.home, { ...config, api: { ...config.api, enabled: sub === 'enable' } });
-      io.out(`API ${sub}d. Restart Ruby to apply.${sub === 'enable' && keys.activeCount() === 0 ? ' Create a key with `ruby api key create --name <name>`.' : ''}\n`);
+      io.out(`API ${sub}d. Restart Garnet to apply.${sub === 'enable' && keys.activeCount() === 0 ? ' Create a key with `garnet api key create --name <name>`.' : ''}\n`);
       return 0;
     }
-    if (sub === 'key') return apiKey(rest, ruby.keys, io);
-    io.err('Usage: ruby api status | enable | disable | key create|list|revoke\n');
+    if (sub === 'key') return apiKey(rest, garnet.keys, io);
+    io.err('Usage: garnet api status | enable | disable | key create|list|revoke\n');
     return 2;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }
 
-function apiKey(args: string[], keys: ReturnType<typeof createRuby>['keys'], io: Io): number {
+function apiKey(args: string[], keys: ReturnType<typeof createGarnet>['keys'], io: Io): number {
   const [sub = 'list', ...rest] = args;
   if (sub === 'create') {
     const { values } = parseArgs({
       args: rest,
       options: { name: { type: 'string' }, scopes: { type: 'string', default: 'chat' }, 'expires-days': { type: 'string' } },
     });
-    if (!values.name) throw new RubyError('invalid_input', 'Usage: ruby api key create --name <name> [--scopes chat,read,admin] [--expires-days N]');
+    if (!values.name) throw new GarnetError('invalid_input', 'Usage: garnet api key create --name <name> [--scopes chat,read,admin] [--expires-days N]');
     const scopes = values.scopes.split(',').map((s) => s.trim()) as Scope[];
     const days = values['expires-days'] ? Number(values['expires-days']) : undefined;
-    if (days !== undefined && !(days > 0)) throw new RubyError('invalid_input', '--expires-days must be a positive number.');
+    if (days !== undefined && !(days > 0)) throw new GarnetError('invalid_input', '--expires-days must be a positive number.');
     const created = keys.create(values.name, scopes, days);
     io.out(`Created key "${created.name}" (${created.id}) with scopes ${created.scopes.join(', ')}${created.expiresAt ? `, expires ${created.expiresAt}` : ''}.\n\n  ${created.key}\n\nStore it now: it will not be shown again.\n`);
     return 0;
@@ -169,15 +169,15 @@ function apiKey(args: string[], keys: ReturnType<typeof createRuby>['keys'], io:
     io.out(ok ? `Revoked ${rest[0]}.\n` : 'No active key with that ID.\n');
     return ok ? 0 : 1;
   }
-  io.err('Usage: ruby api key create --name <name> [--scopes chat,read,admin] [--expires-days N] | list | revoke <id>\n');
+  io.err('Usage: garnet api key create --name <name> [--scopes chat,read,admin] [--expires-days N] | list | revoke <id>\n');
   return 2;
 }
 
-const SERVICE_USAGE = `Usage: ruby service install | uninstall | status | restart | show | list [--name <name>] [--force]
-  --name <name>   Instance name, so several Ruby homes (RUBY_HOME) can run side by side:
-                  ruby-<name>.service / dev.ruby.agent.<name>. Without it, the service already
-                  installed for this RUBY_HOME is used, else the default ruby.service.
-  --force         install: take over a service file that runs another RUBY_HOME
+const SERVICE_USAGE = `Usage: garnet service install | uninstall | status | restart | show | list [--name <name>] [--force]
+  --name <name>   Instance name, so several Garnet homes (GARNET_HOME) can run side by side:
+                  garnet-<name>.service / dev.garnet.agent.<name>. Without it, the service already
+                  installed for this GARNET_HOME is used, else the default garnet.service.
+  --force         install: take over a service file that runs another GARNET_HOME
 `;
 
 export async function service(args: string[], io: Io): Promise<number> {
@@ -193,14 +193,14 @@ export async function service(args: string[], io: Io): Promise<number> {
     io.err(SERVICE_USAGE);
     return 2;
   }
-  const ruby = createRuby({ noModel: true });
-  const home = ruby.paths.home;
-  ruby.close();
+  const garnet = createGarnet({ noModel: true });
+  const home = garnet.paths.home;
+  garnet.close();
   const opts = { platform: process.platform, home, userHome: homedir(), nodePath: process.execPath, entry: defaultEntry(), name: parsed.values.name };
   if (sub === 'list') {
     const all = installedServices(opts);
-    if (!all.length) io.out('No Ruby services installed.\n');
-    for (const s of all) io.out(`${(s.name ?? '(default)').padEnd(16)} ${s.home ?? '?'}${s.home === home ? '  <- this RUBY_HOME' : ''}\n  ${s.path}\n`);
+    if (!all.length) io.out('No Garnet services installed.\n');
+    for (const s of all) io.out(`${(s.name ?? '(default)').padEnd(16)} ${s.home ?? '?'}${s.home === home ? '  <- this GARNET_HOME' : ''}\n  ${s.path}\n`);
     return 0;
   }
   let resolved;
@@ -225,7 +225,7 @@ export async function service(args: string[], io: Io): Promise<number> {
     return 2;
   }
   if (conflict && sub === 'install' && !parsed.values.force) {
-    io.err(`Not installed: ${conflict}\n(Or pass --force to point that service at this RUBY_HOME instead.)\n`);
+    io.err(`Not installed: ${conflict}\n(Or pass --force to point that service at this GARNET_HOME instead.)\n`);
     return 1;
   }
   if (conflict && sub !== 'install') {
@@ -240,14 +240,14 @@ export async function service(args: string[], io: Io): Promise<number> {
 }
 
 const JOBS_USAGE = `Usage:
-  ruby jobs [list]                 Every job: config.json, created in chat, or added here
-  ruby jobs show <id>              One job in full, with recent runs
-  ruby jobs history <id>           Recent runs
-  ruby jobs run <id>               Run now (results go to the job's chat via the running service)
-  ruby jobs pause|resume <id>      Stop or restart scheduling (any job)
-  ruby jobs delete <id>            Delete a job created in chat or here (config.json jobs: edit the file)
-  ruby jobs edit <id> [--when "<schedule>"] [--message <text> | --instructions <text>]
-  ruby jobs add --when "<schedule>" (--message <text> | --instructions <text> | --command <cmd>)
+  garnet jobs [list]                 Every job: config.json, created in chat, or added here
+  garnet jobs show <id>              One job in full, with recent runs
+  garnet jobs history <id>           Recent runs
+  garnet jobs run <id>               Run now (results go to the job's chat via the running service)
+  garnet jobs pause|resume <id>      Stop or restart scheduling (any job)
+  garnet jobs delete <id>            Delete a job created in chat or here (config.json jobs: edit the file)
+  garnet jobs edit <id> [--when "<schedule>"] [--message <text> | --instructions <text>]
+  garnet jobs add --when "<schedule>" (--message <text> | --instructions <text> | --command <cmd>)
                 [--name <id>] [--to <channel|channel:id>] [--only-changes]
 Schedules: ${WHEN_HELP}
 `;
@@ -258,13 +258,13 @@ export async function jobs(args: string[], io: Io): Promise<number> {
     io.out(JOBS_USAGE);
     return 0;
   }
-  const ruby = createRuby({ noModel: sub !== 'run' });
+  const garnet = createGarnet({ noModel: sub !== 'run' });
   const usage = (code = 2) => {
     io.err(JOBS_USAGE);
     return code;
   };
   try {
-    const { config, jobStore, jobBook, directory } = ruby;
+    const { config, jobStore, jobBook, directory } = garnet;
     const now = new Date();
     const label = (n: { channel: string; account: string; chatId: string }) => {
       const known = directory.chats().find((c) => c.channel === n.channel && c.chatId === n.chatId);
@@ -272,7 +272,7 @@ export async function jobs(args: string[], io: Io): Promise<number> {
     };
     if (sub === 'list') {
       const entries = jobBook.list();
-      if (!entries.length) io.out('No jobs. Ask Ruby in chat ("remind me at 5pm to …"), use `ruby jobs add`, or add them under "jobs" in config.json.\n');
+      if (!entries.length) io.out('No jobs. Ask Garnet in chat ("remind me at 5pm to …"), use `garnet jobs add`, or add them under "jobs" in config.json.\n');
       if (!config.scheduler.enabled) io.out('The scheduler is switched off (scheduler.enabled = false).\n');
       for (const e of entries) {
         const status = !e.job.enabled ? 'disabled' : e.state.paused ? 'PAUSED' : e.done ? 'done' : 'enabled';
@@ -281,7 +281,7 @@ export async function jobs(args: string[], io: Io): Promise<number> {
         io.out(`${e.job.id.padEnd(22)} ${status.padEnd(8)} ${from.padEnd(9)} ${describeSchedule(e.job, e.zone, now)}${next ? `  · ${next}` : ''}${e.lastRun ? `  · last: ${e.lastRun.status}` : ''}\n`);
       }
       for (const p of jobBook.problems()) io.out(`! ${p.id}: ${p.problem}\n`);
-      if (entries.length) io.out(`Times are in ${ruby.timezone}.\n`);
+      if (entries.length) io.out(`Times are in ${garnet.timezone}.\n`);
       return 0;
     }
     if (sub === 'add') {
@@ -299,7 +299,7 @@ export async function jobs(args: string[], io: Io): Promise<number> {
       });
       const actions = [values.message, values.instructions, values.command].filter((v) => v !== undefined);
       if (!values.when || actions.length !== 1) return usage();
-      const when = parseWhen(values.when, { now, zone: ruby.timezone });
+      const when = parseWhen(values.when, { now, zone: garnet.timezone });
       let notify: { channel: string; account: string; chatId: string } | undefined;
       try {
         const t = directory.resolve(values.to ?? 'owner', '');
@@ -327,14 +327,14 @@ export async function jobs(args: string[], io: Io): Promise<number> {
     const found = id ? jobBook.find(id) : undefined;
     if (!found) {
       if (!id) return usage();
-      io.err(`No job "${id}". Run \`ruby jobs list\`.\n`);
+      io.err(`No job "${id}". Run \`garnet jobs list\`.\n`);
       return 1;
     }
     const job = found.job;
     if (sub === 'show') {
       const e = jobBook.entry(job, found.origin);
       const origin =
-        e.origin.by === 'config' ? 'config.json' : e.origin.by === 'agent' ? `created by Ruby in chat${e.origin.conversation ? ` (${e.origin.conversation})` : ''}, ${describeTime(new Date(e.origin.at), e.zone, now)}` : `added from the ${e.origin.via}, ${describeTime(new Date(e.origin.at), e.zone, now)}`;
+        e.origin.by === 'config' ? 'config.json' : e.origin.by === 'agent' ? `created by Garnet in chat${e.origin.conversation ? ` (${e.origin.conversation})` : ''}, ${describeTime(new Date(e.origin.at), e.zone, now)}` : `added from the ${e.origin.via}, ${describeTime(new Date(e.origin.at), e.zone, now)}`;
       const what = job.message !== undefined ? `message: ${job.message}` : job.script ? `script: ${job.script.command}` : `instructions: ${job.instructions}`;
       io.out(`${job.id}\n  from:      ${origin}\n  schedule:  ${describeSchedule(job, e.zone, now)} (${e.zone})\n  next:      ${e.next ? describeNext(e.next, e.zone, now) : e.done ? 'done' : e.state.paused ? 'paused' : 'none'}\n  ${what}\n  sends to:  ${job.notify ? label(job.notify) : 'nowhere (history only)'}${job.notifyWhen === 'on_change' ? ', only when there is something new' : ''}\n`);
       for (const r of jobStore.runs(job.id, 5)) io.out(`  ${r.startedAt}  ${r.status.padEnd(18)} ${r.note ?? ''}\n`);
@@ -371,7 +371,7 @@ export async function jobs(args: string[], io: Io): Promise<number> {
     if (sub === 'run') {
       // Runs in this process; any notification is queued for the running service to deliver.
       const log = (level: string, message: string) => io.err(`${level}: ${message}\n`);
-      const { scheduler } = buildService(ruby, log, [], false);
+      const { scheduler } = buildService(garnet, log, [], false);
       await scheduler.runNow(job.id);
       const r = jobStore.runs(job.id, 1)[0];
       io.out(`Ran ${job.id}: ${r?.status ?? 'unknown'}${r?.note ? ` (${r.note})` : ''}, ${r?.tokens ?? 0} tokens.\n`);
@@ -379,7 +379,7 @@ export async function jobs(args: string[], io: Io): Promise<number> {
     }
     return usage();
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }
 
@@ -392,20 +392,20 @@ export function dashboardUrl(host: string, port: number): string {
 }
 
 export function dashboard(io: Io): number {
-  const ruby = createRuby({ noModel: true });
+  const garnet = createGarnet({ noModel: true });
   try {
-    const { config, paths, keys } = ruby;
+    const { config, paths, keys } = garnet;
     if (!config.api.enabled || !config.dashboard.enabled) {
       writeConfig(paths.home, { ...config, api: { ...config.api, enabled: true }, dashboard: { enabled: true } });
-      io.out('Enabled the API and dashboard in config.json (loopback only). Restart Ruby to apply.\n');
+      io.out('Enabled the API and dashboard in config.json (loopback only). Restart Garnet to apply.\n');
     }
     // A one-time login link: the dashboard trades this short-lived key for a session key on first
     // use and revokes it (dashboard/login.js). It travels in the URL fragment, which browsers never
     // send to the server or in a Referer; the exchange keeps it from staying useful in browser history.
     const created = keys.create(`dashboard login ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`, ['admin'], LOGIN_LINK_MINUTES / 1440);
-    io.out(`\nOpen this link within ${LOGIN_LINK_MINUTES} minutes. It works once; run \`ruby dashboard\` again for another:\n\n  ${dashboardUrl(config.api.host, config.api.port)}#login=${created.key}\n\n`);
+    io.out(`\nOpen this link within ${LOGIN_LINK_MINUTES} minutes. It works once; run \`garnet dashboard\` again for another:\n\n  ${dashboardUrl(config.api.host, config.api.port)}#login=${created.key}\n\n`);
     return 0;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }

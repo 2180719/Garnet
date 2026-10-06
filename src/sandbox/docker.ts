@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
   realWorkspace,
@@ -36,7 +36,7 @@ export type DockerSandboxOptions = {
 };
 
 export const DEFAULT_IMAGE = 'debian:stable-slim';
-const WORKSPACE_LABEL = 'ruby.exec.workspace';
+const WORKSPACE_LABEL = 'garnet.exec.workspace';
 /** Variables the docker client itself may need. None of them reach the container. */
 const CLIENT_ENV = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY', 'XDG_RUNTIME_DIR'];
 const KILL_RETRY_MS = 250;
@@ -48,9 +48,9 @@ type Ids = { uid: number; gid: number };
 /**
  * Picks the container user. The container never runs as root:
  * 1. an explicit `user` (uid 0 is refused);
- * 2. else the host process's uid:gid when Ruby is not root, so files the
+ * 2. else the host process's uid:gid when Garnet is not root, so files the
  *    command writes in the workspace belong to the owner;
- * 3. else (Ruby runs as root, or the platform has no uids) the workspace
+ * 3. else (Garnet runs as root, or the platform has no uids) the workspace
  *    directory's owner when that is not root, so a workspace handed to a
  *    regular user stays writable;
  * 4. else 65534:65534 (nobody). `check()` then reports that the workspace
@@ -58,9 +58,9 @@ type Ids = { uid: number; gid: number };
  */
 export function sandboxUser(opts: { user?: string | undefined; host: Ids | null; workspaceOwner: Ids | null }): string {
   if (opts.user !== undefined) {
-    if (!/^[0-9]+:[0-9]+$/.test(opts.user)) throw new RubyError('config', `Invalid sandbox user "${opts.user}"; use uid:gid.`);
+    if (!/^[0-9]+:[0-9]+$/.test(opts.user)) throw new GarnetError('config', `Invalid sandbox user "${opts.user}"; use uid:gid.`);
     if (Number(opts.user.split(':')[0]) === 0) {
-      throw new RubyError('config', 'The sandbox never runs as root (uid 0). Set sandbox.user to a regular uid:gid, or leave it unset.');
+      throw new GarnetError('config', 'The sandbox never runs as root (uid 0). Set sandbox.user to a regular uid:gid, or leave it unset.');
     }
     return opts.user;
   }
@@ -105,22 +105,22 @@ export class DockerSandbox implements Sandbox {
   private readonly clientEnv: NodeJS.ProcessEnv;
 
   constructor(opts: DockerSandboxOptions) {
-    if (!opts.workspace.startsWith('/')) throw new RubyError('config', 'The sandbox workspace must be an absolute path.');
+    if (!opts.workspace.startsWith('/')) throw new GarnetError('config', 'The sandbox workspace must be an absolute path.');
     this.workspace = realWorkspace(opts.workspace);
     // `-v src:dst:opts` is split on ':' and mount options on ','.
     if (/[:,]/.test(this.workspace)) {
-      throw new RubyError('config', `The sandbox workspace path "${this.workspace}" may not contain ":" or ",".`);
+      throw new GarnetError('config', `The sandbox workspace path "${this.workspace}" may not contain ":" or ",".`);
     }
     this.image = opts.image ?? DEFAULT_IMAGE;
-    if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/.test(this.image)) throw new RubyError('config', `Invalid sandbox image "${this.image}".`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/.test(this.image)) throw new GarnetError('config', `Invalid sandbox image "${this.image}".`);
     this.network = opts.network ?? 'none';
-    if (this.network !== 'none' && this.network !== 'bridge') throw new RubyError('config', `Invalid sandbox network "${String(this.network)}".`);
+    if (this.network !== 'none' && this.network !== 'bridge') throw new GarnetError('config', `Invalid sandbox network "${String(this.network)}".`);
     this.memory = opts.memory ?? '512m';
-    if (!/^[0-9]+[bkmg]?$/i.test(this.memory)) throw new RubyError('config', `Invalid sandbox memory limit "${this.memory}".`);
+    if (!/^[0-9]+[bkmg]?$/i.test(this.memory)) throw new GarnetError('config', `Invalid sandbox memory limit "${this.memory}".`);
     this.cpus = opts.cpus ?? 1;
-    if (!(this.cpus > 0 && Number.isFinite(this.cpus))) throw new RubyError('config', 'Sandbox cpus must be a positive number.');
+    if (!(this.cpus > 0 && Number.isFinite(this.cpus))) throw new GarnetError('config', 'Sandbox cpus must be a positive number.');
     this.pidsLimit = opts.pidsLimit ?? 256;
-    if (!Number.isInteger(this.pidsLimit) || this.pidsLimit < 1) throw new RubyError('config', 'Sandbox pidsLimit must be a positive integer.');
+    if (!Number.isInteger(this.pidsLimit) || this.pidsLimit < 1) throw new GarnetError('config', 'Sandbox pidsLimit must be a positive integer.');
     this.maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.docker = opts.dockerPath ?? 'docker';
     const ws = statSync(this.workspace);
@@ -168,7 +168,7 @@ export class DockerSandbox implements Sandbox {
     const { rel } = resolveCwd(this.workspace, req.cwd);
     const env = validateEnv(req.env);
     if (req.signal.aborted) return { exitCode: null, stdout: '', stderr: '', timedOut: false, cancelled: true, truncated: false };
-    const name = `ruby-exec-${randomBytes(8).toString('hex')}`;
+    const name = `garnet-exec-${randomBytes(8).toString('hex')}`;
     const containerCwd = rel ? `/workspace/${rel}` : '/workspace';
     const child = this.spawn(this.docker, this.runArgs(name, containerCwd, env, req.command), {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -209,7 +209,7 @@ export class DockerSandbox implements Sandbox {
         ok: false,
         detail:
           `The sandbox runs as ${this.user} (never root), which cannot write the workspace ${this.workspace} (owner ${ws.uid}:${ws.gid}, mode ${(ws.mode & 0o777).toString(8)}). ` +
-          `Run Ruby as a regular user (recommended), give the workspace to the sandbox user (chown -R ${this.user} ${this.workspace}), or set sandbox.user to the uid:gid that owns it.`,
+          `Run Garnet as a regular user (recommended), give the workspace to the sandbox user (chown -R ${this.user} ${this.workspace}), or set sandbox.user to the uid:gid that owns it.`,
       };
     }
     const version = await this.quiet(['version', '--format', '{{.Server.Version}}'], 15_000);

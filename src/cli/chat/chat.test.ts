@@ -1,4 +1,4 @@
-// End-to-end: drives `ruby chat` with a scripted model through a fake TTY and
+// End-to-end: drives `garnet chat` with a scripted model through a fake TTY and
 // checks what a person would see on the screen.
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { tempDir } from '../../../test/helpers.ts';
 import { VirtualTerminal } from '../../../test/vt.ts';
 import type { ModelAdapter, ModelEvent, ModelRequest } from '../../contracts/index.ts';
-import { createRuby } from '../../main.ts';
+import { createGarnet } from '../../main.ts';
 import { FakeModel, type FakeScript } from '../../models/index.ts';
 import { chat } from './index.ts';
 
@@ -70,7 +70,7 @@ function start(model: ModelAdapter, options: { home?: string; args?: string[]; e
   const done = chat(
     options.args ?? [],
     { out: () => {}, err: (t) => err.push(t), stdin, stdout, env: { TERM: 'xterm-256color', COLORTERM: 'truecolor', ...options.env } },
-    { createRuby: (o) => createRuby({ ...o, home, env: {}, model }), processHooks: false },
+    { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }), processHooks: false },
   );
   const text = () => stdout.vt.text();
   const until = async (check: (t: string) => boolean, what: string) => {
@@ -112,7 +112,7 @@ test('a conversation with markdown, a tool call, an inline approval and history'
     { text: 'Saved b.' },
   ]);
   const c = start(model);
-  await c.until((t) => t.includes('◆ RUBY / terminal chat') && t.includes('\n›'), 'the banner and prompt');
+  await c.until((t) => t.includes('◆ GARNET / terminal chat') && t.includes('\n›'), 'the banner and prompt');
   assert.ok(c.stdin.raw, 'raw mode is on');
   assert.ok(c.stdout.raw.includes('\x1b[?2004h'), 'bracketed paste is enabled');
 
@@ -166,7 +166,7 @@ test('Esc interrupts a running turn without leaving the chat; Ctrl+C twice exits
   assert.equal(await c.done, 0);
 });
 
-test('messages typed while Ruby works are queued and sent next', async () => {
+test('messages typed while Garnet works are queued and sent next', async () => {
   const c = start(new SlowModel([], 150));
   await c.type('first\r');
   await c.type('second\r');
@@ -303,7 +303,7 @@ test('without a terminal, chat is plain: replies on stdout, everything else on s
     { toolCalls: [{ name: 'write_file', input: { path: 'p.md', content: 'x' } }] },
     { text: 'Wrote it.' },
   ]);
-  const done = chat([], { out: (t) => out.push(t), err: (t) => err.push(t), stdin, stdout: null, env: {} }, { createRuby: (o) => createRuby({ ...o, home, env: {}, model }) });
+  const done = chat([], { out: (t) => out.push(t), err: (t) => err.push(t), stdin, stdout: null, env: {} }, { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }) });
   stdin.end('write it\ny\n/usage\nhello\n');
   assert.equal(await done, 0);
   assert.equal(out.join(''), 'Wrote it.\nYou said: hello\n');
@@ -325,7 +325,7 @@ test('plain chat: /attach sends a file with the next message; unreadable files g
   const err: string[] = [];
   const show = (req: ModelRequest) => ({ text: JSON.stringify(req.messages.at(-1)!.content.map((b) => (b.type === 'text' ? b.text : b.type))) });
   const model = new FakeModel([show, show]);
-  const done = chat([], { out: (t) => out.push(t), err: (t) => err.push(t), stdin, stdout: null, env: {} }, { createRuby: (o) => createRuby({ ...o, home, env: {}, model }) });
+  const done = chat([], { out: (t) => out.push(t), err: (t) => err.push(t), stdin, stdout: null, env: {} }, { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }) });
   stdin.end(`/attach '${join(files, 'my notes.md')}'\n/attach\nsummarize\n/attach ${join(files, 'voice.ogg')}\nlisten\n/attach /nope/missing.txt\n`);
   assert.equal(await done, 0);
   const e = err.join('');

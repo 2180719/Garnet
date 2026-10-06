@@ -50,7 +50,7 @@ function failures() {
     render: (d) => h('div', { class: 'stack' }, table(['When', 'Kind', 'Status', 'Where', 'Detail'], d.items.map((f) => [
       h('time', { datetime: f.at }, fmtDate(f.at)), f.kind === 'task' ? 'Task' : 'Delivery', pill(f.status.replaceAll('_', ' '), f.status === 'budget_exhausted' || f.status === 'uncertain' ? 'warn' : 'err'),
       f.kind === 'task' && f.ref ? link(`#/sessions/${enc(f.ref)}`, 'Open session') : h('span', { class: 'mono' }, f.ref || ''), f.detail || h('span', { class: 'muted' }, 'No detail recorded')])),
-    h('p', { class: 'muted small' }, '"Uncertain" deliveries were interrupted mid-send. Ruby never resends them blindly, so check the chat yourself.')),
+    h('p', { class: 'muted small' }, '"Uncertain" deliveries were interrupted mid-send. Garnet never resends them blindly, so check the chat yourself.')),
   });
 }
 

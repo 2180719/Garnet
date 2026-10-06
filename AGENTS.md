@@ -1,6 +1,6 @@
-# Ruby — guide for agents and contributors
+# Garnet — guide for agents and contributors
 
-Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run directly (no build step), SQLite via `node:sqlite`. Read `PLAN.md` for the product and roadmap.
+Garnet is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run directly (no build step), SQLite via `node:sqlite`. Read `PLAN.md` for the product and roadmap.
 
 ## Commands
 
@@ -8,11 +8,11 @@ Ruby is a persistent personal agent: TypeScript on Node.js ≥ 22.18, run direct
 | --- | --- |
 | `npm run check` | lint + typecheck + tests. Run before every commit. |
 | `npm test` | Offline, deterministic tests (`node:test`). |
-| `npm run ruby -- chat --fake` | Chat with the offline fake model. |
-| `npm run ruby -- help` | All CLI commands. |
-| `npm run ruby -- setup` / `doctor` | Guided setup (re-runnable, `-y` for scripts) and install diagnosis. |
+| `npm run garnet -- chat --fake` | Chat with the offline fake model. |
+| `npm run garnet -- help` | All CLI commands. |
+| `npm run garnet -- setup` / `doctor` | Guided setup (re-runnable, `-y` for scripts) and install diagnosis. |
 | `sh -n install.sh` | Syntax-check the one-line installer (POSIX sh, no bashisms). |
-| `npm run ruby -- start` | Run the service in the foreground (gateway, channels, API). |
+| `npm run garnet -- start` | Run the service in the foreground (gateway, channels, API). |
 
 Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md](docs/LIVE-TESTING.md).
 
@@ -34,14 +34,14 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/channels/` | Messaging adapters (Telegram, Signal via signal-cli, Discord). Normalize a platform; no routing or persistence. |
 | `src/scheduler/` | Cron jobs and heartbeats with pre-checks, budgets, catch-up and failure pausing; runs go through the gateway. |
 | `src/service/` | systemd/launchd service definitions and install. |
-| `src/migrate/` | `ruby import openclaw|hermes`: memory, persona and skills from other harnesses (dry run by default, never secrets). |
+| `src/migrate/` | `garnet import openclaw|hermes`: memory, persona and skills from other harnesses (dry run by default, never secrets). |
 | `src/media/` | Attachments: content-addressed file store, type sniffing, voice-note transcription (OpenAI-compatible endpoint or local command), text extraction, the `send_file` tool. |
 | `src/sandbox/` | Command execution: Docker (isolated, non-root, no network by default) or local (not a boundary). |
-| `src/secrets/` | Optional encrypted secret store (`<RUBY_HOME>/secrets`, scrypt + AES-256-GCM) and secret-name resolution: environment first, then the store. |
+| `src/secrets/` | Optional encrypted secret store (`<GARNET_HOME>/secrets`, scrypt + AES-256-GCM) and secret-name resolution: environment first, then the store. |
 | `src/achievements/` | Local achievements and easter eggs for the dashboard. |
 | `src/backend.ts` | Composition-root implementation of the dashboard/admin API. |
-| `src/cli/` | The `ruby` command, including `ruby setup` (`setup/`) and `ruby doctor`. |
-| `install.sh` | One-line installer: clone or update into `~/.local/share/ruby`, `npm ci --omit=dev`, a `ruby` shim in `~/.local/bin`. |
+| `src/cli/` | The `garnet` command, including `garnet setup` (`setup/`) and `garnet doctor`. |
+| `install.sh` | One-line installer: clone or update into `~/.local/share/garnet`, `npm ci --omit=dev`, a `garnet` shim in `~/.local/bin`. |
 | `dashboard/` | Opt-in dashboard: static files served by the API server under a strict CSP. |
 | `src/main.ts` | Composition root: the only place modules are wired together. |
 | `site/` | Public static website (no build, no tracking). |
@@ -53,11 +53,11 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 - Each module has an `AGENTS.md`: read it before changing that module.
 - New runtime dependencies need a reason and an entry in the lint allowlist. Prefer Node built-ins.
 - Erasable TypeScript only (no `enum`, no constructor parameter properties, no namespaces) because Node strips types at runtime.
-- Tests are offline. Live provider tests must be opt-in (`RUBY_LIVE_TESTS=1`).
-- Never put secrets in config, prompts, logs or tool output. Config stores the *name* of an environment variable or stored secret; resolve it with `ruby.secret(name)`, never `env[name]`.
+- Tests are offline. Live provider tests must be opt-in (`GARNET_LIVE_TESTS=1`).
+- Never put secrets in config, prompts, logs or tool output. Config stores the *name* of an environment variable or stored secret; resolve it with `garnet.secret(name)`, never `env[name]`.
 - The event log is append-only. Never rewrite history the model has seen; derive cleaned views instead. The system prompt and tool set stay fixed for a session (prompt caching and signed thinking depend on it); they change only at compaction.
 - Report honestly: say what you verified and what you did not.
 
 ## Self-modification
 
-If you are an agent changing your own Ruby install: work on a branch or a copy, run `npm run check`, and let the owner review the diff before it replaces the running version. Do not edit the live install in place.
+If you are an agent changing your own Garnet install: work on a branch or a copy, run `npm run check`, and let the owner review the diff before it replaces the running version. Do not edit the live install in place.

@@ -1,7 +1,7 @@
 // Natural schedules ("every weekday at 9am", "in 20 minutes", "tomorrow 8:30",
 // cron) and plain-language descriptions of them, in the owner's time zone.
 import { localToUtc, nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 
 export type When =
   | { kind: 'cron'; cron: string }
@@ -17,7 +17,7 @@ const SHORT_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const UNIT_MINUTES: Record<string, number> = { m: 1, h: 60, d: 1440, w: 10_080 };
 
-const bad = (text: string, why = 'I could not read that time.'): RubyError => new RubyError('invalid_input', `"${text}": ${why} ${WHEN_HELP}`);
+const bad = (text: string, why = 'I could not read that time.'): GarnetError => new GarnetError('invalid_input', `"${text}": ${why} ${WHEN_HELP}`);
 
 function dayIndex(word: string): number {
   const w = word.toLowerCase();
@@ -75,7 +75,7 @@ function cronIfValid(text: string): string | null {
     parseCron(t);
     return t;
   } catch (e) {
-    throw new RubyError('invalid_input', `"${text}" looks like a cron expression but is not valid: ${(e as Error).message}`);
+    throw new GarnetError('invalid_input', `"${text}" looks like a cron expression but is not valid: ${(e as Error).message}`);
   }
 }
 
@@ -179,7 +179,7 @@ export function parseWhen(input: string, opts: { now: Date; zone: string }): Whe
   let r = on(offset);
   if (r.at.getTime() <= now.getTime()) {
     if (dayWord === 'today' || dayWord === 'tonight' || dayWord === 'tomorrow') {
-      throw new RubyError('invalid_input', `"${input}" is already in the past (it is now ${describeTime(now, zone, now)} in ${zone}).`);
+      throw new GarnetError('invalid_input', `"${input}" is already in the past (it is now ${describeTime(now, zone, now)} in ${zone}).`);
     }
     r = on(offset + (dayWord ? 7 : 1)); // a bare time that passed today means tomorrow; a weekday means next week
   }

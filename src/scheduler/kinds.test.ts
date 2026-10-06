@@ -58,10 +58,10 @@ test('a one-shot missed during downtime runs late (catch-up) or is recorded as m
   const t = setup();
   t.book.create({ id: 'late', kind: 'once', at: '2026-10-06T08:20:00Z', message: 'Late one', notify }, AGENT);
   t.book.create({ id: 'skip', kind: 'once', at: '2026-10-06T08:20:00Z', message: 'Skipped', notify, catchUp: false }, AGENT);
-  t.advance(5 * 3_600_000); // Ruby was down
+  t.advance(5 * 3_600_000); // Garnet was down
   await t.tick();
   assert.equal(t.notes.length, 1);
-  assert.match(t.notes[0]!, /^⏰ Late one \(due 2026-10-06 09:20 Europe\/London; Ruby was not running then\)$/);
+  assert.match(t.notes[0]!, /^⏰ Late one \(due 2026-10-06 09:20 Europe\/London; Garnet was not running then\)$/);
   assert.equal(t.store.runs('skip')[0]?.status, 'missed');
 });
 
@@ -70,7 +70,7 @@ test('a one-shot time in the past is refused when created', () => {
   assert.throws(() => t.book.create({ id: 'past', kind: 'once', at: '2026-10-06T07:00:00Z', message: 'x' }, AGENT), /already in the past/);
 });
 
-test('a config one-shot whose time passed before Ruby first saw it is recorded as missed, not run', async () => {
+test('a config one-shot whose time passed before Garnet first saw it is recorded as missed, not run', async () => {
   const store = new JobStore(openDb(':memory:'));
   const notes: string[] = [];
   const job = { id: 'old', enabled: true, kind: 'once', at: '2026-10-01T09:00:00Z', message: 'old', notifyWhen: 'always', catchUp: true, timeoutMinutes: 1, budget: { maxTokensPerRun: 1000, maxTokensPerDay: 1000 }, permissions: {} } as unknown as JobConfig;
@@ -156,7 +156,7 @@ test('a job deleted by another process (CLI) is stopped at the next tick', async
   t.advance(30 * 60_000);
   await t.scheduler.tick();
   await running;
-  t.store.deleteDefinition('long'); // what `ruby jobs delete` does from another process
+  t.store.deleteDefinition('long'); // what `garnet jobs delete` does from another process
   await t.scheduler.tick();
   await t.scheduler.stop();
   assert.equal(t.store.runs('long')[0]?.status, 'cancelled');
@@ -174,7 +174,7 @@ test('stored jobs: limits, provenance, pause and resume, update and config prece
   t.book.create({ id: 'b', kind: 'heartbeat', everyMinutes: 60, message: 'x' }, AGENT);
   t.book.create({ id: 'c', kind: 'heartbeat', everyMinutes: 60, message: 'x' }, AGENT);
   assert.throws(() => t.book.create({ id: 'd', kind: 'heartbeat', everyMinutes: 60, message: 'x' }, AGENT), /already 3 jobs/);
-  assert.ok(t.book.create({ id: 'd', kind: 'heartbeat', everyMinutes: 60, message: 'x' }, { by: 'owner', via: 'cli', at: '' }), 'the cap is for jobs Ruby creates');
+  assert.ok(t.book.create({ id: 'd', kind: 'heartbeat', everyMinutes: 60, message: 'x' }, { by: 'owner', via: 'cli', at: '' }), 'the cap is for jobs Garnet creates');
 
   assert.equal(t.book.pause('a').next, null);
   assert.ok(t.book.resume('a').next);

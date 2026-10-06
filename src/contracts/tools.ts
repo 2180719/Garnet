@@ -75,7 +75,7 @@ export type ToolDefinition<I = any> = {
    * Capabilities this particular call needs, when they depend on the input
    * (e.g. `schedule` needs `exec` too for a script job, and nothing to list
    * jobs). Defaults to `[capability]`; the strictest verdict wins. An empty
-   * list means the call only reads Ruby's own state and needs no permission.
+   * list means the call only reads Garnet's own state and needs no permission.
    */
   capabilitiesFor?: (input: I) => Capability[];
   /** Plain-language description of the call for approval prompts. Must show everything consequential in full. */

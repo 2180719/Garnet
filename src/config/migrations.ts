@@ -1,4 +1,4 @@
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import { CONFIG_VERSION } from './schema.ts';
 
 type Migration = (raw: Record<string, unknown>) => Record<string, unknown>;
@@ -17,11 +17,11 @@ export function migrate(raw: unknown): unknown {
   let current = { ...(raw as Record<string, unknown>) };
   let version = typeof current.version === 'number' ? current.version : 0;
   if (version > CONFIG_VERSION) {
-    throw new RubyError('config', `Config version ${version} is newer than this Ruby (${CONFIG_VERSION}). Upgrade Ruby.`);
+    throw new GarnetError('config', `Config version ${version} is newer than this Garnet (${CONFIG_VERSION}). Upgrade Garnet.`);
   }
   while (version < CONFIG_VERSION) {
     const step = migrations[version];
-    if (!step) throw new RubyError('internal', `Missing config migration from version ${version}`);
+    if (!step) throw new GarnetError('internal', `Missing config migration from version ${version}`);
     current = step(current);
     version += 1;
   }

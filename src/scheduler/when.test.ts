@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { localToUtc, parseConfig, type JobConfig } from '../config/index.ts';
-import { isRubyError } from '../contracts/index.ts';
+import { isGarnetError } from '../contracts/index.ts';
 import { describeDistance, describeNext, describeSchedule, describeTime, nextRunOf, parseWhen } from './index.ts';
 
 const LONDON = 'Europe/London';
@@ -36,7 +36,7 @@ test('relative and wall-clock one-shot times are read in the owner zone', () => 
 test('a bare time that already passed means tomorrow; "today" in the past is an error', () => {
   assert.equal(at('10am'), '2026-10-07T09:00:00.000Z');
   assert.equal(at('tuesday at 9'), '2026-10-13T08:00:00.000Z', 'this weekday, already past: next week');
-  assert.throws(() => parseWhen('today at 9am', { now, zone: LONDON }), (e) => isRubyError(e, 'invalid_input') && /already in the past/.test(e.message));
+  assert.throws(() => parseWhen('today at 9am', { now, zone: LONDON }), (e) => isGarnetError(e, 'invalid_input') && /already in the past/.test(e.message));
 });
 
 test('recurring schedules become cron in the owner zone or intervals', () => {
@@ -61,7 +61,7 @@ test('unclear or too frequent schedules are refused with examples', () => {
     ['61 9 * * *', /not valid/],
     ['2026-02-30 09:00', /does not exist/],
   ] as const) {
-    assert.throws(() => parseWhen(text, { now, zone: LONDON }), (e) => isRubyError(e, 'invalid_input') && why.test(e.message) && (/every weekday/.test(e.message) || /cron/.test(e.message)), text);
+    assert.throws(() => parseWhen(text, { now, zone: LONDON }), (e) => isGarnetError(e, 'invalid_input') && why.test(e.message) && (/every weekday/.test(e.message) || /cron/.test(e.message)), text);
   }
 });
 

@@ -159,11 +159,11 @@ test('a daily job fires once on a fall-back day (no run for the repeated wall-cl
 });
 
 test('running a job that is already running is a conflict, not an internal error', async () => {
-  const { isRubyError } = await import('../contracts/index.ts');
+  const { isGarnetError } = await import('../contracts/index.ts');
   const t = setup([heartbeat()]);
   const first = t.scheduler.runNow('hb');
-  await assert.rejects(t.scheduler.runNow('hb'), (e) => isRubyError(e, 'conflict'));
-  await assert.rejects(t.scheduler.runNow('nope'), (e) => isRubyError(e, 'invalid_input'));
+  await assert.rejects(t.scheduler.runNow('hb'), (e) => isGarnetError(e, 'conflict'));
+  await assert.rejects(t.scheduler.runNow('nope'), (e) => isGarnetError(e, 'invalid_input'));
   await first;
 });
 

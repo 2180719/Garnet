@@ -1,6 +1,6 @@
 // Telegram Bot API adapter: long-polling receive with durable offset acks, chunked send (markdown as Telegram HTML, plain-text fallback).
 import {
-  RubyError,
+  GarnetError,
   errorMessage,
   type ChannelAdapter,
   type ChannelCapabilities,
@@ -98,7 +98,7 @@ export class TelegramChannel implements ChannelAdapter {
 
   constructor(options: TelegramOptions) {
     if (typeof options.token !== 'string' || !TOKEN_SHAPE.test(options.token)) {
-      throw new RubyError('config', 'Telegram bot token is missing or malformed (expected "<digits>:<secret>" from @BotFather)');
+      throw new GarnetError('config', 'Telegram bot token is missing or malformed (expected "<digits>:<secret>" from @BotFather)');
     }
     this.#token = options.token;
     this.account = options.account ?? 'default';
@@ -118,9 +118,9 @@ export class TelegramChannel implements ChannelAdapter {
     } catch (e) {
       this.#controller = null;
       if (e instanceof TelegramApiError && (e.status === 401 || e.status === 404)) {
-        throw new RubyError('config', 'Telegram rejected the bot token');
+        throw new GarnetError('config', 'Telegram rejected the bot token');
       }
-      throw new RubyError('provider_transient', `Telegram getMe failed: ${errorMessage(e)}`);
+      throw new GarnetError('provider_transient', `Telegram getMe failed: ${errorMessage(e)}`);
     }
     this.#lastSuccessAt = Date.now();
     this.#lastError = null;
@@ -404,7 +404,7 @@ function kindOfClaim(mime: string | undefined): InboundAttachment['kind'] {
   return 'file';
 }
 
-/** Message types with no file or text Ruby could read. */
+/** Message types with no file or text Garnet could read. */
 function unsupportedOf(m: TgMessage): UnsupportedContent | undefined {
   if (m.sticker) return 'sticker';
   if (m.location || m.venue || m.contact || m.poll || m.dice) return 'other';

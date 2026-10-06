@@ -8,10 +8,10 @@ import { main } from '../src/cli/main.ts';
 import { MemoryStore } from '../src/memory/index.ts';
 
 const home = tempDir();
-const saved = { home: process.env.RUBY_HOME, editor: process.env.EDITOR, visual: process.env.VISUAL };
-process.env.RUBY_HOME = home;
+const saved = { home: process.env.GARNET_HOME, editor: process.env.EDITOR, visual: process.env.VISUAL };
+process.env.GARNET_HOME = home;
 after(() => {
-  for (const [k, v] of [['RUBY_HOME', saved.home], ['EDITOR', saved.editor], ['VISUAL', saved.visual]] as const) {
+  for (const [k, v] of [['GARNET_HOME', saved.home], ['EDITOR', saved.editor], ['VISUAL', saved.visual]] as const) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
@@ -69,7 +69,7 @@ test('backup and restore round-trip the database, config, memory, skills, artifa
   const target = join(tempDir(), 'bk');
   const b = await run('backup', target);
   assert.equal(b.code, 0, b.err);
-  for (const name of ['ruby.db', 'config.json', 'memory', 'workspace', 'artifacts', 'BACKUP.json']) assert.ok(existsSync(join(target, name)), name);
+  for (const name of ['garnet.db', 'config.json', 'memory', 'workspace', 'artifacts', 'BACKUP.json']) assert.ok(existsSync(join(target, name)), name);
 
   mem.write('default', 'memory', '- changed after the backup');
   writeFileSync(join(home, 'artifacts', 'art_1.txt'), 'changed');
@@ -82,14 +82,14 @@ test('backup and restore round-trip the database, config, memory, skills, artifa
   assert.equal(readFileSync(join(home, aside, 'artifacts', 'art_1.txt'), 'utf8'), 'changed', 'the replaced data is moved aside, not deleted');
 });
 
-test('ruby jobs: add, list, show, pause, edit and delete; config.json jobs stay read-only', async () => {
+test('garnet jobs: add, list, show, pause, edit and delete; config.json jobs stay read-only', async () => {
   const own = tempDir();
-  process.env.RUBY_HOME = own;
+  process.env.GARNET_HOME = own;
   try {
     writeFileSync(join(own, 'config.json'), JSON.stringify({ version: 1, timezone: 'Europe/London', jobs: [{ id: 'brief', kind: 'cron', cron: '0 7 * * 1-5', instructions: 'Morning brief.' }] }));
     const nowhere = await run('jobs', 'add', '--when', 'in 20 minutes', '--message', 'Stretch');
     assert.equal(nowhere.code, 1);
-    assert.match(nowhere.err, /no chat to send to.*ruby pair/s);
+    assert.match(nowhere.err, /no chat to send to.*garnet pair/s);
     const added = await run('jobs', 'add', '--when', 'every day at 8am', '--instructions', 'Tidy notes', '--name', 'tidy');
     assert.equal(added.code, 0, added.err);
     assert.match(added.out, /Added tidy: every day at 08:00, next .* \(Europe\/London, in .*\) \(results kept in history only\)\./);
@@ -106,8 +106,8 @@ test('ruby jobs: add, list, show, pause, edit and delete; config.json jobs stay 
     assert.match(refused.err, /config\.json/);
     assert.equal((await run('jobs', 'delete', 'tidy')).code, 0);
     assert.doesNotMatch((await run('jobs')).out, /tidy/);
-    assert.match((await run('jobs', 'help')).out, /ruby jobs add --when/);
+    assert.match((await run('jobs', 'help')).out, /garnet jobs add --when/);
   } finally {
-    process.env.RUBY_HOME = home;
+    process.env.GARNET_HOME = home;
   }
 });

@@ -25,9 +25,9 @@ function paint(m) {
 export default function mount(root) {
   const select = h('select');
   const fresh = h('input', { id: 'newconv', placeholder: 'new-conversation', maxlength: '40', 'aria-label': 'New conversation name', autocomplete: 'off' });
-  const log = h('div', { class: 'log', role: 'log', tabindex: '0', 'aria-label': 'Conversation with Ruby' });
+  const log = h('div', { class: 'log', role: 'log', tabindex: '0', 'aria-label': 'Conversation with Garnet' });
   const status = h('div', { class: 'sr', role: 'status' });
-  const input = h('textarea', { id: 'msg', rows: '1', placeholder: 'Message Ruby', 'aria-label': 'Message (Enter sends, Shift+Enter adds a line)', title: 'Enter sends, Shift+Enter adds a line' });
+  const input = h('textarea', { id: 'msg', rows: '1', placeholder: 'Message Garnet', 'aria-label': 'Message (Enter sends, Shift+Enter adds a line)', title: 'Enter sends, Shift+Enter adds a line' });
   const send = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Send');
   const stop = h('button', { class: 'btn btn-ghost', type: 'button', hidden: true }, 'Stop');
 
@@ -35,7 +35,7 @@ export default function mount(root) {
   const showLog = () => {
     log.replaceChildren();
     const t = convs.get(current);
-    if (!t.length) log.append(h('p', { class: 'muted' }, 'Say hello. Ruby remembers earlier turns of a conversation on the server, so you can pick up where you left off even after a reload.'));
+    if (!t.length) log.append(h('p', { class: 'muted' }, 'Say hello. Garnet remembers earlier turns of a conversation on the server, so you can pick up where you left off even after a reload.'));
     for (const m of t) log.append(bubble(m));
     log.scrollTop = log.scrollHeight;
   };
@@ -59,7 +59,7 @@ export default function mount(root) {
     const text = input.value.trim();
     if (!text || running) return;
     const conv = current, t = convs.get(conv);
-    const user = { role: 'user', text }, reply = { role: 'ruby', text: '', live: true };
+    const user = { role: 'user', text }, reply = { role: 'garnet', text: '', live: true };
     t.push(user, reply);
     if (log.firstChild && !log.firstChild.classList.contains('msg')) log.replaceChildren();
     log.append(bubble(user), bubble(reply));
@@ -68,7 +68,7 @@ export default function mount(root) {
     const controller = new AbortController();
     running = { controller, conv };
     sync();
-    status.textContent = 'Ruby is replying';
+    status.textContent = 'Garnet is replying';
     try {
       await streamChat({ conversation: conv, text, signal: controller.signal, onText: (d) => { reply.text += d; paint(reply); } });
       if (!reply.text) reply.text = '(no reply)';
@@ -80,12 +80,12 @@ export default function mount(root) {
       running = null;
       paint(reply);
       sync();
-      status.textContent = 'Ruby finished replying';
+      status.textContent = 'Garnet finished replying';
       if (input.isConnected) input.focus();
     }
   });
 
-  root.append(pageHead('Chat', 'Talk to Ruby through the same API your own apps use. Only your newest message is sent; Ruby keeps the history.'),
+  root.append(pageHead('Chat', 'Talk to Garnet through the same API your own apps use. Only your newest message is sent; Garnet keeps the history.'),
     h('div', { class: 'row' }, field('Conversation', select, null, 'conv'), h('div', { class: 'field' }, h('label', { for: 'newconv' }, 'New conversation (a-z, 0-9, -)'),
       h('div', { class: 'row' }, fresh, h('button', { class: 'btn btn-ghost', type: 'button', onclick: create }, 'Create')))),
     status, h('div', { class: 'chat' }, log, form));

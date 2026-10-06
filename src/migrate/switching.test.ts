@@ -20,7 +20,7 @@ const put = (root: string, rel: string, text: string) => {
 };
 const noBins = { hasBin: () => false };
 
-function ruby(opts: { caps?: { memory: number; user: number }; persona?: string } = {}) {
+function garnet(opts: { caps?: { memory: number; user: number }; persona?: string } = {}) {
   const home = tempDir();
   let caps = opts.caps ?? { memory: 2200, user: 1400 };
   let memory = new MemoryStore({ root: join(home, 'memory'), limits: caps });
@@ -91,7 +91,7 @@ function hermesHome(extra: (root: string) => void = () => {}) {
   return root;
 }
 
-test('hermes cron/jobs.json becomes disabled Ruby jobs; what cannot map is skipped with a reason', () => {
+test('hermes cron/jobs.json becomes disabled Garnet jobs; what cannot map is skipped with a reason', () => {
   const plan = planImport('hermes', hermesHome(), noBins);
   const by = (from: string) => plan.jobs.find((j) => j.from === from)!;
   const brief = by('Morning brief').job!;
@@ -117,7 +117,7 @@ test('hermes cron/jobs.json becomes disabled Ruby jobs; what cannot map is skipp
   assert.deepEqual(sec.notify, { channel: 'discord', chatId: '123456789012345678', account: 'default' });
   assert.equal(by('Bad cron').job, null);
   assert.equal(by('Slack only').job!.notify, undefined);
-  assert.match(by('Slack only').notes.join(), /no Ruby equivalent/);
+  assert.match(by('Slack only').notes.join(), /no Garnet equivalent/);
   for (const j of plan.jobs) if (j.job) configSchema.parse({ ...defaultConfig(), jobs: [j.job] });
   assert.ok(plan.copies.some((c) => c.src === 'cron/jobs.json'));
   const text = formatPlan(plan);
@@ -127,7 +127,7 @@ test('hermes cron/jobs.json becomes disabled Ruby jobs; what cannot map is skipp
 
 test('hermes jobs apply disabled and idempotently', async () => {
   const root = hermesHome();
-  const r = ruby();
+  const r = garnet();
   const plan = planImport('hermes', root, noBins);
   const res = applyImport(plan, r.deps);
   assert.deepEqual(
@@ -145,7 +145,7 @@ test('hermes jobs apply disabled and idempotently', async () => {
   assert.ok(again.jobs.filter((j) => j.status !== 'skipped').every((j) => j.status === 'exists'));
   assert.match(formatResult(res), /added \(disabled\)/);
   // --no-jobs leaves them out
-  const r2 = ruby();
+  const r2 = garnet();
   const io = { out() {}, err() {} };
   assert.equal(await runImport(['hermes', '--from', root, '--apply', '--no-jobs'], io, r2.deps), 0);
   assert.equal(r2.jobs.length, 0);
@@ -167,7 +167,7 @@ test('hermes allowlists and pairing store become pairings only on request; secre
   const json = JSON.stringify(plan) + formatPlan(plan);
   assert.ok(!json.includes('SECRETVALUE') && !json.includes('SECRETTOKEN'));
 
-  const r = ruby();
+  const r = garnet();
   const res = applyImport(plan, r.deps);
   assert.equal(r.paired.length, 0);
   assert.ok(res.pairings.every((p) => p.status === 'not-requested'));
@@ -234,11 +234,11 @@ test('skills keep requirements, flag what is missing and point {baseDir} at the 
   assert.ok(gh.missing.some((m) => /gh \(not on PATH\)/.test(m)));
   assert.ok(gh.missing.some((m) => /run_command/.test(m)));
   assert.ok(gh.missing.some((m) => /GH_TOKEN/.test(m)));
-  assert.ok(gh.missing.some((m) => /web_search \(no such Ruby tool\)/.test(m)));
+  assert.ok(gh.missing.some((m) => /web_search \(no such Garnet tool\)/.test(m)));
   assert.deepEqual(plan.skills.find((s) => s.name === 'plain')!.missing, []);
   assert.match(formatPlan(plan), /needs: gh \(not on PATH\)/);
 
-  const r = ruby();
+  const r = garnet();
   applyImport(plan, r.deps);
   const file = readFileSync(join(r.home, 'skills/github/SKILL.md'), 'utf8');
   assert.match(file, /^metadata: \{"openclaw":\{"emoji":"x","requires":\{"bins":\["gh"\],"env":\["GH_TOKEN"\]\}\}\}$/m);
@@ -364,7 +364,7 @@ test('a custom OpenClaw workspace (agents.defaults.workspace) is read and archiv
   assert.ok(plan.warnings.some((w) => w.includes('agents.defaults.workspace')));
   assert.match(plan.persona!.text, /Custom soul/);
   assert.equal(plan.skills[0]!.baseDirRewrite, 'imported/openclaw/workspace/skills/s');
-  const r = ruby();
+  const r = garnet();
   applyImport(plan, r.deps);
   assert.equal(r.memory().read('default', 'memory'), '- Lives on a boat');
   for (const f of ['SOUL.md', 'memory/2026-01-01.md', 'skills/s/run.sh']) assert.ok(existsSync(join(r.workspace, 'imported/openclaw/workspace', f)), f);
@@ -387,7 +387,7 @@ test('memory caps can be raised so the whole import fits (never above 20,000)', 
   const m = plan.memory.find((x) => x.file === 'memory')!;
   assert.ok(m.fitCount < 80 && m.needed > 2200);
   assert.match(formatPlan(plan), /--raise-caps/);
-  const r = ruby();
+  const r = garnet();
   const res = applyImport(plan, r.deps, { raiseCaps: true });
   const mr = res.memory.find((x) => x.file === 'memory')!;
   assert.equal(mr.added, 80);
@@ -396,19 +396,19 @@ test('memory caps can be raised so the whole import fits (never above 20,000)', 
   assert.equal(r.caps().user, 1400); // untouched when it fits
   assert.match(formatResult(res), /cap raised from 2200/);
   // Without the option nothing changes.
-  const r2 = ruby();
+  const r2 = garnet();
   assert.ok(applyImport(plan, r2.deps).memory.every((x) => x.raisedFrom === undefined));
   assert.equal(r2.caps().memory, 2200);
 });
 
 // ---- persona ----
 
-const SETUP = '<!-- ruby setup -->\nYour name is Nova.\nThe person you work for is Sam. Address them as Sam.\n<!-- /ruby setup -->';
+const SETUP = '<!-- garnet setup -->\nYour name is Nova.\nThe person you work for is Sam. Address them as Sam.\n<!-- /garnet setup -->';
 
 test('persona: merged into a setup-only persona (setup name wins), idempotent; own text needs a choice', () => {
   const root = openclawHome();
   const plan = planImport('openclaw', root, noBins);
-  const r = ruby({ persona: SETUP });
+  const r = garnet({ persona: SETUP });
   const res = applyImport(plan, r.deps);
   assert.equal(res.persona, 'merged');
   assert.ok(r.persona()!.startsWith(SETUP));
@@ -419,17 +419,17 @@ test('persona: merged into a setup-only persona (setup name wins), idempotent; o
   assert.equal((r.persona()!.match(/Be warm/g) ?? []).length, 1);
 
   const own = `${SETUP}\n\nAlways answer in French.`;
-  const k = ruby({ persona: own });
+  const k = garnet({ persona: own });
   const kept = applyImport(plan, k.deps);
   assert.equal(kept.persona, 'kept-existing');
   assert.match(kept.personaNote!, /--persona merge/);
-  const m = ruby({ persona: own });
+  const m = garnet({ persona: own });
   assert.equal(applyImport(plan, m.deps, { persona: 'merge' }).persona, 'merged');
   assert.match(m.persona()!, /French\.\n\nImported from openclaw/);
-  const rp = ruby({ persona: own });
+  const rp = garnet({ persona: own });
   assert.equal(applyImport(plan, rp.deps, { persona: 'replace' }).persona, 'replaced');
   assert.ok(!rp.persona()!.includes('French') && rp.persona()!.startsWith(SETUP));
-  const none = ruby();
+  const none = garnet();
   assert.equal(applyImport(plan, none.deps).persona, 'set');
   assert.match(none.persona()!, /Your name is Molty\./);
 });
@@ -437,7 +437,7 @@ test('persona: merged into a setup-only persona (setup name wins), idempotent; o
 test('persona merge truncates to the 4,000-char limit with a note', () => {
   const root = hermesHome((h) => put(h, 'SOUL.md', 's'.repeat(3500)));
   const plan = planImport('hermes', root, noBins);
-  const r = ruby({ persona: `${SETUP}\n\n${'o'.repeat(1500)}` });
+  const r = garnet({ persona: `${SETUP}\n\n${'o'.repeat(1500)}` });
   const res = applyImport(plan, r.deps, { persona: 'merge' });
   assert.equal(res.persona, 'merged');
   assert.ok(r.persona()!.length <= 4000);
@@ -452,7 +452,7 @@ test('runImport asks through deps.ask when flags are absent; flags win', async (
     put(h, 'SOUL.md', 'Imported soul.');
   });
   const asked: string[] = [];
-  const r = ruby({ persona: `${SETUP}\n\nMine.` });
+  const r = garnet({ persona: `${SETUP}\n\nMine.` });
   r.deps.ask = {
     confirm: async (q) => (asked.push(q.id), true),
     select: async <T extends string>(q: { id: string; choices: { value: T }[] }) => (asked.push(q.id), 'merge' as T),
@@ -466,7 +466,7 @@ test('runImport asks through deps.ask when flags are absent; flags win', async (
   assert.match(r.persona()!, /Mine\.\n\nImported from hermes/);
   assert.equal(r.paired.length, 2);
 
-  const r2 = ruby();
+  const r2 = garnet();
   r2.deps.ask = r.deps.ask;
   asked.length = 0;
   assert.equal(await runImport(['hermes', '--from', root, '--apply', '--no-raise-caps', '--no-pairings'], io, r2.deps), 0);

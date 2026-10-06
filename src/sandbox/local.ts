@@ -19,7 +19,7 @@ export type LocalSandboxOptions = {
 
 /**
  * Runs `sh -c` directly on the host, starting in the workspace, with a minimal
- * environment. NOT a security boundary: the command runs as Ruby's user and can
+ * environment. NOT a security boundary: the command runs as Garnet's user and can
  * read, write and reach anything that user can. Use only when the owner
  * explicitly chooses it.
  */

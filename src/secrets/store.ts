@@ -2,15 +2,17 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, chmodSync, unlinkSync, writeSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { dirname } from 'node:path';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 
-export const SECRETS_FORMAT = 'ruby-secrets';
+export const SECRETS_FORMAT = 'garnet-secrets';
+/** Format name written before the rename to Garnet; still read (it is part of the authenticated header, so files keep it until rewritten). */
+export const LEGACY_SECRETS_FORMAT = 'ruby-secrets';
 export const SECRETS_VERSION = 1;
 
 export type KdfParams = { N: number; r: number; p: number };
 /** About 32 MB and ~100 ms per derivation. */
 export const DEFAULT_KDF: KdfParams = { N: 2 ** 15, r: 8, p: 1 };
-/** Upper bounds accepted when reading, so a crafted file cannot make Ruby allocate gigabytes. */
+/** Upper bounds accepted when reading, so a crafted file cannot make Garnet allocate gigabytes. */
 const MAX_KDF: KdfParams = { N: 2 ** 20, r: 16, p: 4 };
 /** scrypt needs about 128 * N * r bytes; the bounds above alone would allow 2 GiB. 256 MiB is 8x the default. */
 const MAX_KDF_BYTES = 256 * 1024 * 1024;
@@ -28,7 +30,7 @@ const TAG_BYTES = 16;
 export type Unlock = { source: 'passphrase' | 'key file'; material: Buffer };
 
 type Header = {
-  format: typeof SECRETS_FORMAT;
+  format: string;
   version: number;
   kdf: { name: 'scrypt'; N: number; r: number; p: number; salt: string };
   cipher: 'aes-256-gcm';
@@ -41,7 +43,7 @@ export function validSecretName(name: string): boolean {
 }
 
 function assertName(name: string): void {
-  if (!validSecretName(name)) throw new RubyError('invalid_input', `Invalid secret name "${name}". Use letters, digits and _ (like an environment variable).`);
+  if (!validSecretName(name)) throw new GarnetError('invalid_input', `Invalid secret name "${name}". Use letters, digits and _ (like an environment variable).`);
 }
 
 function deriveKey(material: Buffer, salt: Buffer, kdf: KdfParams): Buffer {
@@ -66,11 +68,11 @@ function aad(h: Header): Buffer {
 }
 
 /** Encrypts a name → value map into the file format (pure apart from randomness). */
-export function seal(secrets: Record<string, string>, unlock: Unlock, kdf: KdfParams = DEFAULT_KDF): string {
+export function seal(secrets: Record<string, string>, unlock: Unlock, kdf: KdfParams = DEFAULT_KDF, format: string = SECRETS_FORMAT): string {
   const salt = randomBytes(SALT_BYTES);
   const nonce = randomBytes(NONCE_BYTES);
   const header: Header = {
-    format: SECRETS_FORMAT,
+    format,
     version: SECRETS_VERSION,
     kdf: { name: 'scrypt', N: kdf.N, r: kdf.r, p: kdf.p, salt: salt.toString('base64') },
     cipher: 'aes-256-gcm',
@@ -85,16 +87,16 @@ export function seal(secrets: Record<string, string>, unlock: Unlock, kdf: KdfPa
 
 /** Decrypts the file format. Throws a `config` error for a foreign, unsupported, tampered or wrongly unlocked file. */
 export function unseal(text: string, unlock: Unlock, file = 'the secret store'): Record<string, string> {
-  const bad = (why: string) => new RubyError('config', `${file} is not a valid Ruby secret store (${why}).`);
+  const bad = (why: string) => new GarnetError('config', `${file} is not a valid Garnet secret store (${why}).`);
   let env: Envelope;
   try {
     env = JSON.parse(text) as Envelope;
   } catch {
     throw bad('not JSON');
   }
-  if (!env || typeof env !== 'object' || env.format !== SECRETS_FORMAT) throw bad('unknown format');
+  if (!env || typeof env !== 'object' || (env.format !== SECRETS_FORMAT && env.format !== LEGACY_SECRETS_FORMAT)) throw bad('unknown format');
   if (env.version !== SECRETS_VERSION) {
-    throw new RubyError('config', `${file} has version ${String(env.version)}; this Ruby reads version ${SECRETS_VERSION}. Upgrade Ruby.`);
+    throw new GarnetError('config', `${file} has version ${String(env.version)}; this Garnet reads version ${SECRETS_VERSION}. Upgrade Garnet.`);
   }
   const k = env.kdf;
   if (env.cipher !== 'aes-256-gcm' || !k || k.name !== 'scrypt') throw bad('unsupported cipher or key derivation');
@@ -120,7 +122,7 @@ export function unseal(text: string, unlock: Unlock, file = 'the secret store'):
     plain = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
   } catch {
     // GCM cannot tell a wrong key from a modified file; say both.
-    throw new RubyError('config', `Could not unlock ${file} with the ${unlock.source}: it is wrong, or the file was modified.`);
+    throw new GarnetError('config', `Could not unlock ${file} with the ${unlock.source}: it is wrong, or the file was modified.`);
   }
   const parsed = JSON.parse(plain) as { secrets?: unknown };
   const secrets = parsed.secrets;
@@ -202,7 +204,7 @@ export class SecretStore {
   /** Throws when no passphrase or key file is available. */
   private key(): Unlock {
     this.unlocked ??= this.unlockFn();
-    if (!this.unlocked) throw new RubyError('config', `The secret store ${this.file} is locked. ${this.lockedHint}`);
+    if (!this.unlocked) throw new GarnetError('config', `The secret store ${this.file} is locked. ${this.lockedHint}`);
     return this.unlocked;
   }
 
@@ -229,7 +231,7 @@ export class SecretStore {
   setMany(entries: Record<string, string>): void {
     for (const [name, value] of Object.entries(entries)) {
       assertName(name);
-      if (typeof value !== 'string' || value === '') throw new RubyError('invalid_input', `The value for ${name} is empty.`);
+      if (typeof value !== 'string' || value === '') throw new GarnetError('invalid_input', `The value for ${name} is empty.`);
     }
     this.save({ ...this.load(), ...entries });
   }
@@ -248,7 +250,7 @@ export class SecretStore {
   private save(secrets: Record<string, string>): void {
     const key = this.key();
     if (key.material.length < MIN_KEY_CHARS) {
-      throw new RubyError('config', `The ${key.source} is too short to protect the secret store; use at least ${MIN_KEY_CHARS} characters (\`ruby secrets keygen <path>\` makes a strong key file).`);
+      throw new GarnetError('config', `The ${key.source} is too short to protect the secret store; use at least ${MIN_KEY_CHARS} characters (\`garnet secrets keygen <path>\` makes a strong key file).`);
     }
     writePrivateFile(this.file, seal(secrets, key, this.kdf));
     this.cache = secrets;

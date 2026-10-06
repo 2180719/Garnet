@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, existsSync, statSync, writeFileSync } from '
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { isRubyError } from '../contracts/index.ts';
+import { isGarnetError } from '../contracts/index.ts';
 import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, parseEnv, redact, setInEnvFile } from './index.ts';
 
 test('defaults are secure', () => {
@@ -20,7 +20,7 @@ test('invalid config lists every problem', () => {
     parseConfig({ version: CONFIG_VERSION, api: { port: 0 }, bogus: true });
     assert.fail('expected an error');
   } catch (e) {
-    assert.ok(isRubyError(e, 'config'));
+    assert.ok(isGarnetError(e, 'config'));
     const problems = e.detail?.problems as string[];
     assert.ok(problems.some((p) => p.startsWith('api.port')));
     assert.ok(problems.some((p) => p.includes('bogus')));
@@ -33,7 +33,7 @@ test('timezone and api.corsOrigins are validated; CORS is off by default', () =>
   const c = parseConfig({ version: CONFIG_VERSION, timezone: 'Europe/London', api: { corsOrigins: ['https://chat.example.com', 'http://localhost:3000'] } });
   assert.equal(c.timezone, 'Europe/London');
   for (const bad of [{ timezone: 'Mars/Olympus' }, { api: { corsOrigins: ['*'] } }, { api: { corsOrigins: ['https://chat.example.com/app'] } }]) {
-    assert.throws(() => parseConfig({ version: CONFIG_VERSION, ...bad }), (e) => isRubyError(e, 'config'));
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, ...bad }), (e) => isGarnetError(e, 'config'));
   }
 });
 
@@ -62,12 +62,12 @@ test('sandbox.user is optional uid:gid and never root', () => {
   assert.equal(defaultConfig().sandbox.user, undefined);
   assert.equal(parseConfig({ version: CONFIG_VERSION, sandbox: { user: '1000:1000' } }).sandbox.user, '1000:1000');
   for (const user of ['0:0', '0:1000', 'root', '1000']) {
-    assert.throws(() => parseConfig({ version: CONFIG_VERSION, sandbox: { user } }), (e) => isRubyError(e, 'config'), user);
+    assert.throws(() => parseConfig({ version: CONFIG_VERSION, sandbox: { user } }), (e) => isGarnetError(e, 'config'), user);
   }
 });
 
-test('config from a newer Ruby is rejected', () => {
-  assert.throws(() => parseConfig({ version: CONFIG_VERSION + 1 }), /newer than this Ruby/);
+test('config from a newer Garnet is rejected', () => {
+  assert.throws(() => parseConfig({ version: CONFIG_VERSION + 1 }), /newer than this Garnet/);
 });
 
 test('redact hides secrets but keeps env var names', () => {
@@ -77,8 +77,8 @@ test('redact hides secrets but keeps env var names', () => {
   assert.equal(out.note, 'key [redacted] here');
 });
 
-test('redact hides Ruby API keys in strings', () => {
-  const key = `ruby_${'a1B2c3D4'}_${'x'.repeat(32)}`;
+test('redact hides Garnet API keys in strings', () => {
+  const key = `garnet_${'a1B2c3D4'}_${'x'.repeat(32)}`;
   assert.equal(redact(`using ${key} now`), 'using [redacted] now');
 });
 

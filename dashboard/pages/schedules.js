@@ -63,7 +63,7 @@ export default async function mount(root) {
       const d = await api.get('/api/jobs');
       fill(out, d.enabled ? null : h('div', { class: 'banner warn' }, 'The scheduler is switched off, so nothing runs on its own. "Run now" still works.'),
         ...(d.problems || []).map((p) => h('div', { class: 'banner warn' }, `${p.id}: ${p.problem}`)),
-        ...(d.jobs.length ? d.jobs.map((j) => job(j, load)) : [empty('No jobs yet', 'Ask Ruby in chat ("remind me tomorrow at 9 to…"), run `ruby jobs add`, or add jobs in Settings.')]));
+        ...(d.jobs.length ? d.jobs.map((j) => job(j, load)) : [empty('No jobs yet', 'Ask Garnet in chat ("remind me tomorrow at 9 to…"), run `garnet jobs add`, or add jobs in Settings.')]));
     } catch (e) { out.replaceChildren(errorBox(e, load)); }
   };
   root.append(pageHead('Schedules', h('span', null, 'Reminders, cron jobs, heartbeats and script jobs. Jobs made in chat can be edited here; jobs in config.json are edited under ', link('#/settings', 'Settings'), '.')), out);

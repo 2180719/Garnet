@@ -38,10 +38,10 @@ async function detail(root, name) {
       body.replaceChildren(
         h('div', { class: 'card stack' }, h('div', { class: 'item' }, h('h2', null, s.name), badges(s)), h('p', null, s.description),
           h('dl', { class: 'kv' }, h('dt', null, 'Last used'), h('dd', null, s.lastUsedAt ? `${ago(s.lastUsedAt)} (${fmtDate(s.lastUsedAt)})` : 'never')),
-          s.locked ? h('p', { class: 'hint' }, 'Locked: Ruby cannot overwrite this skill directly. It can only propose changes for you to review.') : null,
-          h('div', { class: 'row' }, act('archive', 'Archive', 'btn-ghost', { title: `Archive ${name}?`, body: 'Ruby will stop seeing this skill. You can restore it later.' }))),
+          s.locked ? h('p', { class: 'hint' }, 'Locked: Garnet cannot overwrite this skill directly. It can only propose changes for you to review.') : null,
+          h('div', { class: 'row' }, act('archive', 'Archive', 'btn-ghost', { title: `Archive ${name}?`, body: 'Garnet will stop seeing this skill. You can restore it later.' }))),
         prop !== null ? h('section', { class: 'card stack', 'aria-labelledby': 'prop-h' }, h('h2', { id: 'prop-h' }, 'Proposed change'),
-          h('p', { class: 'muted' }, 'Ruby proposed an update. Red lines are removed, green lines are added.'), diffView(s.body, prop),
+          h('p', { class: 'muted' }, 'Garnet proposed an update. Red lines are removed, green lines are added.'), diffView(s.body, prop),
           h('div', { class: 'row' }, act('accept', 'Accept', 'btn-primary'), act('reject', 'Reject', 'btn-danger'))) : null,
         h('section', { class: 'card stack', 'aria-labelledby': 'body-h' }, h('h2', { id: 'body-h' }, 'Current instructions'), h('pre', null, s.body)));
     } catch (e) { body.replaceChildren(errorBox(e, load)); }
@@ -68,7 +68,7 @@ export default async function mount(root, ctx) {
       fill(out,
         d.skills.length ? h('div', { class: 'grid wide' }, d.skills.map((s) => h('a', { class: 'card stack', href: `#/skills/${enc(s.name)}`, 'aria-label': `${s.name}, open details` },
           h('h3', null, s.name), h('p', { class: 'muted small' }, s.description), badges(s), stale.has(s.name) ? pill('stale', 'warn') : null)))
-          : empty('No skills yet', 'Ruby writes a skill when it learns a repeatable procedure. You can also add your own.'),
+          : empty('No skills yet', 'Garnet writes a skill when it learns a repeatable procedure. You can also add your own.'),
         d.stale.length ? h('section', { class: 'card stack', 'aria-labelledby': 'st-h' }, h('h2', { id: 'st-h' }, 'Stale skills'),
           h('p', { class: 'muted' }, 'Agent-written skills that have not been used for a while. Never deleted automatically; archive them if you do not need them.'),
           h('div', { class: 'badges' }, d.stale.map((n) => link(`#/skills/${enc(n)}`, n, 'pill warn')))) : null,
@@ -76,6 +76,6 @@ export default async function mount(root, ctx) {
         h('div', { class: 'card' }, restore));
     } catch (e) { out.replaceChildren(errorBox(e, load)); }
   };
-  root.append(pageHead('Skills', 'Reusable procedures Ruby has learned or you gave it. Locked skills change only when you accept a proposal.'), out);
+  root.append(pageHead('Skills', 'Reusable procedures Garnet has learned or you gave it. Locked skills change only when you accept a proposal.'), out);
   await load();
 }

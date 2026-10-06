@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { RubyError, type AttachmentRef } from '../contracts/index.ts';
+import { GarnetError, type AttachmentRef } from '../contracts/index.ts';
 import { detectMime, kindOf } from './mime.ts';
 
 const ID = /^med_[a-f0-9]{32}$/;
@@ -33,8 +33,8 @@ export class MediaStore {
   /** Stores the bytes and returns a reference with a sniffed type. Rejects empty files and files over `maxBytes`. */
   put(input: MediaInput): AttachmentRef {
     const { data } = input;
-    if (data.byteLength > this.maxBytes) throw new RubyError('invalid_input', `The file is too large (${formatMb(data.byteLength)}; the limit is ${formatMb(this.maxBytes)}).`);
-    if (data.byteLength === 0) throw new RubyError('invalid_input', 'The file is empty.');
+    if (data.byteLength > this.maxBytes) throw new GarnetError('invalid_input', `The file is too large (${formatMb(data.byteLength)}; the limit is ${formatMb(this.maxBytes)}).`);
+    if (data.byteLength === 0) throw new GarnetError('invalid_input', 'The file is empty.');
     const id = `med_${createHash('sha256').update(data).digest('hex').slice(0, 32)}`;
     const file = this.path(id);
     if (!existsSync(file)) writeFileSync(file, data, { mode: 0o600 });
@@ -51,7 +51,7 @@ export class MediaStore {
   }
 
   path(id: string): string {
-    if (!ID.test(id)) throw new RubyError('invalid_input', `Not a media id: "${id}".`);
+    if (!ID.test(id)) throw new GarnetError('invalid_input', `Not a media id: "${id}".`);
     return join(this.root, `${id}.bin`);
   }
 

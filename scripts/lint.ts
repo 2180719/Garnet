@@ -1,4 +1,4 @@
-// Enforces Ruby's architecture rules. Run with `npm run lint`.
+// Enforces Garnet's architecture rules. Run with `npm run lint`.
 //
 // 1. A module may import another module only through its index.ts.
 // 2. Only src/main.ts and src/cli/ may import src/main.ts (the composition root).

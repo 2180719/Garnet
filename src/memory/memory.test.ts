@@ -3,7 +3,7 @@ import { readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { isRubyError } from '../contracts/index.ts';
+import { isGarnetError } from '../contracts/index.ts';
 import { MemoryStore, memoryTool } from './index.ts';
 
 function setup(opts: { limits?: { memory: number; user: number }; historyLimit?: number } = {}) {
@@ -12,7 +12,7 @@ function setup(opts: { limits?: { memory: number; user: number }; historyLimit?:
   const store = new MemoryStore({ root, ...opts, now: () => new Date((t += 1000)) });
   return { root, store };
 }
-const bad = (re: RegExp) => (e: unknown) => isRubyError(e, 'invalid_input') && re.test((e as Error).message);
+const bad = (re: RegExp) => (e: unknown) => isGarnetError(e, 'invalid_input') && re.test((e as Error).message);
 
 test('add, replace, remove', () => {
   const { store } = setup();

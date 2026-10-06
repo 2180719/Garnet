@@ -3,14 +3,14 @@
 // dashboard). Validation, provenance and limits live here so the tool, CLI and
 // dashboard all apply the same rules.
 import { jobSchema, type JobConfig } from '../config/index.ts';
-import { RubyError } from '../contracts/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import type { JobRun, JobState, JobStore } from '../store/index.ts';
 import { minGapMinutes, nextRunOf } from './when.ts';
 
 /** Who created a stored job, and from where. Config jobs have origin `config`. */
 export type JobOrigin =
   | { by: 'config' }
-  /** Created by Ruby with the schedule tool. `conversation` is the chat it was created in, when there was one. */
+  /** Created by Garnet with the schedule tool. `conversation` is the chat it was created in, when there was one. */
   /**
    * `taint`: untrusted sources the creating (or a later editing) conversation had read. Each run of the
    * job carries them in, so consequential actions keep needing approval (see policy containment).
@@ -37,12 +37,12 @@ export type JobBookDeps = {
   store: JobStore;
   /** Owner time zone (config `timezone`, else the host's). */
   timezone: string;
-  /** Cap on stored jobs created by Ruby. */
+  /** Cap on stored jobs created by Garnet. */
   maxAgentJobs: number;
   now?: () => Date;
 };
 
-/** Minimum minutes between runs for jobs Ruby creates. */
+/** Minimum minutes between runs for jobs Garnet creates. */
 export const MIN_AGENT_GAP_MINUTES = 5;
 /** Once jobs that ran are kept this long, then dropped from the list. */
 const DONE_RETENTION_MS = 30 * 86_400_000;
@@ -127,7 +127,7 @@ export class JobBook {
     return { job, origin, zone, state, next: !job.enabled || state.paused ? null : raw, done, lastRun: this.deps.store.runs(job.id, 1)[0] ?? null };
   }
 
-  /** Stored jobs created by Ruby (counted against `maxAgentJobs`; finished once jobs do not count). */
+  /** Stored jobs created by Garnet (counted against `maxAgentJobs`; finished once jobs do not count). */
   agentJobCount(): number {
     const now = this.now();
     return this.stored().filter((s) => s.origin.by === 'agent' && !this.entry(s.job, s.origin, now).done).length;
@@ -141,22 +141,22 @@ export class JobBook {
     for (let i = 2; ; i++) if (!taken.has(`${slug}-${i}`)) return `${slug}-${i}`;
   }
 
-  /** Validates a job definition against the schema and Ruby's limits for jobs it creates. */
+  /** Validates a job definition against the schema and Garnet's limits for jobs it creates. */
   validate(definition: unknown, origin: JobOrigin): JobConfig {
     const parsed = jobSchema.safeParse(definition);
     if (!parsed.success) {
-      throw new RubyError('invalid_input', `Invalid job: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'job'}: ${i.message}`).join('; ')}`);
+      throw new GarnetError('invalid_input', `Invalid job: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'job'}: ${i.message}`).join('; ')}`);
     }
     const job = parsed.data;
     const now = this.now();
     if (job.kind === 'once' && new Date(job.at!).getTime() <= now.getTime()) {
-      throw new RubyError('invalid_input', `That time (${job.at}) is already in the past. Pick a time in the future.`);
+      throw new GarnetError('invalid_input', `That time (${job.at}) is already in the past. Pick a time in the future.`);
     }
-    if (job.check && job.script) throw new RubyError('invalid_input', 'A script job already decides what to send; it cannot also have a pre-check.');
+    if (job.check && job.script) throw new GarnetError('invalid_input', 'A script job already decides what to send; it cannot also have a pre-check.');
     if (origin.by === 'agent') {
       const gap = minGapMinutes(job, now, this.zoneOf(job));
-      if (gap < MIN_AGENT_GAP_MINUTES) throw new RubyError('invalid_input', `That schedule runs every ${gap} minute(s); jobs you create may run at most every ${MIN_AGENT_GAP_MINUTES} minutes.`);
-      if (job.permissions['schedule.edit'] !== 'deny') throw new RubyError('denied', 'Scheduled jobs cannot create or change other jobs.');
+      if (gap < MIN_AGENT_GAP_MINUTES) throw new GarnetError('invalid_input', `That schedule runs every ${gap} minute(s); jobs you create may run at most every ${MIN_AGENT_GAP_MINUTES} minutes.`);
+      if (job.permissions['schedule.edit'] !== 'deny') throw new GarnetError('denied', 'Scheduled jobs cannot create or change other jobs.');
     }
     return job;
   }
@@ -166,13 +166,13 @@ export class JobBook {
     const job = this.validate(definition, origin);
     if (origin.by === 'agent') {
       const max = this.deps.maxAgentJobs;
-      if (max === 0) throw new RubyError('denied', 'Creating jobs from chat is turned off (scheduler.maxAgentJobs is 0).');
+      if (max === 0) throw new GarnetError('denied', 'Creating jobs from chat is turned off (scheduler.maxAgentJobs is 0).');
       if (this.agentJobCount() >= max) {
-        throw new RubyError('denied', `There are already ${max} jobs created from chat (scheduler.maxAgentJobs). Delete one first, or ask the owner to raise the limit.`);
+        throw new GarnetError('denied', `There are already ${max} jobs created from chat (scheduler.maxAgentJobs). Delete one first, or ask the owner to raise the limit.`);
       }
     }
     if (this.deps.configJobs.some((j) => j.id === job.id) || !this.deps.store.insertDefinition(job.id, job, origin)) {
-      throw new RubyError('conflict', `A job named "${job.id}" already exists.`);
+      throw new GarnetError('conflict', `A job named "${job.id}" already exists.`);
     }
     // Start from now, so a restart right after creating it still catches up and nothing earlier is backfilled.
     this.deps.store.saveState({ jobId: job.id, consecutiveFailures: 0, paused: false, checkValue: null, lastScheduledFor: this.now().toISOString() });
@@ -182,8 +182,8 @@ export class JobBook {
   /** Replaces fields of a stored job. Config jobs are changed in config.json only. */
   update(id: string, patch: Partial<JobConfig>, editor: JobOrigin['by'], taint: readonly string[] = []): JobEntry {
     const found = this.find(id);
-    if (!found) throw new RubyError('invalid_input', `No job "${id}".`);
-    if (found.origin.by === 'config') throw new RubyError('denied', `"${id}" is defined in config.json; only the owner can change it there.`);
+    if (!found) throw new GarnetError('invalid_input', `No job "${id}".`);
+    if (found.origin.by === 'config') throw new GarnetError('denied', `"${id}" is defined in config.json; only the owner can change it there.`);
     const merged: Record<string, unknown> = { ...found.job, ...patch, id };
     // A new schedule or action replaces the old one entirely.
     const scheduleKeys = ['cron', 'everyMinutes', 'at'] as const;
@@ -224,22 +224,22 @@ export class JobBook {
   /** Deletes a stored job (its run history stays). A running occurrence is stopped. */
   remove(id: string): void {
     const found = this.find(id);
-    if (!found) throw new RubyError('invalid_input', `No job "${id}".`);
-    if (found.origin.by === 'config') throw new RubyError('denied', `"${id}" is defined in config.json; only the owner can remove it there.`);
+    if (!found) throw new GarnetError('invalid_input', `No job "${id}".`);
+    if (found.origin.by === 'config') throw new GarnetError('denied', `"${id}" is defined in config.json; only the owner can remove it there.`);
     this.deps.store.deleteDefinition(id);
     for (const fn of this.removedListeners) fn(id);
   }
 
   pause(id: string): JobEntry {
     const found = this.find(id);
-    if (!found) throw new RubyError('invalid_input', `No job "${id}".`);
+    if (!found) throw new GarnetError('invalid_input', `No job "${id}".`);
     this.deps.store.saveState({ ...this.deps.store.state(id), paused: true });
     return this.entry(found.job, found.origin);
   }
 
   resume(id: string): JobEntry {
     const found = this.find(id);
-    if (!found) throw new RubyError('invalid_input', `No job "${id}".`);
+    if (!found) throw new GarnetError('invalid_input', `No job "${id}".`);
     this.deps.store.saveState({ ...this.deps.store.state(id), paused: false, consecutiveFailures: 0 });
     return this.entry(found.job, found.origin);
   }

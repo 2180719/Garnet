@@ -1,21 +1,21 @@
-// Owner commands for inspecting and correcting what Ruby remembers.
+// Owner commands for inspecting and correcting what Garnet remembers.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isMemoryFile, type MemoryFile } from '../memory/index.ts';
-import { createRuby } from '../main.ts';
+import { createGarnet } from '../main.ts';
 import type { Io } from './main.ts';
 
-const MEMORY_USAGE = 'Usage: ruby memory show [memory|user] | edit <memory|user> | history <memory|user> | rollback <memory|user> <id>  [--ns <namespace>]\n';
+const MEMORY_USAGE = 'Usage: garnet memory show [memory|user] | edit <memory|user> | history <memory|user> | rollback <memory|user> <id>  [--ns <namespace>]\n';
 
 export function memory(args: string[], io: Io): number {
   const nsIndex = args.indexOf('--ns');
   const ns = nsIndex >= 0 ? (args[nsIndex + 1] ?? 'default') : 'default';
   const [sub = 'show', file, id] = nsIndex >= 0 ? args.filter((_, i) => i !== nsIndex && i !== nsIndex + 1) : args;
-  const ruby = createRuby({ noModel: true });
+  const garnet = createGarnet({ noModel: true });
   try {
-    const store = ruby.memory;
+    const store = garnet.memory;
     const target = (f: string | undefined): MemoryFile | null => (f && isMemoryFile(f) ? f : null);
     if (sub === 'show') {
       const f = target(file);
@@ -39,7 +39,7 @@ export function memory(args: string[], io: Io): number {
       return 0;
     }
     if (sub === 'edit') {
-      const dir = mkdtempSync(join(tmpdir(), 'ruby-memory-'));
+      const dir = mkdtempSync(join(tmpdir(), 'garnet-memory-'));
       const tmp = join(dir, store.fileName(f));
       try {
         writeFileSync(tmp, store.read(ns, f), { mode: 0o600 });
@@ -51,7 +51,7 @@ export function memory(args: string[], io: Io): number {
           return 1;
         }
         const r = store.write(ns, f, readFileSync(tmp, 'utf8'));
-        io.out(`Saved ${store.fileName(f)} (${r.used}/${r.limit} chars). Ruby sees it from the next session.\n`);
+        io.out(`Saved ${store.fileName(f)} (${r.used}/${r.limit} chars). Garnet sees it from the next session.\n`);
         return 0;
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -60,19 +60,19 @@ export function memory(args: string[], io: Io): number {
     io.err(MEMORY_USAGE);
     return 2;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }
 
 export function skills(args: string[], io: Io): number {
   const [sub = 'list', name] = args;
-  const ruby = createRuby({ noModel: true });
+  const garnet = createGarnet({ noModel: true });
   try {
-    const store = ruby.skills;
+    const store = garnet.skills;
     switch (sub) {
       case 'list': {
         const all = store.list();
-        if (!all.length) io.out('No skills yet. Ruby creates them after tasks worth repeating, or drop a SKILL.md folder into ~/.ruby/skills.\n');
+        if (!all.length) io.out('No skills yet. Garnet creates them after tasks worth repeating, or drop a SKILL.md folder into ~/.garnet/skills.\n');
         for (const s of all) {
           const flags = [s.provenance, s.locked ? 'locked' : '', s.hasProposal ? 'PROPOSAL' : ''].filter(Boolean).join(', ');
           io.out(`${s.name.padEnd(28)} ${String(s.uses).padStart(4)} uses  (${flags})  ${s.description}\n`);
@@ -108,14 +108,14 @@ export function skills(args: string[], io: Io): number {
         const days = Number(name ?? 60);
         if (!Number.isFinite(days) || days < 0) break;
         const stale = store.stale(days);
-        if (!stale.length) io.out(`No skills of Ruby's own unused for ${days} days.\n`);
+        if (!stale.length) io.out(`No skills of Garnet's own unused for ${days} days.\n`);
         for (const s of stale) io.out(`${s.name}  last used ${s.lastUsedAt ?? 'never'}\n`);
         return 0;
       }
     }
-    io.err('Usage: ruby skills list | show <name> | proposal <name> | accept <name> | reject <name> | archive <name> | unarchive <name> | stale [days]\n');
+    io.err('Usage: garnet skills list | show <name> | proposal <name> | accept <name> | reject <name> | archive <name> | unarchive <name> | stale [days]\n');
     return 2;
   } finally {
-    ruby.close();
+    garnet.close();
   }
 }

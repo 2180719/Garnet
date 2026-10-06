@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { RubyError, type InboundMessage } from '../contracts/index.ts';
+import { GarnetError, type InboundMessage } from '../contracts/index.ts';
 import { DiscordChannel } from './index.ts';
 
 // A placeholder assembled at runtime so secret scanners don't mistake it for a real token.
@@ -74,7 +74,7 @@ function setup(handlers: Record<string, Handler> = {}) {
     reqs.push(req);
     const h = handlers[`${req.method} ${path.replace(/\/\d+/g, '/:id')}`];
     if (h) return h(req);
-    if (path === '/users/@me') return json(200, { id: BOT_ID, username: 'ruby' });
+    if (path === '/users/@me') return json(200, { id: BOT_ID, username: 'garnet' });
     if (path === '/gateway/bot') return json(200, { url: 'wss://gw.test' });
     if (path.endsWith('/messages')) return json(200, { id: `m${reqs.length}` });
     return new Response(null, { status: 204 });
@@ -137,7 +137,7 @@ const msg = (extra: object = {}, author: object = {}) => ({
 
 test('rejects a malformed token before any request', () => {
   for (const token of ['', 'abc', 'a.b', 'a.b.c', 'has space.in.it']) {
-    assert.throws(() => new DiscordChannel({ token }), (e) => e instanceof RubyError && e.category === 'config' && !e.message.includes(token || '\0'));
+    assert.throws(() => new DiscordChannel({ token }), (e) => e instanceof GarnetError && e.category === 'config' && !e.message.includes(token || '\0'));
   }
 });
 
@@ -145,7 +145,7 @@ test('start fails with a config error when Discord returns 401', async () => {
   const t = setup({ 'GET /users/@me': () => json(401, { message: '401: Unauthorized', code: 0 }) });
   await assert.rejects(
     t.channel.start(async () => {}),
-    (e) => e instanceof RubyError && e.category === 'config' && e.message === 'Discord rejected the bot token' && !e.message.includes(TOKEN),
+    (e) => e instanceof GarnetError && e.category === 'config' && e.message === 'Discord rejected the bot token' && !e.message.includes(TOKEN),
   );
   assert.equal(FakeWS.instances.length, 0);
   assert.equal(t.reqs[0]!.headers.authorization, `Bot ${TOKEN}`);

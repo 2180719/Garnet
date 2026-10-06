@@ -1,4 +1,4 @@
-// Ruby's terminal palette (docs/DESIGN.md, dark column). Pure.
+// Garnet's terminal palette (docs/DESIGN.md, dark column). Pure.
 
 export type Style = (text: string) => string;
 

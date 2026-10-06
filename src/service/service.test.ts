@@ -8,10 +8,10 @@ import { defaultEntry, installedServices, installService, planService, resolveSe
 import type { CommandResult, ServicePlan } from './index.ts';
 
 const base = {
-  home: '/home/me/.ruby',
+  home: '/home/me/.garnet',
   userHome: '/home/me',
   nodePath: '/usr/bin/node',
-  entry: '/opt/ruby/src/cli/bin.ts',
+  entry: '/opt/garnet/src/cli/bin.ts',
 };
 
 const unescapeXml = (s: string): string =>
@@ -26,13 +26,13 @@ function plan(opts: Parameters<typeof planService>[0]): ServicePlan {
 test('systemd unit has the expected lines and absolute paths', () => {
   const p = plan({ ...base, platform: 'linux' });
   assert.equal(p.platform, 'systemd');
-  assert.equal(p.path, '/home/me/.config/systemd/user/ruby.service');
+  assert.equal(p.path, '/home/me/.config/systemd/user/garnet.service');
   const lines = p.contents.split('\n');
   for (const line of [
-    'ExecStart="/usr/bin/node" "--disable-warning=ExperimentalWarning" "/opt/ruby/src/cli/bin.ts" "start"',
-    'WorkingDirectory=/opt/ruby',
-    'Environment="RUBY_HOME=/home/me/.ruby"',
-    'EnvironmentFile=-/home/me/.ruby/env',
+    'ExecStart="/usr/bin/node" "--disable-warning=ExperimentalWarning" "/opt/garnet/src/cli/bin.ts" "start"',
+    'WorkingDirectory=/opt/garnet',
+    'Environment="GARNET_HOME=/home/me/.garnet"',
+    'EnvironmentFile=-/home/me/.garnet/env',
     'Restart=on-failure',
     'RestartSec=5',
     'TimeoutStopSec=60',
@@ -46,8 +46,8 @@ test('systemd unit has the expected lines and absolute paths', () => {
   assert.deepEqual(p.commands.prepare, []);
   assert.deepEqual(p.commands.install, [
     ['systemctl', '--user', 'daemon-reload'],
-    ['systemctl', '--user', 'enable', 'ruby.service'],
-    ['systemctl', '--user', 'restart', 'ruby.service'],
+    ['systemctl', '--user', 'enable', 'garnet.service'],
+    ['systemctl', '--user', 'restart', 'garnet.service'],
   ]);
   assert.ok(p.notes.some((n) => n.includes('loginctl enable-linger $USER')));
 });
@@ -55,27 +55,27 @@ test('systemd unit has the expected lines and absolute paths', () => {
 test('systemd quoting protects spaces, quotes, $ and %', () => {
   const p = plan({ ...base, platform: 'linux', nodePath: '/opt/my node/bin/node', home: '/h/a"b%c$d' });
   assert.ok(p.contents.includes('ExecStart="/opt/my node/bin/node" '));
-  assert.ok(p.contents.includes('Environment="RUBY_HOME=/h/a\\"b%%c$$d"'));
+  assert.ok(p.contents.includes('Environment="GARNET_HOME=/h/a\\"b%%c$$d"'));
 });
 
 test('launchd plist has the expected keys and escapes XML', () => {
-  const p = plan({ ...base, platform: 'darwin', uid: 501, home: '/Users/a&b/<ruby>', userHome: '/Users/a&b' });
+  const p = plan({ ...base, platform: 'darwin', uid: 501, home: '/Users/a&b/<garnet>', userHome: '/Users/a&b' });
   assert.equal(p.platform, 'launchd');
-  assert.equal(p.path, '/Users/a&b/Library/LaunchAgents/dev.ruby.agent.plist');
-  assert.ok(p.contents.includes('<string>/Users/a&amp;b/&lt;ruby&gt;</string>'));
-  assert.ok(p.contents.includes('<string>/Users/a&amp;b/&lt;ruby&gt;/logs/ruby.out.log</string>'));
+  assert.equal(p.path, '/Users/a&b/Library/LaunchAgents/dev.garnet.agent.plist');
+  assert.ok(p.contents.includes('<string>/Users/a&amp;b/&lt;garnet&gt;</string>'));
+  assert.ok(p.contents.includes('<string>/Users/a&amp;b/&lt;garnet&gt;/logs/garnet.out.log</string>'));
   assert.ok(!/&(?!amp;|lt;|gt;|quot;|apos;)/.test(p.contents), 'bare ampersand in plist');
-  assert.ok(!p.contents.includes('<ruby>'));
+  assert.ok(!p.contents.includes('<garnet>'));
   assert.match(p.contents, /<key>RunAtLoad<\/key>\s*<true\/>/);
   assert.match(p.contents, /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/);
   assert.match(p.contents, /<string>\/bin\/sh<\/string>\s*<string>-c<\/string>/);
-  assert.ok(unescapeXml(p.contents).includes('exec /usr/bin/node --disable-warning=ExperimentalWarning /opt/ruby/src/cli/bin.ts start'));
-  assert.ok(unescapeXml(p.contents).includes('. "$RUBY_HOME/env"'));
-  assert.deepEqual(p.commands.prepare, [['launchctl', 'bootout', 'gui/501/dev.ruby.agent']]);
+  assert.ok(unescapeXml(p.contents).includes('exec /usr/bin/node --disable-warning=ExperimentalWarning /opt/garnet/src/cli/bin.ts start'));
+  assert.ok(unescapeXml(p.contents).includes('. "$GARNET_HOME/env"'));
+  assert.deepEqual(p.commands.prepare, [['launchctl', 'bootout', 'gui/501/dev.garnet.agent']]);
   assert.deepEqual(p.commands.install, [['launchctl', 'bootstrap', 'gui/501', p.path]]);
   assert.match(p.contents, /<key>ExitTimeOut<\/key>\s*<integer>60<\/integer>/);
   assert.match(p.contents, /<key>PATH<\/key>\s*<string>\/usr\/bin:\/opt\/homebrew\/bin:\/usr\/local\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
-  assert.deepEqual(p.commands.uninstall, [['launchctl', 'bootout', 'gui/501/dev.ruby.agent']]);
+  assert.deepEqual(p.commands.uninstall, [['launchctl', 'bootout', 'gui/501/dev.garnet.agent']]);
 });
 
 test('shellQuote round-trips through a real sh', () => {
@@ -89,17 +89,17 @@ test('shellQuote round-trips through a real sh', () => {
 });
 
 test('launchd wrapper script survives spaces and single quotes in paths', () => {
-  const p = plan({ ...base, platform: 'darwin', uid: 1, nodePath: "/Users/o'neil/my node/node", entry: "/Users/o'neil/ruby repo/src/cli/bin.ts" });
+  const p = plan({ ...base, platform: 'darwin', uid: 1, nodePath: "/Users/o'neil/my node/node", entry: "/Users/o'neil/garnet repo/src/cli/bin.ts" });
   const script = /<string>(set -a;[^<]*)<\/string>/.exec(p.contents)?.[1];
   assert.ok(script);
   const raw = unescapeXml(script);
   // Replace the final exec with printf so we can see how sh parses the arguments.
   const probe = raw.replace(/exec (.*)$/, (_m, rest: string) => `printf '%s\\n' ${rest}`);
-  const out = execFileSync('/bin/sh', ['-c', probe], { encoding: 'utf8', env: { ...process.env, RUBY_HOME: '/nonexistent' } });
+  const out = execFileSync('/bin/sh', ['-c', probe], { encoding: 'utf8', env: { ...process.env, GARNET_HOME: '/nonexistent' } });
   assert.deepEqual(out.trimEnd().split('\n'), [
     "/Users/o'neil/my node/node",
     '--disable-warning=ExperimentalWarning',
-    "/Users/o'neil/ruby repo/src/cli/bin.ts",
+    "/Users/o'neil/garnet repo/src/cli/bin.ts",
     'start',
   ]);
 });
@@ -108,7 +108,7 @@ test('unsupported platform returns a clear message', () => {
   const p = planService({ ...base, platform: 'win32' });
   assert.ok('unsupported' in p);
   assert.match(p.unsupported, /not supported yet/);
-  assert.match(p.unsupported, /ruby start/);
+  assert.match(p.unsupported, /garnet start/);
 });
 
 test('defaultEntry points at src/cli/bin.ts', () => {
@@ -126,8 +126,8 @@ function fakeRun(calls: Calls, results: Record<string, CommandResult> = {}) {
 }
 
 function tempPlan(): { root: string; p: ServicePlan } {
-  const root = mkdtempSync(join(tmpdir(), 'ruby-service-'));
-  const p = plan({ ...base, platform: 'linux', home: join(root, 'ruby-home'), userHome: join(root, 'user') });
+  const root = mkdtempSync(join(tmpdir(), 'garnet-service-'));
+  const p = plan({ ...base, platform: 'linux', home: join(root, 'garnet-home'), userHome: join(root, 'user') });
   return { root, p };
 }
 
@@ -143,8 +143,8 @@ test('install writes files with correct modes and runs commands in order', async
     assert.equal(statSync(envFile).mode & 0o777, 0o600);
     assert.match(readFileSync(envFile, 'utf8'), /^# .*KEY=value/);
     assert.ok(statSync(join(p.home, 'logs')).isDirectory());
-    assert.deepEqual(calls, ['systemctl --user daemon-reload', 'systemctl --user enable ruby.service', 'systemctl --user restart ruby.service']);
-    assert.equal(statSync(p.home).mode & 0o777, 0o700, 'RUBY_HOME holds secrets');
+    assert.deepEqual(calls, ['systemctl --user daemon-reload', 'systemctl --user enable garnet.service', 'systemctl --user restart garnet.service']);
+    assert.equal(statSync(p.home).mode & 0o777, 0o700, 'GARNET_HOME holds secrets');
     assert.deepEqual(r.files, [p.path, envFile]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -188,14 +188,14 @@ test('a failing command is reported, not thrown', async () => {
 });
 
 test('launchd reinstall unloads the old agent first; that step may fail when it is not loaded', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'ruby-service-'));
+  const root = mkdtempSync(join(tmpdir(), 'garnet-service-'));
   try {
     const p = plan({ ...base, platform: 'darwin', uid: 501, home: join(root, 'home'), userHome: join(root, 'user') });
     const calls: Calls = [];
     const notLoaded: CommandResult = { code: 3, stdout: '', stderr: 'Boot-out failed: 3: No such process' };
-    const r = await installService(p, { run: fakeRun(calls, { 'launchctl bootout gui/501/dev.ruby.agent': notLoaded }) });
+    const r = await installService(p, { run: fakeRun(calls, { 'launchctl bootout gui/501/dev.garnet.agent': notLoaded }) });
     assert.equal(r.ok, true);
-    assert.deepEqual(calls, ['launchctl bootout gui/501/dev.ruby.agent', `launchctl bootstrap gui/501 ${p.path}`]);
+    assert.deepEqual(calls, ['launchctl bootout gui/501/dev.garnet.agent', `launchctl bootstrap gui/501 ${p.path}`]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -210,7 +210,7 @@ test('uninstall disables the service and removes the file', async () => {
     assert.equal(r.ok, true);
     assert.equal(existsSync(p.path), false);
     assert.ok(existsSync(join(p.home, 'env')), 'env file is kept');
-    assert.deepEqual(calls, ['systemctl --user disable --now ruby.service', 'systemctl --user daemon-reload']);
+    assert.deepEqual(calls, ['systemctl --user disable --now garnet.service', 'systemctl --user daemon-reload']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -220,11 +220,11 @@ test('status runs the status command and reports its output', async () => {
   const { p } = tempPlan();
   const calls: Calls = [];
   const r = await serviceStatus(p, {
-    run: fakeRun(calls, { 'systemctl --user status ruby.service --no-pager': { code: 3, stdout: 'inactive', stderr: '' } }),
+    run: fakeRun(calls, { 'systemctl --user status garnet.service --no-pager': { code: 3, stdout: 'inactive', stderr: '' } }),
   });
   assert.equal(r.ok, false);
   assert.equal(r.commands[0]?.stdout, 'inactive');
-  assert.deepEqual(calls, ['systemctl --user status ruby.service --no-pager']);
+  assert.deepEqual(calls, ['systemctl --user status garnet.service --no-pager']);
 });
 
 test('restart uses systemctl restart or launchctl kickstart -k', async () => {
@@ -232,36 +232,36 @@ test('restart uses systemctl restart or launchctl kickstart -k', async () => {
   const calls: Calls = [];
   const r = await restartService(p, { run: fakeRun(calls, {}) });
   assert.equal(r.ok, true);
-  assert.deepEqual(calls, ['systemctl --user restart ruby.service']);
+  assert.deepEqual(calls, ['systemctl --user restart garnet.service']);
   const mac = plan({ ...base, platform: 'darwin', uid: 501 });
-  assert.deepEqual(mac.commands.restart, [['launchctl', 'kickstart', '-k', 'gui/501/dev.ruby.agent']]);
+  assert.deepEqual(mac.commands.restart, [['launchctl', 'kickstart', '-k', 'gui/501/dev.garnet.agent']]);
 });
 
 test('named instances get their own unit and label, and reject unsafe names', () => {
-  const p = plan({ ...base, platform: 'linux', name: 'work', home: '/home/me/.ruby-work' });
-  assert.equal(p.path, '/home/me/.config/systemd/user/ruby-work.service');
-  assert.ok(p.contents.includes('Description=Ruby personal agent (work)'));
-  assert.ok(p.contents.includes('Environment="RUBY_HOME=/home/me/.ruby-work"'));
-  assert.deepEqual(p.commands.restart, [['systemctl', '--user', 'restart', 'ruby-work.service']]);
-  assert.ok(p.notes.some((n) => n.includes('journalctl --user -u ruby-work.service')));
+  const p = plan({ ...base, platform: 'linux', name: 'work', home: '/home/me/.garnet-work' });
+  assert.equal(p.path, '/home/me/.config/systemd/user/garnet-work.service');
+  assert.ok(p.contents.includes('Description=Garnet personal agent (work)'));
+  assert.ok(p.contents.includes('Environment="GARNET_HOME=/home/me/.garnet-work"'));
+  assert.deepEqual(p.commands.restart, [['systemctl', '--user', 'restart', 'garnet-work.service']]);
+  assert.ok(p.notes.some((n) => n.includes('journalctl --user -u garnet-work.service')));
   const mac = plan({ ...base, platform: 'darwin', uid: 501, name: 'work' });
-  assert.equal(mac.path, '/home/me/Library/LaunchAgents/dev.ruby.agent.work.plist');
-  assert.ok(mac.contents.includes('<string>dev.ruby.agent.work</string>'));
-  assert.deepEqual(mac.commands.status, [['launchctl', 'print', 'gui/501/dev.ruby.agent.work']]);
-  // "ruby" and empty mean the default instance
-  assert.equal(plan({ ...base, platform: 'linux', name: 'ruby' }).path, '/home/me/.config/systemd/user/ruby.service');
+  assert.equal(mac.path, '/home/me/Library/LaunchAgents/dev.garnet.agent.work.plist');
+  assert.ok(mac.contents.includes('<string>dev.garnet.agent.work</string>'));
+  assert.deepEqual(mac.commands.status, [['launchctl', 'print', 'gui/501/dev.garnet.agent.work']]);
+  // "garnet" and empty mean the default instance
+  assert.equal(plan({ ...base, platform: 'linux', name: 'garnet' }).path, '/home/me/.config/systemd/user/garnet.service');
   for (const bad of ['Work', '../x', 'a b', '-x', 'x'.repeat(33)]) assert.throws(() => planService({ ...base, platform: 'linux', name: bad }), /Invalid service name/);
 });
 
-test('serviceHomeOf reads RUBY_HOME back from units and plists, escapes included', () => {
-  for (const home of ['/home/me/.ruby', '/h/a"b%c$d', '/h/x&y<z>']) {
+test('serviceHomeOf reads GARNET_HOME back from units and plists, escapes included', () => {
+  for (const home of ['/home/me/.garnet', '/h/a"b%c$d', '/h/x&y<z>']) {
     assert.equal(serviceHomeOf(plan({ ...base, platform: 'linux', home }).contents), home);
     assert.equal(serviceHomeOf(plan({ ...base, platform: 'darwin', home, uid: 1 }).contents), home);
   }
   assert.equal(serviceHomeOf('[Service]\nExecStart=x\n'), null);
 });
 
-test('resolveService finds the instance for this RUBY_HOME and refuses to take over another', () => {
+test('resolveService finds the instance for this GARNET_HOME and refuses to take over another', () => {
   const files: Record<string, string> = {};
   const dir = '/home/me/.config/systemd/user';
   const deps = { list: (d: string) => (d === dir ? Object.keys(files) : []), read: (p: string) => files[p.slice(dir.length + 1)]! };
@@ -275,17 +275,17 @@ test('resolveService finds the instance for this RUBY_HOME and refuses to take o
     return r;
   };
   // Nothing installed: the default, no conflict.
-  assert.equal(resolve('/a').plan.path, `${dir}/ruby.service`);
+  assert.equal(resolve('/a').plan.path, `${dir}/garnet.service`);
   assert.equal(resolve('/a').conflict, null);
   install(undefined, '/a');
   files['other.service'] = 'x';
-  // Another home without --name would take over ruby.service: conflict.
-  assert.match(resolve('/b').conflict!, /already runs RUBY_HOME=\/a.*--name/);
+  // Another home without --name would take over garnet.service: conflict.
+  assert.match(resolve('/b').conflict!, /already runs GARNET_HOME=\/a.*--name/);
   assert.equal(resolve('/b', 'work').conflict, null);
   install('work', '/b');
   // Without --name, /b now resolves to its own instance; /a still to the default.
-  assert.equal(resolve('/b').plan.path, `${dir}/ruby-work.service`);
-  assert.equal(resolve('/a').plan.path, `${dir}/ruby.service`);
+  assert.equal(resolve('/b').plan.path, `${dir}/garnet-work.service`);
+  assert.equal(resolve('/a').plan.path, `${dir}/garnet.service`);
   assert.deepEqual(
     installedServices({ platform: 'linux', userHome: '/home/me' }, deps).map((s) => [s.name, s.home]),
     [

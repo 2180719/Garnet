@@ -3,7 +3,7 @@
 
 import type { TaskRecord, ToolCallBlock, ToolResult } from '../../contracts/index.ts';
 import { errorMessage } from '../../contracts/index.ts';
-import type { Ruby } from '../../main.ts';
+import type { Garnet } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
 import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
@@ -24,7 +24,7 @@ export type TtyInput = NodeJS.ReadableStream & { isTTY?: boolean; setRawMode?: (
 export type TtyOutput = TerminalOut & { on?: (event: 'resize', fn: () => void) => unknown; off?: (event: 'resize', fn: () => void) => unknown };
 
 export type InteractiveOptions = {
-  ruby: Ruby;
+  garnet: Garnet;
   sessionId: string;
   resumed: boolean;
   stdin: TtyInput;
@@ -86,7 +86,7 @@ export class InteractiveChat {
     this.screen = new Screen(options.stdout);
     this.sessionId = options.sessionId;
     this.editor = emptyEditor(options.history.entries.length);
-    this.totals = sessionTotals(options.ruby.store.events(this.sessionId));
+    this.totals = sessionTotals(options.garnet.store.events(this.sessionId));
   }
 
   private get theme(): Theme {
@@ -118,7 +118,7 @@ export class InteractiveChat {
 
   /** Runs until the owner exits. Resolves with the exit code. */
   run(): Promise<number> {
-    const { stdin, stdout, ruby } = this.o;
+    const { stdin, stdout, garnet } = this.o;
     const done = new Promise<number>((resolve) => (this.finished = resolve));
     this.enterRawMode();
     const onData = (chunk: Buffer | string) => this.onInput(String(chunk));
@@ -134,10 +134,10 @@ export class InteractiveChat {
     });
     if (this.o.processHooks) this.installProcessHooks();
 
-    const events = this.o.resumed ? ruby.store.events(this.sessionId) : [];
+    const events = this.o.resumed ? garnet.store.events(this.sessionId) : [];
     const sessionId = this.sessionId;
     this.drawnColumns = this.screen.columns;
-    this.commit((w) => [...banner(this.theme, w, ruby.model.id, sessionId, this.o.resumed), ...transcriptRows(events, this.theme, w)]);
+    this.commit((w) => [...banner(this.theme, w, garnet.model.id, sessionId, this.o.resumed), ...transcriptRows(events, this.theme, w)]);
     return done;
   }
 
@@ -229,7 +229,7 @@ export class InteractiveChat {
     }
     if (k.ctrl && k.name === 'z' && this.o.processHooks && process.platform !== 'win32') return this.suspend();
     if (k.name === 'tab' && !k.shift) {
-      const c = complete(this.editor.text, (cmd) => (cmd === 'resume' ? this.o.ruby.store.listSessions(50).map((s) => s.id) : []));
+      const c = complete(this.editor.text, (cmd) => (cmd === 'resume' ? this.o.garnet.store.listSessions(50).map((s) => s.id) : []));
       if (c.text !== this.editor.text) this.editor = { ...this.editor, text: c.text, cursor: c.text.length };
       return this.render();
     }
@@ -322,12 +322,12 @@ export class InteractiveChat {
     this.commit((w) => [...userBlock(text, this.theme, w), ...(files.length ? wrapText(this.theme.muted(`  + ${sanitize(names)}`), w) : [])]);
     return this.busy(files.length ? 'reading files' : 'thinking', async (signal) => {
       const started = Date.now();
-      const prepared = await prepareTurn(this.o.ruby, this.sessionId, text, files, signal);
+      const prepared = await prepareTurn(this.o.garnet, this.sessionId, text, files, signal);
       if ('reply' in prepared) {
         this.commit((w) => ['', ...wrapText(`  ${sanitize(prepared.reply)}`, w), '']);
         return;
       }
-      const task: TaskRecord = await this.o.ruby.agent.run(this.sessionId, prepared.turn, { signal, onEvent: (e) => this.onEvent(e), source: 'cli' });
+      const task: TaskRecord = await this.o.garnet.agent.run(this.sessionId, prepared.turn, { signal, onEvent: (e) => this.onEvent(e), source: 'cli' });
       this.finishStream();
       this.refreshTotals();
       const elapsed = Date.now() - started;
@@ -409,7 +409,7 @@ export class InteractiveChat {
   }
 
   private refreshTotals(): void {
-    this.totals = sessionTotals(this.o.ruby.store.events(this.sessionId));
+    this.totals = sessionTotals(this.o.garnet.store.events(this.sessionId));
   }
 
   // ── commands ─────────────────────────────────────────────────────────
@@ -417,7 +417,7 @@ export class InteractiveChat {
   private async command(parsed: NonNullable<ReturnType<typeof parseSlash>>): Promise<void> {
     const run = async (signal?: AbortSignal) => {
       const result = await executeCommand(parsed, {
-        ruby: this.o.ruby,
+        garnet: this.o.garnet,
         sessionId: this.sessionId,
         theme: this.theme,
         width: this.width,
@@ -549,7 +549,7 @@ export class InteractiveChat {
       if (matches.length) rows.push(...suggestionRows(matches.slice(0, 10), t, w));
     }
     const notice = this.notice && this.notice.until > Date.now() ? this.notice.text : undefined;
-    rows.push(footer({ model: this.o.ruby.model.id, sessionId: this.sessionId, totals: this.totals, contextWindow: this.o.ruby.model.capabilities.contextWindow, notice }, t, w));
+    rows.push(footer({ model: this.o.garnet.model.id, sessionId: this.sessionId, totals: this.totals, contextWindow: this.o.garnet.model.capabilities.contextWindow, notice }, t, w));
     const committed = this.pendingCommit;
     this.pendingCommit = [];
     this.screen.setLive(rows, cursor, committed);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { defaultConfig, type Permission } from '../config/index.ts';
-import { RubyError, type Capability, type ToolResult } from '../contracts/index.ts';
+import { GarnetError, type Capability, type ToolResult } from '../contracts/index.ts';
 import { Policy, type ApprovalRequest } from '../policy/index.ts';
 import { JobStore, openDb } from '../store/index.ts';
 import { ToolExecutor, ToolRegistry } from '../tools/index.ts';
@@ -21,8 +21,8 @@ function setup(perms: Partial<Record<Capability, Permission>> = {}, opts: { sess
       originOf: () =>
         opts.session === 'job' ? { conversation: 'job:x', isJob: true, chat: null } : opts.session === 'cli' ? { conversation: null, isJob: false, chat: null } : { conversation: 'discord:default:dm-77', isJob: false, chat: CHAT },
       resolveTarget: (to) => {
-        if (to && to !== 'discord') throw new RubyError('invalid_input', `"${to}" is not a paired chat.`);
-        if (opts.session === 'cli' && to === undefined) throw new RubyError('invalid_input', 'There is no chat to send to.');
+        if (to && to !== 'discord') throw new GarnetError('invalid_input', `"${to}" is not a paired chat.`);
+        if (opts.session === 'cli' && to === undefined) throw new GarnetError('invalid_input', 'There is no chat to send to.');
         return CHAT;
       },
       labelOf: () => 'discord (Ada)',

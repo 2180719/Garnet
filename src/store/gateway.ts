@@ -299,14 +299,14 @@ export class GatewayStore {
     return rows.map((r) => ({ ...chatFrom(r), displayName: (r.display_name as string | null) ?? null, lastAt: r.last_at as string }));
   }
 
-  /** Records a message Ruby sent on its own (send_message). */
+  /** Records a message Garnet sent on its own (send_message). */
   recordSent(m: { sessionId: string; channel: string; account: string; chatId: string; deliveryId: string }): void {
     this.db
       .prepare('INSERT INTO sent_messages (sent_at, session_id, channel, account, chat_id, delivery_id) VALUES (?, ?, ?, ?, ?, ?)')
       .run(nowIso(), m.sessionId, m.channel, m.account, m.chatId, m.deliveryId);
   }
 
-  /** How many messages Ruby sent on its own since `since` (ISO). */
+  /** How many messages Garnet sent on its own since `since` (ISO). */
   sentSince(since: string): number {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM sent_messages WHERE sent_at > ?').get(since) as { n: number }).n;
   }

@@ -2,7 +2,7 @@
 import { api, enc, session } from './api.js';
 import { toast } from './ui.js';
 
-const SEEN = 'ruby-seen-ach';
+const SEEN = 'garnet-seen-ach';
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** Compares against what this tab has already seen; toasts anything new. First sight is silent. */

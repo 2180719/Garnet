@@ -1,27 +1,27 @@
-# Ruby — Plan
+# Garnet — Plan
 
-Ruby is a persistent personal agent you run on your own VPS or computer and reach through Telegram, Signal, Discord, an opt-in dashboard, or an authenticated API. The goal is a polished, maintainable replacement for OpenClaw and Hermes Agent: keep what made them popular, fix what people complain about, and stay small enough that a person — or an agent — can read the whole thing.
+Garnet is a persistent personal agent you run on your own VPS or computer and reach through Telegram, Signal, Discord, an opt-in dashboard, or an authenticated API. The goal is a polished, maintainable replacement for OpenClaw and Hermes Agent: keep what made them popular, fix what people complain about, and stay small enough that a person — or an agent — can read the whole thing.
 
 ## What we learned from OpenClaw and Hermes
 
 | Keep | Fix |
 | --- | --- |
-| One gateway process as the source of truth for channels, sessions and routing (OpenClaw) | OpenClaw's ~400k+ lines, 50+ config files and frequent breaking updates. Ruby stays small, with versioned config and automatic migrations |
-| Human-readable workspace files: instructions, persona, heartbeat checklist, memory (OpenClaw) | Tens of thousands of internet-exposed instances with auth bypasses. Ruby refuses a non-loopback bind without auth and ships secure defaults |
-| One active run per session, with a global concurrency cap (OpenClaw lane queue) | Heartbeats calling an expensive model ~48×/day. Ruby runs cheap deterministic checks first and wakes the model only on change |
-| Hard-capped prompt memory, loaded as a frozen per-session snapshot so prompt caching survives; the agent consolidates when full (Hermes) | Session history resent on every turn until context overflows. Ruby compacts with recoverable checkpoints |
-| Skills as plain `SKILL.md` files, compatible with the agentskills.io format (both) | Malicious skills in public registries. Ruby installs only local or reviewed skills and never runs third-party code in-process |
+| One gateway process as the source of truth for channels, sessions and routing (OpenClaw) | OpenClaw's ~400k+ lines, 50+ config files and frequent breaking updates. Garnet stays small, with versioned config and automatic migrations |
+| Human-readable workspace files: instructions, persona, heartbeat checklist, memory (OpenClaw) | Tens of thousands of internet-exposed instances with auth bypasses. Garnet refuses a non-loopback bind without auth and ships secure defaults |
+| One active run per session, with a global concurrency cap (OpenClaw lane queue) | Heartbeats calling an expensive model ~48×/day. Garnet runs cheap deterministic checks first and wakes the model only on change |
+| Hard-capped prompt memory, loaded as a frozen per-session snapshot so prompt caching survives; the agent consolidates when full (Hermes) | Session history resent on every turn until context overflows. Garnet compacts with recoverable checkpoints |
+| Skills as plain `SKILL.md` files, compatible with the agentskills.io format (both) | Malicious skills in public registries. Garnet installs only local or reviewed skills and never runs third-party code in-process |
 | Opt-in, OpenAI-compatible API server behind a bearer key (Hermes) | Hermes overwriting user-edited skills. User edits are locked; the agent can only propose a patch |
 | Command approval, DM pairing, container isolation, credential filtering (Hermes) | Hermes claiming partial work was complete. Completion reports must list what was verified and what was not |
-| Pluggable sandbox backends: local, Docker, SSH (Hermes) | Gateway update races (a Telegram token stuck on the old process), unvalidated setup input, silent usage-reporting failures. Ruby does an ordered handover, validates config at startup, and shows "unknown" usage rather than zero |
-| Achievements and personality that make the product fun (Hermes) | Plaintext secrets at rest. Ruby encrypts its secret store |
+| Pluggable sandbox backends: local, Docker, SSH (Hermes) | Gateway update races (a Telegram token stuck on the old process), unvalidated setup input, silent usage-reporting failures. Garnet does an ordered handover, validates config at startup, and shows "unknown" usage rather than zero |
+| Achievements and personality that make the product fun (Hermes) | Plaintext secrets at rest. Garnet encrypts its secret store |
 
 ## Product goals
 
 1. **Maintainable and modular.** Every module has one job, a public `index.ts`, its own `AGENTS.md`, and offline tests. Lint enforces that modules import each other only through `index.ts`. A dependency must justify its weight.
-2. **Easy for agents to navigate and modify.** Use a predictable layout, a root `AGENTS.md` map, and a single `npm test` that is fast and offline, so a user's own agent can safely change Ruby. Self-modification goes through a branch or patch plus tests, never live edits to the running install.
+2. **Easy for agents to navigate and modify.** Use a predictable layout, a root `AGENTS.md` map, and a single `npm test` that is fast and offline, so a user's own agent can safely change Garnet. Self-modification goes through a branch or patch plus tests, never live edits to the running install.
 3. **Robust gateway.** Durable inbox/outbox, deduplication, per-session serialization, health checks that test real message flow, clean shutdown and restart, and channel adapters isolated from the agent loop.
-4. **Opt-in, key-gated external access.** Off by default and bound to loopback. When enabled: scoped, revocable, hashed API keys; rate limits; an audit log; and an OpenAI-compatible endpoint plus a native API. Ruby refuses to bind publicly without auth.
+4. **Opt-in, key-gated external access.** Off by default and bound to loopback. When enabled: scoped, revocable, hashed API keys; rate limits; an audit log; and an OpenAI-compatible endpoint plus a native API. Garnet refuses to bind publicly without auth.
 5. **Token efficient.** Stable prompt prefix, bounded memory snapshot, a small fixed tool set per session (changing tools mid-session would break prompt caching and signed thinking), artifact handles for large outputs, recoverable compaction, and per-task usage accounting.
 6. **Premium, lightweight surfaces.** A no-tracking public website and an opt-in dashboard that ships in the repo, both fast and polished.
 
@@ -38,7 +38,7 @@ Non-goals: a public skill marketplace, vector search, realtime voice, and WhatsA
 | Tests | `node:test` + `tsc --noEmit` + a small lint script | Fast, offline, no framework lock-in |
 | First provider | Anthropic Messages API; then an OpenAI-compatible adapter (OpenRouter, local models) | Prompt caching and tool use first; broad coverage second |
 | Channels | Telegram first; Signal via the `signal-cli` daemon (JSON-RPC); Discord later | Telegram has the simplest bot API; Signal needs a bridge, so validate it early |
-| Secrets | `~/.ruby/secrets` encrypted with a key from the OS keychain or a key file outside the data dir | No plaintext at rest |
+| Secrets | `~/.garnet/secrets` encrypted with a key from the OS keychain or a key file outside the data dir | No plaintext at rest |
 | Hosting | One service managed by systemd (Linux) or launchd (macOS); Docker image optional | Same install on a VPS and a personal computer |
 
 ## Repository layout
@@ -60,7 +60,7 @@ src/
   channels/          telegram, signal, discord, http (each a self-contained adapter)
   scheduler/         cron and heartbeats with cheap pre-checks
   achievements/      unlockable achievements and easter eggs
-  cli/               `ruby` command
+  cli/               `garnet` command
   main.ts            composition root: the only place modules are wired together
 dashboard/           opt-in web UI, served by the gateway when enabled
 site/                public static website
@@ -105,10 +105,10 @@ Rules:
 
 ### External access (opt-in)
 
-Disabled by default. Enable it with `ruby api enable`.
+Disabled by default. Enable it with `garnet api enable`.
 
 - Binds to `127.0.0.1` unless configured otherwise. Startup refuses a non-loopback bind unless at least one key exists; recommend Tailscale or a reverse proxy with TLS.
-- **API keys:** `ruby api key create --name laptop --scopes chat,read` prints the key once. Ruby stores only a salted HMAC-SHA256 hash (keys are high-entropy random secrets, so a slow password hash would add latency without adding security) and a short ID for identification. Keys can be scoped (`chat`, `read`, `admin`), given an expiry, revoked, and rate-limited (token bucket). Every request is written to the audit log.
+- **API keys:** `garnet api key create --name laptop --scopes chat,read` prints the key once. Garnet stores only a salted HMAC-SHA256 hash (keys are high-entropy random secrets, so a slow password hash would add latency without adding security) and a short ID for identification. Keys can be scoped (`chat`, `read`, `admin`), given an expiry, revoked, and rate-limited (token bucket). Every request is written to the audit log.
 - **Endpoints:**
   - `POST /v1/chat/completions` and `GET /v1/models`: OpenAI-compatible, so any chat frontend works.
   - `/api/*`: native API for sessions, tasks, approvals, memory, schedules, config and usage. This is what the dashboard uses.
@@ -153,15 +153,15 @@ Task states: `running`, `waiting_for_user`, `waiting_for_approval`, `completed`,
 Served by the gateway at `/` when `dashboard.enabled = true`. Plain HTML/CSS with a small amount of TypeScript compiled at package time; no framework unless it pays for itself; well under 100 KB.
 
 - **Pages:** chat; sessions and tasks (live via Server-Sent Events); approvals; memory and skills (edit, diff, rollback, lock); schedules (edit, toggle, run now, history); channels and pairing; routing profiles; API keys; config (every setting, validated, with descriptions, defaults and diff-before-save); usage and costs; logs.
-- **Achievements:** unlocked by real milestones (first task, 100 tasks, first skill created, a week of uptime, a heartbeat that saved the day, zero-cost idle day, and so on), plus hidden easter eggs (Konami code, `ruby --sparkle`, special dates). They are stored locally and never phone home.
+- **Achievements:** unlocked by real milestones (first task, 100 tasks, first skill created, a week of uptime, a heartbeat that saved the day, zero-cost idle day, and so on), plus hidden easter eggs (Konami code, `garnet --sparkle`, special dates). They are stored locally and never phone home.
 - Auth: loopback by default; remote access requires an `admin`-scoped key or session login.
 
 ## Public website
 
-Static, no tracking, no cookies, no third-party requests, no frameworks; fast on a slow phone. Premium feel through typography, spacing, a restrained ruby palette, subtle motion that respects `prefers-reduced-motion`, and dark/light modes.
+Static, no tracking, no cookies, no third-party requests, no frameworks; fast on a slow phone. Premium feel through typography, spacing, a restrained garnet palette, subtle motion that respects `prefers-reduced-motion`, and dark/light modes.
 
-- **Sections:** hero; what Ruby is; why (vs. bloat and insecure defaults); features; how it works; security posture; a quick-start install; FAQ; footer.
-- **Optional "talk to Ruby" demo:** a bounded Ruby instance with a cheap model, no tools, no memory, a short context, per-IP and global daily budgets, served through the same gateway with a `demo` API key profile. The site works fully without it.
+- **Sections:** hero; what Garnet is; why (vs. bloat and insecure defaults); features; how it works; security posture; a quick-start install; FAQ; footer.
+- **Optional "talk to Garnet" demo:** a bounded Garnet instance with a cheap model, no tools, no memory, a short context, per-IP and global daily budgets, served through the same gateway with a `demo` API key profile. The site works fully without it.
 - Deploys anywhere static (Cloudflare Pages, GitHub Pages, Netlify).
 
 ## Status (2026-10-06)
@@ -173,14 +173,14 @@ Static, no tracking, no cookies, no third-party requests, no frameworks; fast on
 | 3. Memory, skills, context, repair, artifacts | Done (tool schemas stay fixed per session instead of loading on demand; see Product goals) |
 | 4. Scheduler, chat approvals, Signal, OpenAI-compatible models, Docker sandbox | Done |
 | 5. Dashboard and website | Done: website, demo endpoint, dashboard (all pages including sessions, logs and routing, achievements, easter eggs). Keyboard navigation not yet checked by hand |
-| 6. Release hardening | Discord, importer, backup/restore, encrypted secret store, failure-injection tests, one-line installer, `ruby setup` and `ruby doctor` done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)) |
+| 6. Release hardening | Discord, importer, backup/restore, encrypted secret store, failure-injection tests, one-line installer, `garnet setup` and `garnet doctor` done. Still open: docs site, live tests against real providers and channels ([docs/LIVE-TESTING.md](docs/LIVE-TESTING.md)) |
 | Next | Missing features ranked from research into OpenClaw, Hermes and the wider field: [docs/FEATURE-GAPS.md](docs/FEATURE-GAPS.md) |
 
 ## Build phases
 
 Each phase ends with passing `npm test` and a short entry in `CHANGELOG.md`.
 
-1. **Foundation:** scaffold, root and module `AGENTS.md`, contracts, config with validation and migrations, SQLite store, fake model, agent loop, tool registry with workspace file tools, policy basics, CLI (`ruby chat` against the fake or a real model). Exit: a simulated task completes end-to-end offline; tests cover invalid tool arguments, tool failures and denials.
+1. **Foundation:** scaffold, root and module `AGENTS.md`, contracts, config with validation and migrations, SQLite store, fake model, agent loop, tool registry with workspace file tools, policy basics, CLI (`garnet chat` against the fake or a real model). Exit: a simulated task completes end-to-end offline; tests cover invalid tool arguments, tool failures and denials.
 2. **Gateway and first real paths:** gateway with inbox/outbox, session lanes, pairing, routing profiles; Anthropic adapter; Telegram adapter; HTTP server with API keys and the OpenAI-compatible endpoint; service install (systemd/launchd). Exit: a Telegram message drives a tool-backed task and the reply is delivered; duplicate inbound messages do not rerun; a restart recovers queued work; the API rejects missing, invalid, revoked or out-of-scope keys.
 3. **Memory, skills, context:** bounded memory snapshot, session search, skills with locks, artifact store, compaction, tool-call repair and clean history, usage accounting. Exit: important constraints survive compaction; a locked skill cannot be overwritten; a fixed task suite shows lower input tokens than the full-history baseline with no loss in success.
 4. **Scheduler and Signal:** cron, heartbeats with pre-checks, approvals over chat, `signal-cli` adapter, OpenAI-compatible model adapter, Docker sandbox. Exit: a disabled heartbeat never calls the model; an ungranted write is denied; a restart does not duplicate an occurrence; the cross-channel demo (Telegram → restart → linked Signal chat) passes.
@@ -191,5 +191,5 @@ Each phase ends with passing `npm test` and a short entry in `CHANGELOG.md`.
 
 - Read `AGENTS.md` first, then the target module's `AGENTS.md`.
 - Change one module at a time where possible; changes to cross-module contracts go in `src/contracts/` with tests.
-- Ordinary tests are deterministic and offline; paid model calls only in opt-in smoke tests (`RUBY_LIVE_TESTS=1`).
+- Ordinary tests are deterministic and offline; paid model calls only in opt-in smoke tests (`GARNET_LIVE_TESTS=1`).
 - Handoffs list changed files, checks run, and known gaps, with no claims beyond what was verified.

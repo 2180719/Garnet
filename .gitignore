@@ -1,5 +1,5 @@
 node_modules/
-.ruby-data/
+.garnet-data/
 *.db
 *.db-wal
 *.db-shm

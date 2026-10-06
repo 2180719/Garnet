@@ -33,14 +33,14 @@ async function list(root) {
       const d = await api.get(`/api/log/sessions?limit=${LIMIT}&offset=${to}&q=${enc(term)}`);
       offset = to;
       fill(out,
-        d.items.length ? h('div', { class: 'list' }, d.items.map(row)) : empty(term ? 'No matching sessions' : 'No sessions yet', term ? 'Try a shorter search.' : 'A session starts with the first message to Ruby.'),
+        d.items.length ? h('div', { class: 'list' }, d.items.map(row)) : empty(term ? 'No matching sessions' : 'No sessions yet', term ? 'Try a shorter search.' : 'A session starts with the first message to Garnet.'),
         d.total > LIMIT ? pager({ offset, limit: LIMIT, total: d.total, go: (o) => load(o, true) }) : null);
       if (focus) out.focus({ preventScroll: true });
     } catch (e) { out.replaceChildren(errorBox(e, () => load())); }
   };
   const form = h('form', { class: 'filters', role: 'search', 'aria-label': 'Filter sessions' }, field('Search', q, null, 'sq'), h('button', { class: 'btn btn-ghost', type: 'submit' }, 'Search'));
   form.addEventListener('submit', (e) => { e.preventDefault(); load(0); });
-  root.append(pageHead('Sessions', 'Every conversation Ruby has had. Open one to read its event log; nothing here can be changed.'), form, out);
+  root.append(pageHead('Sessions', 'Every conversation Garnet has had. Open one to read its event log; nothing here can be changed.'), form, out);
   await load(0);
 }
 
@@ -67,7 +67,7 @@ function renderEvent(e, names) {
     case 'user_message':
       return h('li', { class: 'ev user' }, head(e, 'User', h('span', null, e.source)), blocks(e.content));
     case 'assistant_message':
-      return h('li', { class: 'ev assistant' }, head(e, 'Ruby', h('span', null, `${e.model} · ${e.stopReason} · ${tokens(e.usage)}`)), blocks(e.content));
+      return h('li', { class: 'ev assistant' }, head(e, 'Garnet', h('span', null, `${e.model} · ${e.stopReason} · ${tokens(e.usage)}`)), blocks(e.content));
     case 'tool_started':
       names.set(e.call.id, e.call.name);
       return h('li', { class: 'ev tool' }, head(e, 'Tool started'), details(e.call.name, json(e.call.input)));

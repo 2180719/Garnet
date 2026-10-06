@@ -166,7 +166,7 @@ test('a send that hangs past the timeout is uncertain and does not block later d
 
 test('a crash during a send leaves it uncertain (no dedupe) or retried (dedupe)', async () => {
   for (const dedupes of [false, true]) {
-    const file = `${tempDir()}/ruby.db`;
+    const file = `${tempDir()}/garnet.db`;
     const first = setup([], { db: openDb(file) });
     first.store.enqueue({ channel: 'fake', account: 'default', chatId: 'chat1', text: 'half-sent' });
     first.store.claimDue(new Date(Date.now() + 1000).toISOString()); // now `sending`; the process dies here
@@ -200,7 +200,7 @@ function blockModel(t: ReturnType<typeof setup>) {
 }
 
 test('a crash mid-task: interrupted work is not replayed, queued work runs once, duplicates are deduped', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const first = setup([], { db: openDb(file) });
   paired(first);
   const inFlight = blockModel(first);
@@ -246,7 +246,7 @@ test('a crash mid-task: interrupted work is not replayed, queued work runs once,
 });
 
 test('a message persisted before the crash but never started is run once after restart', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const first = setup([], { db: openDb(file) });
   paired(first);
   const m = msg('remember to buy milk');
@@ -264,7 +264,7 @@ test('a message persisted before the crash but never started is run once after r
 });
 
 test('a locked database rejects the inbound message so the channel redelivers it; nothing is lost or duplicated', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const t = setup([{ text: 'Got it.' }], { db: openDb(file) });
   paired(t);
   t.db.exec('PRAGMA busy_timeout = 0'); // fail fast instead of waiting 5 s
@@ -286,7 +286,7 @@ test('a locked database rejects the inbound message so the channel redelivers it
 });
 
 test('a database fault while delivering leaves the message pending, not lost', async () => {
-  const file = `${tempDir()}/ruby.db`;
+  const file = `${tempDir()}/garnet.db`;
   const t = setup([], { db: openDb(file) });
   t.db.exec('PRAGMA busy_timeout = 0');
   t.store.enqueue({ channel: 'fake', account: 'default', chatId: 'chat1', text: 'important' });

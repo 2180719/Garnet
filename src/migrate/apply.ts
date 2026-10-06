@@ -1,4 +1,4 @@
-// applyImport: performs a plan idempotently. Never overwrites existing Ruby memory, skills, jobs or files;
+// applyImport: performs a plan idempotently. Never overwrites existing Garnet memory, skills, jobs or files;
 // the persona is only combined with an existing one as the owner chose.
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
@@ -6,10 +6,10 @@ import { makeScanner, type Scanner } from './safefs.ts';
 import { MEMORY_CAP_MAX, PERSONA_HEADER, PERSONA_MAX, selectFit } from './plan.ts';
 import type { ApplyOptions, ApplyResult, ImportDeps, ImportPlan, MemoryFile } from './types.ts';
 
-const SETUP_BLOCK = /<!-- ruby setup -->[\s\S]*?<!-- \/ruby setup -->/;
+const SETUP_BLOCK = /<!-- garnet setup -->[\s\S]*?<!-- \/garnet setup -->/;
 const NAME_LINE = /^Your name is (.+)\.$/m;
 
-/** The `ruby setup` block of a persona and the text around it. */
+/** The `garnet setup` block of a persona and the text around it. */
 export function splitPersona(persona: string | undefined): { setup: string | null; rest: string } {
   const text = (persona ?? '').trim();
   const m = SETUP_BLOCK.exec(text);
@@ -17,7 +17,7 @@ export function splitPersona(persona: string | undefined): { setup: string | nul
   return { setup: m[0], rest: (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim() };
 }
 
-/** Whether a persona holds text beyond what `ruby setup` manages (so merging needs the owner's say). */
+/** Whether a persona holds text beyond what `garnet setup` manages (so merging needs the owner's say). */
 export function personaHasOwnText(persona: string | undefined): boolean {
   return splitPersona(persona).rest.length > 0;
 }
@@ -77,7 +77,7 @@ export function applyImport(plan: ImportPlan, deps: ImportDeps, opts: ApplyOptio
       continue;
     }
     if (existsSync(join(deps.skills.root, s.name))) {
-      result.skills.push({ name: s.name, status: 'exists', detail: 'a Ruby skill with this name already exists; left untouched' });
+      result.skills.push({ name: s.name, status: 'exists', detail: 'a Garnet skill with this name already exists; left untouched' });
       continue;
     }
     try {
@@ -95,7 +95,7 @@ export function applyImport(plan: ImportPlan, deps: ImportDeps, opts: ApplyOptio
       if (!j.job) {
         result.jobs.push({ id: j.from, status: 'skipped', detail: j.notes.join('; ') });
       } else if (have.has(j.job.id)) {
-        result.jobs.push({ id: j.job.id, status: 'exists', detail: 'a Ruby job with this id already exists; left untouched' });
+        result.jobs.push({ id: j.job.id, status: 'exists', detail: 'a Garnet job with this id already exists; left untouched' });
       } else {
         have.add(j.job.id);
         add.push(j.job);
@@ -195,7 +195,7 @@ function applyPersona(plan: ImportPlan, deps: ImportDeps, opts: ApplyOptions, re
   const importedName = NAME_LINE.exec(imported)?.[1];
   if (setupName && importedName) {
     text = text.replace(NAME_LINE, '').replace(/\n{3,}/g, '\n\n');
-    if (setupName !== importedName) result.personaNote = `kept the name "${setupName}" from setup; the old assistant was called "${importedName}" (change it with \`ruby setup\`)`;
+    if (setupName !== importedName) result.personaNote = `kept the name "${setupName}" from setup; the old assistant was called "${importedName}" (change it with \`garnet setup\`)`;
   }
   const keep = mode === 'replace' ? [setup] : [setup, rest];
   const head = keep.filter(Boolean).join('\n\n');

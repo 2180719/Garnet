@@ -1,10 +1,11 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { RubyError } from '../contracts/index.ts';
+import { envVar } from '../config/index.ts';
+import { GarnetError } from '../contracts/index.ts';
 import { SecretStore, type KdfParams, type Unlock } from './store.ts';
 
-export const PASSPHRASE_ENV = 'RUBY_SECRETS_PASSPHRASE';
-export const KEY_FILE_ENV = 'RUBY_SECRETS_KEY_FILE';
+export const PASSPHRASE_ENV = 'GARNET_SECRETS_PASSPHRASE';
+export const KEY_FILE_ENV = 'GARNET_SECRETS_KEY_FILE';
 
 /** `<home>/secrets`: the encrypted store. */
 export const secretsFile = (home: string): string => join(home, 'secrets');
@@ -16,14 +17,14 @@ export function isInside(dir: string, path: string): boolean {
 }
 
 /**
- * Reads the unlock source from the environment: `RUBY_SECRETS_KEY_FILE` (a
- * path to a mode-0600 file) or `RUBY_SECRETS_PASSPHRASE`. Returns null when
+ * Reads the unlock source from the environment: `GARNET_SECRETS_KEY_FILE` (a
+ * path to a mode-0600 file) or `GARNET_SECRETS_PASSPHRASE`. Returns null when
  * neither is set. Never includes the material in an error.
  */
 export function unlockFrom(env: NodeJS.ProcessEnv): Unlock | null {
-  const keyFile = env[KEY_FILE_ENV];
-  const passphrase = env[PASSPHRASE_ENV];
-  if (keyFile && passphrase) throw new RubyError('config', `Set ${PASSPHRASE_ENV} or ${KEY_FILE_ENV}, not both.`);
+  const keyFile = envVar(env, KEY_FILE_ENV);
+  const passphrase = envVar(env, PASSPHRASE_ENV);
+  if (keyFile && passphrase) throw new GarnetError('config', `Set ${PASSPHRASE_ENV} or ${KEY_FILE_ENV}, not both.`);
   if (keyFile) {
     let mode: number;
     let text: string;
@@ -31,11 +32,11 @@ export function unlockFrom(env: NodeJS.ProcessEnv): Unlock | null {
       mode = statSync(keyFile).mode;
       text = readFileSync(keyFile, 'utf8');
     } catch (e) {
-      throw new RubyError('config', `Cannot read the key file named by ${KEY_FILE_ENV} (${keyFile}): ${(e as NodeJS.ErrnoException).code ?? 'error'}.`);
+      throw new GarnetError('config', `Cannot read the key file named by ${KEY_FILE_ENV} (${keyFile}): ${(e as NodeJS.ErrnoException).code ?? 'error'}.`);
     }
-    if (mode & 0o077) throw new RubyError('config', `The key file ${keyFile} is readable by other users; run: chmod 600 ${keyFile}`);
+    if (mode & 0o077) throw new GarnetError('config', `The key file ${keyFile} is readable by other users; run: chmod 600 ${keyFile}`);
     const material = text.trim();
-    if (!material) throw new RubyError('config', `The key file ${keyFile} is empty.`);
+    if (!material) throw new GarnetError('config', `The key file ${keyFile} is empty.`);
     return { source: 'key file', material: Buffer.from(material, 'utf8') };
   }
   if (passphrase) return { source: 'passphrase', material: Buffer.from(passphrase, 'utf8') };
@@ -48,7 +49,7 @@ export function unlockWarnings(home: string, env: NodeJS.ProcessEnv, loadedFromE
   if (loadedFromEnvFile.includes(PASSPHRASE_ENV)) {
     warnings.push(`${PASSPHRASE_ENV} is in ${join(home, 'env')}, next to the store it unlocks. Use ${KEY_FILE_ENV} with a key file outside ${home} instead.`);
   }
-  const keyFile = env[KEY_FILE_ENV];
+  const keyFile = envVar(env, KEY_FILE_ENV);
   if (keyFile && isInside(home, keyFile)) {
     warnings.push(`The key file ${keyFile} is inside ${home}, next to the store it unlocks (and in reach of anyone with a copy of that directory). Keep it elsewhere.`);
   }

@@ -17,9 +17,9 @@ export const PERSONA_MAX = 4000;
 export const MEMORY_CAP_MAX = 20_000;
 const MAX_SKILL_DEPTH = 4;
 const CHANNELS = ['telegram', 'discord', 'slack', 'whatsapp', 'signal', 'imessage', 'matrix', 'msteams', 'googlechat', 'irc', 'line', 'email'];
-const RUBY_CHANNELS = ['telegram', 'discord', 'signal'] as const;
-type RubyChannel = (typeof RUBY_CHANNELS)[number];
-/** Tools Ruby registers by default (used when the caller does not pass the live list). */
+const GARNET_CHANNELS = ['telegram', 'discord', 'signal'] as const;
+type GarnetChannel = (typeof GARNET_CHANNELS)[number];
+/** Tools Garnet registers by default (used when the caller does not pass the live list). */
 const DEFAULT_TOOLS = ['list_files', 'read_file', 'write_file', 'memory', 'skill_view', 'skill_create', 'skill_update', 'read_artifact'];
 /** Hermes .env keys whose values are IDs, not secrets: read so senders can be paired and jobs delivered. */
 const ID_KEY = /^([A-Z]+)_(ALLOWED_USERS|HOME_CHANNEL)$/;
@@ -44,7 +44,7 @@ function expandHome(p: string, home: string = homedir()): string {
 // eslint-disable-next-line no-control-regex
 const stripControl = (s: string) => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
 
-/** Lowercase, hyphenate, and cut to Ruby's skill-name rules. Returns null if nothing usable remains. */
+/** Lowercase, hyphenate, and cut to Garnet's skill-name rules. Returns null if nothing usable remains. */
 export function normalizeSkillName(raw: string): string | null {
   const n = raw
     .normalize('NFKD')
@@ -145,14 +145,14 @@ function planOpenClaw(ctx: Ctx): void {
 
   for (const [file, why] of [
     ['HEARTBEAT.md', 'heartbeat checklist from an older OpenClaw (see the imported heartbeat job, if any)'],
-    ['TOOLS.md', 'tool notes have no Ruby equivalent'],
-    ['BOOTSTRAP.md', 'first-run script has no Ruby equivalent'],
+    ['TOOLS.md', 'tool notes have no Garnet equivalent'],
+    ['BOOTSTRAP.md', 'first-run script has no Garnet equivalent'],
   ] as const) {
     if (text(file) !== null) addCopy(ctx, ws, r(file), why);
   }
   const daily = join(content, 'memory');
   for (const e of ws.list(daily)) {
-    if (!e.dir && e.name.endsWith('.md') && ws.readBuffer(join(daily, e.name)) !== null) addCopy(ctx, ws, join(daily, e.name), 'daily memory note (Ruby has no daily notes)');
+    if (!e.dir && e.name.endsWith('.md') && ws.readBuffer(join(daily, e.name)) !== null) addCopy(ctx, ws, join(daily, e.name), 'daily memory note (Garnet has no daily notes)');
   }
   for (const e of sc.list(sc.root)) {
     if (e.dir && /^workspace-.+/.test(e.name)) plan.warnings.push(`Found another agent workspace "${e.name}"; only the default workspace is imported. Run again with --from ${join(plan.fromDir, e.name)} to import it.`);
@@ -160,14 +160,14 @@ function planOpenClaw(ctx: Ctx): void {
   if (Array.isArray(agents.list)) {
     for (const a of agents.list) {
       if (isRecord(a) && typeof a.workspace === 'string' && a.workspace.trim() && expandHome(a.workspace.trim()) !== content) {
-        plan.warnings.push(`Agent "${typeof a.id === 'string' ? a.id : '?'}" has its own workspace (${a.workspace}); only one agent is imported per Ruby home. Import it separately with --from ${expandHome(a.workspace.trim())} into another RUBY_HOME.`);
+        plan.warnings.push(`Agent "${typeof a.id === 'string' ? a.id : '?'}" has its own workspace (${a.workspace}); only one agent is imported per Garnet home. Import it separately with --from ${expandHome(a.workspace.trim())} into another GARNET_HOME.`);
       }
     }
   }
   const userHome = join(sc.root, '..');
   if (env.OPENCLAW_PROFILE === undefined) {
     for (const e of safeList(userHome)) {
-      if (/^\.openclaw-.+/.test(e) && join(userHome, e) !== sc.root) plan.warnings.push(`Found another OpenClaw profile at ${join(userHome, e)}; import it with --from ${join(userHome, e)} (into its own RUBY_HOME if it is a separate agent).`);
+      if (/^\.openclaw-.+/.test(e) && join(userHome, e) !== sc.root) plan.warnings.push(`Found another OpenClaw profile at ${join(userHome, e)}; import it with --from ${join(userHome, e)} (into its own GARNET_HOME if it is a separate agent).`);
     }
   }
 
@@ -188,9 +188,9 @@ function planOpenClaw(ctx: Ctx): void {
       for (const c of CHANNELS) if (new RegExp(`["']?${c}["']?\\s*:\\s*\\{`, 'i').test(cfgText)) addChannel(plan, c);
     }
     openclawAllowlists(ctx, conf, hints);
-    plan.notImported.push({ what: 'openclaw.json', why: 'models, provider settings, API keys, tool policies and channel tokens are not imported; configure Ruby with `ruby setup` (keys go in the encrypted store or ~/.ruby/env)' });
+    plan.notImported.push({ what: 'openclaw.json', why: 'models, provider settings, API keys, tool policies and channel tokens are not imported; configure Garnet with `garnet setup` (keys go in the encrypted store or ~/.garnet/env)' });
     if (/"?(apiKey|token|botToken|secret)"?\s*:\s*["'][^"'$]/i.test(cfgText)) {
-      plan.notImported.push({ what: 'inline secrets in openclaw.json', why: 'never imported or copied; store the ones you still need with `ruby secrets set <NAME>`' });
+      plan.notImported.push({ what: 'inline secrets in openclaw.json', why: 'never imported or copied; store the ones you still need with `garnet secrets set <NAME>`' });
     }
   }
 
@@ -264,7 +264,7 @@ function cleanSender(channel: string, raw: string): string {
   return v;
 }
 
-/** Sender IDs as Ruby's channels report them: Telegram user IDs, Discord snowflakes, Signal numbers or UUIDs. */
+/** Sender IDs as Garnet's channels report them: Telegram user IDs, Discord snowflakes, Signal numbers or UUIDs. */
 export function validSender(channel: string, raw: string): boolean {
   const v = cleanSender(channel, raw);
   if (channel === 'telegram') return /^\d{1,20}$/.test(v);
@@ -273,7 +273,7 @@ export function validSender(channel: string, raw: string): boolean {
   return false;
 }
 
-/** The sender ID in the form Ruby's channel reports it, or null when it is not a valid one. */
+/** The sender ID in the form Garnet's channel reports it, or null when it is not a valid one. */
 export function validSenderId(channel: string, raw: string): string | null {
   return validSender(channel, raw.trim()) ? cleanSender(channel, raw.trim()) : null;
 }
@@ -282,21 +282,21 @@ function addAllow(ctx: Ctx, channelRaw: string, raw: string, from: string, displ
   const channel = channelRaw.toLowerCase();
   const entry = raw.trim();
   if (!entry) return;
-  if (!(RUBY_CHANNELS as readonly string[]).includes(channel)) {
-    noteOnce(ctx, `allowlisted ${channel} senders`, 'Ruby has no such channel');
+  if (!(GARNET_CHANNELS as readonly string[]).includes(channel)) {
+    noteOnce(ctx, `allowlisted ${channel} senders`, 'Garnet has no such channel');
     return;
   }
   if (entry === '*' || /^accessGroup:/.test(entry)) {
-    noteOnce(ctx, `wildcard ${channel} allowlist (${from})`, 'Ruby never admits everyone; each person pairs with `ruby pair add` or a pairing code');
+    noteOnce(ctx, `wildcard ${channel} allowlist (${from})`, 'Garnet never admits everyone; each person pairs with `garnet pair add` or a pairing code');
     return;
   }
   if (!validSender(channel, entry)) {
-    ctx.plan.notImported.push({ what: `${channel} allowlist entry "${stripControl(entry).slice(0, 40)}" (${from})`, why: `not a ${channel} user ID Ruby can match (usernames and phone numbers on Telegram/Discord are not stable IDs)` });
+    ctx.plan.notImported.push({ what: `${channel} allowlist entry "${stripControl(entry).slice(0, 40)}" (${from})`, why: `not a ${channel} user ID Garnet can match (usernames and phone numbers on Telegram/Discord are not stable IDs)` });
     return;
   }
   const senderId = cleanSender(channel, entry);
   if (ctx.plan.pairings.some((p) => p.channel === channel && p.senderId === senderId)) return;
-  ctx.plan.pairings.push({ channel: channel as RubyChannel, senderId, displayName, from });
+  ctx.plan.pairings.push({ channel: channel as GarnetChannel, senderId, displayName, from });
 }
 
 function noteOnce(ctx: Ctx, what: string, why: string): void {
@@ -351,7 +351,7 @@ function planHermes(ctx: Ctx): void {
 
   // Profiles: ~/.hermes/profiles/<name> has the same layout.
   for (const e of sc.list(join(sc.root, 'profiles'))) {
-    if (e.dir) plan.warnings.push(`Found Hermes profile "${e.name}"; only the main profile is imported. Import it with --from ${join(plan.fromDir, 'profiles', e.name)} (into its own RUBY_HOME if it is a separate agent).`);
+    if (e.dir) plan.warnings.push(`Found Hermes profile "${e.name}"; only the main profile is imported. Import it with --from ${join(plan.fromDir, 'profiles', e.name)} (into its own GARNET_HOME if it is a separate agent).`);
   }
 
   scanSecrets(ctx, [join(sc.root, '.env')]);
@@ -366,7 +366,7 @@ function planHermes(ctx: Ctx): void {
   }
   hermesPairingStore(ctx);
 
-  if (sc.exists(join(sc.root, 'auth.json'))) plan.notImported.push({ what: 'auth.json', why: 'OAuth credentials are never imported; sign in to your provider again in Ruby' });
+  if (sc.exists(join(sc.root, 'auth.json'))) plan.notImported.push({ what: 'auth.json', why: 'OAuth credentials are never imported; sign in to your provider again in Garnet' });
   const cfg = sc.readText(join(sc.root, 'config.yaml'));
   let timezone: string | null = null;
   if (cfg !== null) {
@@ -374,7 +374,7 @@ function planHermes(ctx: Ctx): void {
     for (const m of cfg.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)) addEnv(plan, m[1]!);
     const tz = /^timezone\s*:\s*["']?([A-Za-z0-9_+\-/]+)["']?\s*(?:#.*)?$/m.exec(cfg)?.[1];
     if (tz && validTimeZone(tz)) timezone = tz;
-    plan.notImported.push({ what: 'config.yaml', why: 'model/provider settings, MCP servers, toolsets and gateway settings are not imported; configure Ruby with `ruby setup` (or config.json; `ruby config explain` lists every setting)' });
+    plan.notImported.push({ what: 'config.yaml', why: 'model/provider settings, MCP servers, toolsets and gateway settings are not imported; configure Garnet with `garnet setup` (or config.json; `garnet config explain` lists every setting)' });
   }
 
   const jobsFile = join(sc.root, 'cron', 'jobs.json');
@@ -387,7 +387,7 @@ function planHermes(ctx: Ctx): void {
       plan.warnings.push('cron/jobs.json could not be parsed; no jobs were imported from it (it is archived).');
     }
     if (data !== null) plan.jobs.push(...hermesJobs(data, { timezone, hints, taken: new Set<string>(), skillName: (s) => normalizeSkillName(s) }));
-    addCopy(ctx, sc, jobsFile, 'Hermes job definitions (imported as disabled Ruby jobs where possible)');
+    addCopy(ctx, sc, jobsFile, 'Hermes job definitions (imported as disabled Garnet jobs where possible)');
   }
   for (const [name, why] of [['state.db', 'session history is not imported'], ['sessions', 'session history is not imported']] as const) {
     if (sc.exists(join(sc.root, name))) plan.notImported.push({ what: name, why });
@@ -441,18 +441,18 @@ function finish(ctx: Ctx): void {
   for (const m of plan.memory) {
     if (m.fitCount < m.entries.length || m.skipped.length > 0 || m.shortened > 0) {
       const src = ctx.memSources.get(m);
-      if (src) addCopy(ctx, src.scanner, src.abs, 'full original memory file; curate it with `ruby memory edit`');
+      if (src) addCopy(ctx, src.scanner, src.abs, 'full original memory file; curate it with `garnet memory edit`');
     }
   }
   plan.warnings.push(...ctx.sc.warnings);
   if (ctx.ws !== ctx.sc) plan.warnings.push(...ctx.ws.warnings);
   const total = plan.skills.length;
-  if (total > 50) plan.warnings.push(`${total} skills found; consider archiving the ones you do not need (ruby skills).`);
+  if (total > 50) plan.warnings.push(`${total} skills found; consider archiving the ones you do not need (garnet skills).`);
   if (plan.channels.length) {
-    plan.notImported.push({ what: `channel settings (${plan.channels.join(', ')})`, why: 'tokens are not imported; enable the matching Ruby channels (Telegram, Discord, Signal) with `ruby setup`' });
+    plan.notImported.push({ what: `channel settings (${plan.channels.join(', ')})`, why: 'tokens are not imported; enable the matching Garnet channels (Telegram, Discord, Signal) with `garnet setup`' });
   }
   if (plan.envVars.length) {
-    plan.notImported.push({ what: `secrets (${plan.envVars.length} env var names)`, why: 'values are never read or copied; store the ones you still need with `ruby secrets set <NAME>` (or in ~/.ruby/env)' });
+    plan.notImported.push({ what: `secrets (${plan.envVars.length} env var names)`, why: 'values are never read or copied; store the ones you still need with `garnet secrets set <NAME>` (or in ~/.garnet/env)' });
   }
 }
 
@@ -646,7 +646,7 @@ function addSkill(ctx: Ctx, sc: Scanner, dir: string, seen: Map<string, string>,
   const extras = listFiles(sc, dir).filter((p) => p !== file && sc.readBuffer(p) !== null);
   action.extraFiles = extras.map((p) => relOf(ctx, sc, p));
   if (action.extraFiles.length) {
-    // Point the skill's own-folder placeholder at the archived copy (workspace-relative, as Ruby's file tools take it).
+    // Point the skill's own-folder placeholder at the archived copy (workspace-relative, as Garnet's file tools take it).
     const archived = `imported/${plan.source}/${relOf(ctx, sc, dir)}`;
     const rw = rewriteBaseDir(text, plan.source, archived);
     if (rw.changed) {
@@ -655,7 +655,7 @@ function addSkill(ctx: Ctx, sc: Scanner, dir: string, seen: Map<string, string>,
     }
   }
   if (text.length > MAX_BODY) {
-    const note = '\n\n[Imported skill truncated to fit Ruby\'s limit; the original is under the workspace imported/ folder.]';
+    const note = '\n\n[Imported skill truncated to fit Garnet\'s limit; the original is under the workspace imported/ folder.]';
     text = `${text.slice(0, MAX_BODY - note.length).trimEnd()}${note}`;
     action.bodyTruncated = true;
   }
@@ -680,24 +680,24 @@ function addSkill(ctx: Ctx, sc: Scanner, dir: string, seen: Map<string, string>,
   if (requires.bins.length && (requires.anyBin ? missingBins.length === requires.bins.length : missingBins.length)) {
     action.missing.push(`${requires.anyBin ? 'one of ' : ''}${(requires.anyBin ? requires.bins : missingBins).join(', ')} (not on PATH)`);
   }
-  if ((requires.bins.length || usesShell(text)) && !tools.includes('run_command')) action.missing.push('run_command (exec is denied in Ruby)');
+  if ((requires.bins.length || usesShell(text)) && !tools.includes('run_command')) action.missing.push('run_command (exec is denied in Garnet)');
   if (ctx.opts.hasSecret) {
     const missingEnv = requires.env.filter((e) => !ctx.opts.hasSecret!(e));
     if (missingEnv.length) action.missing.push(`${missingEnv.join(', ')} (secret not set; and run_command cannot pass secrets to commands yet)`);
   }
-  if (requires.tools.length) action.missing.push(`${requires.tools.join(', ')} (no such Ruby tool)`);
+  if (requires.tools.length) action.missing.push(`${requires.tools.join(', ')} (no such Garnet tool)`);
   const os = { linux: 'linux', darwin: 'darwin', win32: 'win32' }[process.platform as string];
   if (requires.os.length && os && !requires.os.some((o) => o.toLowerCase() === os || (o === 'macos' && os === 'darwin') || (o === 'windows' && os === 'win32'))) {
     action.missing.push(`runs on ${requires.os.join(', ')} only`);
   }
 
-  if (!name) action.conflict = `name "${originalName}" cannot be converted to a valid Ruby skill name`;
+  if (!name) action.conflict = `name "${originalName}" cannot be converted to a valid Garnet skill name`;
   else if (!description) action.conflict = 'no description in frontmatter and none could be derived';
   else if (!text) action.conflict = 'skill body is empty';
   else if (seen.has(name)) action.conflict = `name "${name}" already taken by ${seen.get(name)!} in this source`;
   if (name && !seen.has(name)) seen.set(name, from);
   if (action.extraFiles.length || action.bodyTruncated) {
-    for (const p of [file, ...extras]) addCopy(ctx, sc, p, `skill "${name ?? originalName}": ${action.extraFiles.length ? 'supporting files Ruby skills cannot hold' : 'original body'}`);
+    for (const p of [file, ...extras]) addCopy(ctx, sc, p, `skill "${name ?? originalName}": ${action.extraFiles.length ? 'supporting files Garnet skills cannot hold' : 'original body'}`);
   }
   plan.skills.push(action);
 }

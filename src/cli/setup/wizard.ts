@@ -1,4 +1,4 @@
-// `ruby setup`: a re-runnable wizard for the model, keys, persona, channels,
+// `garnet setup`: a re-runnable wizard for the model, keys, persona, channels,
 // importing, the background service and pairing. All input comes through a
 // Prompter and all side effects through SetupDeps, so tests script it fully.
 // Nothing is written until the owner saves; secrets go to the encrypted store
@@ -14,9 +14,9 @@ import {
   removeFromEnvFile,
   setInEnvFile,
   writeConfig,
-  type RubyConfig,
+  type GarnetConfig,
 } from '../../config/index.ts';
-import { RubyError, errorMessage } from '../../contracts/index.ts';
+import { GarnetError, errorMessage } from '../../contracts/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, unlockFrom, writePrivateFile, type KdfParams } from '../../secrets/index.ts';
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
@@ -49,20 +49,20 @@ export type SetupDeps = {
   /** OpenClaw / Hermes installs found on this machine. */
   importSources: () => ImportSource[];
   /**
-   * Runs `ruby import` against the draft: persona and config changes (raised memory caps, imported
+   * Runs `garnet import` against the draft: persona and config changes (raised memory caps, imported
    * jobs) land in the draft and are saved with the rest of setup; `ask` puts the import's questions
    * to the owner.
    */
   runImport: (args: string[], draft: ImportDraft) => number | Promise<number>;
-  /** Pending pairing requests in Ruby's database (written by the running service). */
+  /** Pending pairing requests in Garnet's database (written by the running service). */
   pairing: () => { pending: () => Pairing[]; approve: (code: string) => Pairing | null; close: () => void };
 };
 
 export type ImportDraft = {
   get: () => string | undefined;
   set: (persona: string) => void;
-  config: () => RubyConfig;
-  setConfig: (config: RubyConfig) => void;
+  config: () => GarnetConfig;
+  setConfig: (config: GarnetConfig) => void;
   ask: Prompter;
 };
 
@@ -71,7 +71,7 @@ type ProviderChoice = 'anthropic' | 'openrouter' | 'local' | 'openai-compatible'
 type Section = 'model' | 'persona' | 'channels' | 'import' | 'service' | 'done' | 'quit';
 
 type State = {
-  config: RubyConfig;
+  config: GarnetConfig;
   existing: boolean;
   /** An invalid config.json to move aside on save. */
   resetFrom: string | null;
@@ -102,7 +102,7 @@ const validUrl = (v: string): string | null => {
 const required = (what: string) => (v: string) => (v.trim() ? null : `Enter ${what}.`);
 const validEnvName = (v: string) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) ? null : 'Use letters, digits and _ (like an environment variable).');
 
-export function providerOf(m: RubyConfig['model']): ProviderChoice {
+export function providerOf(m: GarnetConfig['model']): ProviderChoice {
   if (m.provider !== 'openai-compatible') return m.provider;
   if (m.baseUrl && new URL(m.baseUrl).host === 'openrouter.ai') return 'openrouter';
   if (m.baseUrl && ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(m.baseUrl).hostname)) return 'local';
@@ -114,7 +114,7 @@ const PROVIDERS: Choice<ProviderChoice>[] = [
   { value: 'openrouter', label: 'OpenRouter', hint: 'one key, many models · openrouter.ai/keys' },
   { value: 'local', label: 'A model on this machine', hint: 'Ollama, LM Studio, llama.cpp, vLLM · no key' },
   { value: 'openai-compatible', label: 'Another OpenAI-compatible API', hint: 'any /v1/chat/completions endpoint' },
-  { value: 'fake', label: 'Not yet: the offline demo model', hint: 'try Ruby without a key' },
+  { value: 'fake', label: 'Not yet: the offline demo model', hint: 'try Garnet without a key' },
 ];
 
 export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<number> {
@@ -123,16 +123,16 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
   if (st.resetFrom) {
     const reset = await p.confirm({ id: 'reset', message: 'Start over from the defaults? The current file is kept as a backup.', default: true, auto: false });
     if (!reset) {
-      io.err('Nothing was changed. Fix config.json by hand (`ruby config explain` lists every setting), or pass --reset.\n');
+      io.err('Nothing was changed. Fix config.json by hand (`garnet config explain` lists every setting), or pass --reset.\n');
       return 1;
     }
   }
-  io.out(`\n${s.accent('◆ RUBY')} ${s.muted('/ SETUP')}\n${s.muted('────────────────────────────────────────')}\n`);
+  io.out(`\n${s.accent('◆ GARNET')} ${s.muted('/ SETUP')}\n${s.muted('────────────────────────────────────────')}\n`);
   if (st.existing) {
-    io.out(`Ruby is already set up in ${deps.home}. Change what you like; nothing is saved until you finish.\n\n`);
+    io.out(`Garnet is already set up in ${deps.home}. Change what you like; nothing is saved until you finish.\n\n`);
     io.out(summary(st, deps));
   } else {
-    io.out(`Let's get Ruby ready. This takes a minute or two; everything goes in ${deps.home}.\nNothing is saved until the end. Press Ctrl+C to quit at any time.\n`);
+    io.out(`Let's get Garnet ready. This takes a minute or two; everything goes in ${deps.home}.\nNothing is saved until the end. Press Ctrl+C to quit at any time.\n`);
   }
 
   let wantService = false;
@@ -212,13 +212,13 @@ async function importStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Prom
   heading(io, deps.style, 'Bring your old assistant along');
   for (const { source, dir } of sources) {
     const name = source === 'openclaw' ? 'OpenClaw' : 'Hermes';
-    const look = await p.confirm({ id: 'import', message: `Found ${name} at ${dir}. Preview what Ruby can import?`, help: 'Memory, persona and skills. Secrets are never copied.', default: true, auto: false });
+    const look = await p.confirm({ id: 'import', message: `Found ${name} at ${dir}. Preview what Garnet can import?`, help: 'Memory, persona and skills. Secrets are never copied.', default: true, auto: false });
     if (!look) continue;
     const draft: ImportDraft = {
       get: () => st.config.persona,
       set: (v: string) => void (st.config.persona = v),
       config: () => st.config,
-      setConfig: (c: RubyConfig) => void (st.config = c),
+      setConfig: (c: GarnetConfig) => void (st.config = c),
       ask: p,
     };
     // An import is optional: a failure is reported and setup carries on.
@@ -244,10 +244,10 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
   heading(io, deps.style, 'Model');
   const cur = st.config.model;
   const was = providerOf(cur);
-  const provider = await p.select<ProviderChoice>({ id: 'provider', message: 'Which model should Ruby think with?', choices: PROVIDERS, default: was });
+  const provider = await p.select<ProviderChoice>({ id: 'provider', message: 'Which model should Garnet think with?', choices: PROVIDERS, default: was });
   const same = provider === was;
   const defaults = defaultConfig().model;
-  const m: RubyConfig['model'] = { ...cur };
+  const m: GarnetConfig['model'] = { ...cur };
   delete m.contextWindow;
   if (!same) delete m.baseUrl;
   if (same && cur.contextWindow) m.contextWindow = cur.contextWindow;
@@ -293,7 +293,7 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
   st.config.model = m;
 
   if (provider === 'fake') {
-    io.out(`  ${deps.style.muted('The demo model replies from a script. Run `ruby setup` again when you have a key.')}\n`);
+    io.out(`  ${deps.style.muted('The demo model replies from a script. Run `garnet setup` again when you have a key.')}\n`);
     return;
   }
   const keySpec = {
@@ -363,7 +363,7 @@ async function chooseStorage(p: Prompter, io: Io, deps: SetupDeps, st: State): P
   if (lockedOut) {
     io.out(`  ${s.warn('!')} The encrypted store at ${secretsFile(deps.home)} is locked${unlock.ok ? '' : unlock.why ? `: ${unlock.why}` : ''}. Set ${KEY_FILE_ENV} or ${PASSPHRASE_ENV} and re-run setup to use it.\n`);
   }
-  const storage = await p.select<Storage>({ id: 'secrets', message: 'Where should Ruby keep keys and tokens?', choices, default: choices[0]!.value });
+  const storage = await p.select<Storage>({ id: 'secrets', message: 'Where should Garnet keep keys and tokens?', choices, default: choices[0]!.value });
   if (storage === 'encrypted' && !unlock.ok) {
     const path = await p.text({
       id: 'key-file',
@@ -395,8 +395,8 @@ async function secretStep(p: Prompter, io: Io, deps: SetupDeps, st: State, spec:
   const value = await p.secret({ id: spec.id, message: `Paste your ${spec.label}`, help: spec.help });
   if (!value) {
     if (spec.required && !found.found) {
-      io.out(`  ${s.warn('!')} Skipped. Add it later with \`ruby secrets set ${spec.name}\`.\n`);
-      st.todo.push(`Add your ${spec.label}: ruby secrets set ${spec.name}`);
+      io.out(`  ${s.warn('!')} Skipped. Add it later with \`garnet secrets set ${spec.name}\`.\n`);
+      st.todo.push(`Add your ${spec.label}: garnet secrets set ${spec.name}`);
     }
     return found.value;
   }
@@ -430,9 +430,9 @@ async function checked(
     const result = await o.check(value);
     io.out(`  ${!result.ok ? s.bad('✗') : result.warn ? s.warn('!') : s.ok('✓')} ${result.detail}\n`);
     if (result.ok) return result;
-    if (!p.interactive) throw new RubyError('config', `The ${o.what} check failed: ${result.detail}. Nothing was saved.`);
+    if (!p.interactive) throw new GarnetError('config', `The ${o.what} check failed: ${result.detail}. Nothing was saved.`);
     if (!o.canRetry || !(await p.confirm({ id: `retry-${o.what}`, message: 'Enter it again?', default: true }))) {
-      st.todo.push(`Fix the ${o.what} setup (the live check said: ${result.detail}), then run \`ruby doctor\`.`);
+      st.todo.push(`Fix the ${o.what} setup (the live check said: ${result.detail}), then run \`garnet doctor\`.`);
       return result;
     }
     fresh = true;
@@ -467,7 +467,7 @@ async function personaStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Pro
 async function channelsStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   const s = deps.style;
   heading(io, s, 'Channels');
-  io.out(`  ${s.muted('Reach Ruby from your phone. Each channel is optional; you can add them later.')}\n`);
+  io.out(`  ${s.muted('Reach Garnet from your phone. Each channel is optional; you can add them later.')}\n`);
   const ch = st.config.channels;
 
   const tg = { ...ch.telegram };
@@ -492,7 +492,7 @@ async function channelsStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Pr
     io.out(
       `  1. https://discord.com/developers/applications → New Application → Bot → Reset Token, and copy it\n` +
         `  2. On the same page, turn on Message Content Intent (Privileged Gateway Intents)\n` +
-        `  3. Ruby answers direct messages: share a server with the bot, then DM it\n`,
+        `  3. Garnet answers direct messages: share a server with the bot, then DM it\n`,
     );
     if (!p.interactive) dc.tokenEnv = await p.text({ id: 'discord-token-env', message: 'Name of the variable or secret that holds the Discord token', default: dc.tokenEnv, validate: validEnvName });
     const r = await checked(p, io, deps, st, {
@@ -589,8 +589,8 @@ async function serviceStep(p: Prompter, io: Io, deps: SetupDeps, st: State, aske
   }
   const want = await p.confirm({
     id: 'service',
-    message: installed ? `Reinstall and restart the ${svc.label}?` : `Keep Ruby running in the background (${svc.label}, starts at login)?`,
-    help: anyChannel ? 'Your channels only work while Ruby runs.' : 'Useful once a channel or the API is on; `ruby start` runs it in the foreground instead.',
+    message: installed ? `Reinstall and restart the ${svc.label}?` : `Keep Garnet running in the background (${svc.label}, starts at login)?`,
+    help: anyChannel ? 'Your channels only work while Garnet runs.' : 'Useful once a channel or the API is on; `garnet start` runs it in the foreground instead.',
     default: anyChannel || installed,
     auto: false,
   });
@@ -618,11 +618,11 @@ async function pairingStep(p: Prompter, io: Io, deps: SetupDeps, st: State, serv
   if (!p.interactive || !channels.length) return;
   const running = service === 'installed' || service === 'restarted';
   heading(io, s, 'Pairing');
-  io.out(`  ${s.muted('Ruby only talks to people you approve. The first message from a new account gets a pairing code.')}\n`);
+  io.out(`  ${s.muted('Garnet only talks to people you approve. The first message from a new account gets a pairing code.')}\n`);
   const go = await p.confirm({
     id: 'pair',
     message: 'Pair your own account now?',
-    help: running ? 'The service is running.' : 'Ruby must be running: start `ruby start` in another terminal first.',
+    help: running ? 'The service is running.' : 'Garnet must be running: start `garnet start` in another terminal first.',
     default: running,
   });
   if (!go) return;
@@ -634,7 +634,7 @@ async function pairingStep(p: Prompter, io: Io, deps: SetupDeps, st: State, serv
       if (answer.toLowerCase() === 'skip') break;
       const pending = db.pending();
       if (!pending.length) {
-        io.out(`  ${s.muted('No pairing request yet. Did the bot answer with a code? If not, check `ruby doctor`.')}\n`);
+        io.out(`  ${s.muted('No pairing request yet. Did the bot answer with a code? If not, check `garnet doctor`.')}\n`);
         continue;
       }
       let approved = 0;
@@ -642,14 +642,14 @@ async function pairingStep(p: Prompter, io: Io, deps: SetupDeps, st: State, serv
         const who = `${req.senderName ?? req.senderId} on ${req.channel}`;
         if (await p.confirm({ id: 'pair-approve', message: `Approve ${who} (code ${req.code})?`, help: 'Only approve yourself or people you trust.', default: true })) {
           if (db.approve(req.code)) {
-            io.out(`  ${s.ok('✓')} Paired ${who}. Ruby will greet them.\n`);
+            io.out(`  ${s.ok('✓')} Paired ${who}. Garnet will greet them.\n`);
             approved++;
           }
         }
       }
       if (approved) return;
     }
-    io.out(`  Later: message the bot, then run \`ruby pair list\` and \`ruby pair approve <code>\`.\n`);
+    io.out(`  Later: message the bot, then run \`garnet pair list\` and \`garnet pair approve <code>\`.\n`);
   } finally {
     db.close();
   }
@@ -689,19 +689,19 @@ function nextSteps(st: State, deps: SetupDeps, service: ServiceOutcome): string 
   const s = deps.style;
   const c = st.config;
   const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => c.channels[n].enabled);
-  const lines: string[] = [`\n${s.accent('◆')} ${s.bold('Ruby is ready.')}\n`, summary(st, deps)];
+  const lines: string[] = [`\n${s.accent('◆')} ${s.bold('Garnet is ready.')}\n`, summary(st, deps)];
   if (st.todo.length) {
     lines.push(`\n${s.bold('Still to do')}\n`);
     for (const t of st.todo) lines.push(`  ${s.warn('!')} ${t}\n`);
   }
   lines.push(`\n${s.bold('Next')}\n`);
   const step = (cmd: string, why: string) => lines.push(`  ${s.accent(cmd.padEnd(22))} ${why}\n`);
-  step(c.model.provider === 'fake' ? 'ruby chat --fake' : 'ruby chat', 'talk to Ruby in this terminal');
-  if (channels.length && service !== 'installed' && service !== 'restarted') step('ruby start', 'run Ruby for your channels (or `ruby service install`)');
-  if (channels.length) step('ruby pair list', 'see and approve who wants to talk to Ruby');
-  step('ruby doctor', 'check that everything is wired up');
-  step('ruby setup', 'change any of this later');
-  step('ruby dashboard', 'open the web dashboard (optional)');
-  if (service === 'failed') lines.push(`\n  ${s.warn('!')} The background service did not start cleanly; see the output above, or run \`ruby start\` to see errors in the foreground.\n`);
+  step(c.model.provider === 'fake' ? 'garnet chat --fake' : 'garnet chat', 'talk to Garnet in this terminal');
+  if (channels.length && service !== 'installed' && service !== 'restarted') step('garnet start', 'run Garnet for your channels (or `garnet service install`)');
+  if (channels.length) step('garnet pair list', 'see and approve who wants to talk to Garnet');
+  step('garnet doctor', 'check that everything is wired up');
+  step('garnet setup', 'change any of this later');
+  step('garnet dashboard', 'open the web dashboard (optional)');
+  if (service === 'failed') lines.push(`\n  ${s.warn('!')} The background service did not start cleanly; see the output above, or run \`garnet start\` to see errors in the foreground.\n`);
   return lines.join('');
 }

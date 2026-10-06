@@ -5,7 +5,7 @@
 // 4014 and message text arrives empty; this adapter reports that as a fatal `lastError`.
 import { createHash } from 'node:crypto';
 import {
-  RubyError,
+  GarnetError,
   errorMessage,
   type ChannelAdapter,
   type ChannelCapabilities,
@@ -39,7 +39,7 @@ const MIN_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const SINK_ATTEMPTS = 4;
-const USER_AGENT = 'DiscordBot (https://github.com/ruby-agent, 0.1.0)';
+const USER_AGENT = 'DiscordBot (https://github.com/garnet-agent, 0.1.0)';
 
 /** GUILD_MESSAGES (1<<9) | DIRECT_MESSAGES (1<<12) | MESSAGE_CONTENT (1<<15, privileged). */
 export const DISCORD_INTENTS = (1 << 9) | (1 << 12) | (1 << 15);
@@ -121,7 +121,7 @@ export class DiscordChannel implements ChannelAdapter {
 
   constructor(options: DiscordOptions) {
     if (typeof options.token !== 'string' || !TOKEN_SHAPE.test(options.token)) {
-      throw new RubyError('config', 'Discord bot token is missing or malformed (expected three dot-separated parts from the Developer Portal)');
+      throw new GarnetError('config', 'Discord bot token is missing or malformed (expected three dot-separated parts from the Developer Portal)');
     }
     this.#token = options.token;
     this.account = options.account ?? 'default';
@@ -146,8 +146,8 @@ export class DiscordChannel implements ChannelAdapter {
       this.#gatewayUrl = gw!.url!;
     } catch (e) {
       this.#controller = null;
-      if (e instanceof DiscordApiError && e.status === 401) throw new RubyError('config', 'Discord rejected the bot token');
-      throw new RubyError('provider_transient', `Discord startup failed: ${this.#redact(errorMessage(e))}`);
+      if (e instanceof DiscordApiError && e.status === 401) throw new GarnetError('config', 'Discord rejected the bot token');
+      throw new GarnetError('provider_transient', `Discord startup failed: ${this.#redact(errorMessage(e))}`);
     }
     this.#lastSuccessAt = Date.now();
     this.#lastError = null;
@@ -358,7 +358,7 @@ export class DiscordChannel implements ChannelAdapter {
             } else {
               send({
                 op: 2,
-                d: { token: this.#token, intents: DISCORD_INTENTS, properties: { os: 'linux', browser: 'ruby', device: 'ruby' } },
+                d: { token: this.#token, intents: DISCORD_INTENTS, properties: { os: 'linux', browser: 'garnet', device: 'garnet' } },
               });
             }
             return;

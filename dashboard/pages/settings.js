@@ -139,8 +139,8 @@ export default async function mount(root) {
       try {
         const r = await api.put('/api/config', draft);
         saved = clone(draft);
-        result.replaceChildren(h('div', { class: 'banner ok' }, h('strong', null, r.restartRequired ? 'Saved. Restart Ruby to apply.' : 'Saved.')));
-        toast(r.restartRequired ? 'Saved. Restart Ruby to apply.' : 'Saved', 'ok');
+        result.replaceChildren(h('div', { class: 'banner ok' }, h('strong', null, r.restartRequired ? 'Saved. Restart Garnet to apply.' : 'Saved.')));
+        toast(r.restartRequired ? 'Saved. Restart Garnet to apply.' : 'Saved', 'ok');
         refresh();
       } catch (e) {
         if (e.status === 401) return;
@@ -166,6 +166,6 @@ export default async function mount(root) {
     }
     refresh();
   }
-  root.append(pageHead('Settings', 'Every Ruby setting, validated by the same schema the server uses. Review changes before they are written; most take effect after a restart.'), result, sections, bar);
+  root.append(pageHead('Settings', 'Every Garnet setting, validated by the same schema the server uses. Review changes before they are written; most take effect after a restart.'), result, sections, bar);
   build();
 }

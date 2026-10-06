@@ -36,7 +36,7 @@ function render(o) {
 }
 
 export default async function mount(root, ctx) {
-  root.append(pageHead('Overview', 'Live status of this Ruby. Refreshes every 10 seconds while the tab is visible.'));
+  root.append(pageHead('Overview', 'Live status of this Garnet. Refreshes every 10 seconds while the tab is visible.'));
   const body = h('div', { class: 'page' });
   root.append(body);
   const load = async () => {

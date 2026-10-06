@@ -1,4 +1,4 @@
-// Easter egg: `ruby --sparkle`.
+// Easter egg: `garnet --sparkle`.
 const GEM = [
   '      ________      ',
   '     /\\  /\\  /\\     ',

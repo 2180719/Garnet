@@ -1,10 +1,10 @@
-// The persona basics `ruby setup` manages (assistant name, owner name, notes)
+// The persona basics `garnet setup` manages (assistant name, owner name, notes)
 // live in a marked block inside config.persona, so re-running setup updates
 // them without touching persona text written by hand or imported.
 
-const START = '<!-- ruby setup -->';
-const END = '<!-- /ruby setup -->';
-export const DEFAULT_NAME = 'Ruby';
+const START = '<!-- garnet setup -->';
+const END = '<!-- /garnet setup -->';
+export const DEFAULT_NAME = 'Garnet';
 export const PERSONA_MAX = 4000;
 
 export type PersonaBasics = { name: string; owner: string; notes: string };

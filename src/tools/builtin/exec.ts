@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { z } from 'zod';
-import { RubyError, type ToolDefinition } from '../../contracts/index.ts';
+import { GarnetError, type ToolDefinition } from '../../contracts/index.ts';
 import { resolveInWorkspace } from '../../policy/index.ts';
 import type { RunResult, Sandbox } from '../../sandbox/index.ts';
 
@@ -14,7 +14,7 @@ export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
     ready ??= sandbox
       .check()
       .then((status) => {
-        if (!status.ok) throw new RubyError('config', `The command sandbox is unavailable: ${status.detail} Do not retry; tell the owner.`);
+        if (!status.ok) throw new GarnetError('config', `The command sandbox is unavailable: ${status.detail} Do not retry; tell the owner.`);
       })
       .catch((e: unknown) => {
         ready = null; // check again next time
@@ -43,7 +43,7 @@ export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
     maxOutputChars: 30_000,
     async run(input, ctx) {
       if (realpathSync(ctx.workspace) !== sandbox.workspace) {
-        throw new RubyError('internal', 'The command sandbox is bound to a different workspace than this session.');
+        throw new GarnetError('internal', 'The command sandbox is bound to a different workspace than this session.');
       }
       await ensureReady();
       const result = await sandbox.run({ command: input.command, cwd: input.cwd, timeoutMs: input.timeout_seconds * 1000, signal: ctx.signal });

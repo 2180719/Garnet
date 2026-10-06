@@ -2,8 +2,8 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
-import { loadConfig, redact, rubyHome, type Paths, type RubyConfig } from './config/index.ts';
-import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
+import { loadConfig, redact, garnetHome, type Paths, type GarnetConfig } from './config/index.ts';
+import { GarnetError, type Budget, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
@@ -31,8 +31,8 @@ export type Outbound = {
   ) => string;
 };
 
-export type Ruby = {
-  config: RubyConfig;
+export type Garnet = {
+  config: GarnetConfig;
   paths: Paths;
   env: NodeJS.ProcessEnv;
   /** The encrypted secret store at <home>/secrets (decrypted only when a secret is needed). */
@@ -79,12 +79,12 @@ export type CreateOptions = {
   noModel?: boolean;
 };
 
-export function createRuby(options: CreateOptions = {}): Ruby {
+export function createGarnet(options: CreateOptions = {}): Garnet {
   const env = options.env ?? process.env;
-  const { config, paths } = loadConfig(options.home ?? rubyHome(env));
+  const { config, paths } = loadConfig(options.home ?? garnetHome(env));
   if (isInside(paths.workspace, paths.home)) {
     // File tools are scoped to the workspace; if it held config.json, secrets or skill sidecars, one approved write could grant everything.
-    throw new RubyError('config', `workspace (${paths.workspace}) must not contain Ruby's home (${paths.home}): tools could change config.json, secrets and skills there. Point "workspace" at a directory of its own.`);
+    throw new GarnetError('config', `workspace (${paths.workspace}) must not contain Garnet's home (${paths.home}): tools could change config.json, secrets and skills there. Point "workspace" at a directory of its own.`);
   }
   const secrets = openSecretStore(paths.home, env);
   const secret = secretLookup(env, secrets);
@@ -231,12 +231,12 @@ export function createRuby(options: CreateOptions = {}): Ruby {
 }
 
 /** The owner's time zone: `timezone` in config, else the host's. */
-export function ownerTimeZone(config: RubyConfig): string {
+export function ownerTimeZone(config: GarnetConfig): string {
   return config.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
 /** Registers web_fetch and web_search per config; returns the search endpoint(s) the owner chose (see `PolicyOptions.trustedEndpoints`). */
-function registerWebTools(registry: ToolRegistry, config: RubyConfig, secret: SecretLookup): string[] {
+function registerWebTools(registry: ToolRegistry, config: GarnetConfig, secret: SecretLookup): string[] {
   if (config.permissions['net.fetch'] === 'deny') return [];
   const w = config.web;
   const timeoutMs = w.fetch.timeoutSeconds * 1000;
@@ -249,7 +249,7 @@ function registerWebTools(registry: ToolRegistry, config: RubyConfig, secret: Se
 }
 
 /** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */
-export function createModel(config: RubyConfig, secret: SecretLookup): ModelAdapter {
+export function createModel(config: GarnetConfig, secret: SecretLookup): ModelAdapter {
   const m = config.model;
   if (m.provider === 'fake') return new FakeModel();
   const apiKey = secret(m.apiKeyEnv);
@@ -258,7 +258,7 @@ export function createModel(config: RubyConfig, secret: SecretLookup): ModelAdap
     return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf });
   }
   if (!apiKey) {
-    throw new RubyError('config', `No API key found. Set the ${m.apiKeyEnv} environment variable or store it with \`ruby secrets set ${m.apiKeyEnv}\`, or run with --fake.`);
+    throw new GarnetError('config', `No API key found. Set the ${m.apiKeyEnv} environment variable or store it with \`garnet secrets set ${m.apiKeyEnv}\`, or run with --fake.`);
   }
   return new AnthropicModel({
     apiKey,
@@ -272,7 +272,7 @@ export function createModel(config: RubyConfig, secret: SecretLookup): ModelAdap
 }
 
 /** Speech to text for voice notes, from `media.transcription`; null when none is configured. */
-export function createTranscriber(config: RubyConfig, secret: SecretLookup): Transcriber | null {
+export function createTranscriber(config: GarnetConfig, secret: SecretLookup): Transcriber | null {
   const t = config.media.transcription;
   const timeoutMs = t.timeoutSeconds * 1000;
   if (t.backend === 'command' && t.command) return new CommandTranscriber(t.command, timeoutMs);
@@ -280,30 +280,30 @@ export function createTranscriber(config: RubyConfig, secret: SecretLookup): Tra
   const apiKey = t.apiKeyEnv ? secret(t.apiKeyEnv) : undefined;
   if (t.apiKeyEnv && !apiKey) {
     // Not fatal at startup (admin commands never transcribe); each voice note gets this explanation instead.
-    const why = `${t.apiKeyEnv} is not set (environment or \`ruby secrets set ${t.apiKeyEnv}\`)`;
-    return { label: 'openai-compatible (missing key)', transcribe: () => Promise.reject(new RubyError('config', why)) };
+    const why = `${t.apiKeyEnv} is not set (environment or \`garnet secrets set ${t.apiKeyEnv}\`)`;
+    return { label: 'openai-compatible (missing key)', transcribe: () => Promise.reject(new GarnetError('config', why)) };
   }
   return new OpenAITranscriber({ baseUrl: t.baseUrl, path: t.path, apiKey, model: t.model, language: t.language, timeoutMs });
 }
 /** The website demo uses its own cheap model with the same provider and credentials. */
-function createDemo(ruby: Ruby): DemoChat {
-  const d = ruby.config.api.demo;
-  const model = createModel({ ...ruby.config, model: { ...ruby.config.model, name: d.model, effort: 'low' } }, ruby.secret);
+function createDemo(garnet: Garnet): DemoChat {
+  const d = garnet.config.api.demo;
+  const model = createModel({ ...garnet.config, model: { ...garnet.config.model, name: d.model, effort: 'low' } }, garnet.secret);
   return new DemoChat({ model, allowedOrigins: d.allowedOrigins, perIpPerHour: d.perIpPerHour, dailyTokenBudget: d.dailyTokenBudget, maxOutputTokens: d.maxOutputTokens });
 }
 
-export function createChannels(config: RubyConfig, secret: SecretLookup): ChannelAdapter[] {
+export function createChannels(config: GarnetConfig, secret: SecretLookup): ChannelAdapter[] {
   const channels: ChannelAdapter[] = [];
   const tg = config.channels.telegram;
   if (tg.enabled) {
     const token = secret(tg.tokenEnv);
-    if (!token) throw new RubyError('config', `Telegram is enabled but ${tg.tokenEnv} is not set (environment or \`ruby secrets set ${tg.tokenEnv}\`).`);
+    if (!token) throw new GarnetError('config', `Telegram is enabled but ${tg.tokenEnv} is not set (environment or \`garnet secrets set ${tg.tokenEnv}\`).`);
     channels.push(new TelegramChannel({ token }));
   }
   const dc = config.channels.discord;
   if (dc.enabled) {
     const token = secret(dc.tokenEnv);
-    if (!token) throw new RubyError('config', `Discord is enabled but ${dc.tokenEnv} is not set (environment or \`ruby secrets set ${dc.tokenEnv}\`).`);
+    if (!token) throw new GarnetError('config', `Discord is enabled but ${dc.tokenEnv} is not set (environment or \`garnet secrets set ${dc.tokenEnv}\`).`);
     channels.push(new DiscordChannel({ token }));
   }
   const sig = config.channels.signal;
@@ -316,19 +316,19 @@ export type Service = { gateway: Gateway; api: ApiServer | null; scheduler: Sche
 /**
  * Each job runs as its own agent: its grant intersected with the owner's
  * permissions, and its own budget. Built on first use (jobs created from chat
- * appear while Ruby runs) and rebuilt when the job's grant or budget changes.
+ * appear while Garnet runs) and rebuilt when the job's grant or budget changes.
  */
-function jobAgents(ruby: Ruby): (key: string) => Agent | undefined {
+function jobAgents(garnet: Garnet): (key: string) => Agent | undefined {
   const agents = new Map<string, { sig: string; agent: Agent }>();
   return (key) => {
     if (!key.startsWith('job:')) return undefined;
-    const job = ruby.jobBook.find(key.slice(4))?.job;
+    const job = garnet.jobBook.find(key.slice(4))?.job;
     if (!job) return undefined;
     const sig = JSON.stringify([job.permissions, job.budget, job.timeoutMinutes]);
     const cached = agents.get(key);
     if (cached?.sig === sig) return cached.agent;
-    const policy = ruby.ownerPolicy.intersect(new Policy(job.permissions));
-    const agent = ruby.makeAgent(policy, { ...ruby.config.budgets, maxTokens: job.budget.maxTokensPerRun, maxWallMs: job.timeoutMinutes * 60_000 });
+    const policy = garnet.ownerPolicy.intersect(new Policy(job.permissions));
+    const agent = garnet.makeAgent(policy, { ...garnet.config.budgets, maxTokens: job.budget.maxTokensPerRun, maxWallMs: job.timeoutMinutes * 60_000 });
     agents.set(key, { sig, agent });
     return agent;
   };
@@ -340,39 +340,39 @@ export function redactingLog(log: LogFn): LogFn {
 }
 
 /** Wires the gateway and scheduler without starting anything. `deliver` is false for short-lived CLI processes. */
-export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter[], deliver: boolean): { gateway: Gateway; scheduler: Scheduler; channels: ChannelAdapter[] } {
-  const { config } = ruby;
+export function buildService(garnet: Garnet, rawLog: LogFn, channels: ChannelAdapter[], deliver: boolean): { gateway: Gateway; scheduler: Scheduler; channels: ChannelAdapter[] } {
+  const { config } = garnet;
   const log = redactingLog(rawLog);
-  const agentFor = jobAgents(ruby);
+  const agentFor = jobAgents(garnet);
   const gateway = new Gateway({
-    store: ruby.gatewayStore,
-    approvals: ruby.approvals,
-    sessions: ruby.store,
-    agent: ruby.agent,
+    store: garnet.gatewayStore,
+    approvals: garnet.approvals,
+    sessions: garnet.store,
+    agent: garnet.agent,
     agentFor,
     lanes: new LaneQueue(config.gateway.maxConcurrent),
     channels,
     routes: config.routes,
     pairingTtlMinutes: config.gateway.pairingTtlMinutes,
     deliveryEnabled: deliver,
-    model: { id: ruby.model.id, contextWindow: ruby.model.capabilities.contextWindow },
+    model: { id: garnet.model.id, contextWindow: garnet.model.capabilities.contextWindow },
     log,
-    ...(ruby.media ? { media: ruby.media } : {}),
+    ...(garnet.media ? { media: garnet.media } : {}),
   });
-  const sandbox = ruby.sandbox;
+  const sandbox = garnet.sandbox;
   const scheduler = new Scheduler({
-    jobs: () => ruby.jobBook.jobs(),
+    jobs: () => garnet.jobBook.jobs(),
     // Script-only jobs run in the same sandbox as run_command, and only when exec is not denied.
     runScript: sandbox ? (job, signal) => sandbox.run({ command: job.script!.command, cwd: '.', timeoutMs: job.script!.timeoutSeconds * 1000, signal }) : null,
-    store: ruby.jobStore,
-    workspace: ruby.paths.workspace,
+    store: garnet.jobStore,
+    workspace: garnet.paths.workspace,
     enabled: config.scheduler.enabled,
     tickSeconds: config.scheduler.tickSeconds,
     timeZone: ownerTimeZone(config),
     log,
     run: (job, text, signal) => {
       // A job created by a conversation that had read untrusted content carries that taint into every run.
-      const taint = ruby.jobBook.taintOf(job.id);
+      const taint = garnet.jobBook.taintOf(job.id);
       return gateway.chat(`job:${job.id}`, text, { signal, source: 'scheduler', ...(taint.length ? { taint } : {}) });
     },
     notify: (job, text) => {
@@ -382,58 +382,58 @@ export function buildService(ruby: Ruby, rawLog: LogFn, channels: ChannelAdapter
       gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text, { from: `scheduled job "${job.id}"` });
     },
   });
-  ruby.jobBook.onRemoved((id) => scheduler.cancel(id));
+  garnet.jobBook.onRemoved((id) => scheduler.cancel(id));
   // Tools now send through the gateway: delivery right away, and notes recorded on the conversation's lane.
-  ruby.outbound.notify = (target, text, record, attachments) => gateway.notify(target, text, record, attachments);
+  garnet.outbound.notify = (target, text, record, attachments) => gateway.notify(target, text, record, attachments);
   return { gateway, scheduler, channels };
 }
 
 /** Starts the long-running service: gateway, channels, scheduler and (if enabled) the HTTP API. */
-export async function startService(ruby: Ruby, rawLog: LogFn, overrides: { channels?: ChannelAdapter[] } = {}): Promise<Service> {
-  const { config } = ruby;
+export async function startService(garnet: Garnet, rawLog: LogFn, overrides: { channels?: ChannelAdapter[] } = {}): Promise<Service> {
+  const { config } = garnet;
   const log = redactingLog(rawLog);
-  const { gateway, scheduler, channels } = buildService(ruby, log, overrides.channels ?? createChannels(config, ruby.secret), true);
+  const { gateway, scheduler, channels } = buildService(garnet, log, overrides.channels ?? createChannels(config, garnet.secret), true);
   let api: ApiServer | null = null;
   try {
     // Fail fast rather than silently downgrade isolation; remove containers a crash may have left.
-    if (ruby.sandbox) {
-      await assertSandboxReady(ruby.sandbox, { requireIsolated: config.sandbox.backend === 'docker' });
-      await (ruby.sandbox as { cleanup?: () => Promise<unknown> }).cleanup?.();
+    if (garnet.sandbox) {
+      await assertSandboxReady(garnet.sandbox, { requireIsolated: config.sandbox.backend === 'docker' });
+      await (garnet.sandbox as { cleanup?: () => Promise<unknown> }).cleanup?.();
     }
     await gateway.start();
     scheduler.start();
     if (config.api.enabled) {
       api = new ApiServer({
         gateway,
-        keys: ruby.keys,
-        keyStore: ruby.keyStore,
-        sessions: ruby.store,
+        keys: garnet.keys,
+        keyStore: garnet.keyStore,
+        sessions: garnet.store,
         rateLimitPerMinute: config.api.rateLimitPerMinute,
         version: VERSION,
         log,
-        admin: createBackend(ruby, gateway, scheduler, VERSION),
+        admin: createBackend(garnet, gateway, scheduler, VERSION),
         trustProxy: config.api.trustProxy,
         // Base64 data URLs are a third larger than the file; leave room for the rest of the request.
         ...(config.media.enabled ? { maxChatBodyBytes: Math.ceil(config.media.maxBytes * 1.4) + 1_000_000 } : {}),
         corsOrigins: config.api.corsOrigins,
-        ...(config.api.demo.enabled ? { demo: createDemo(ruby) } : {}),
+        ...(config.api.demo.enabled ? { demo: createDemo(garnet) } : {}),
         ...(config.dashboard.enabled ? { fallback: staticFiles(join(import.meta.dirname, '..', 'dashboard')) } : {}),
       });
       const address = await api.listen(config.api.host, config.api.port);
       log('info', `API listening on http://${address.address}:${address.port}`);
-      if (config.dashboard.enabled) log('info', `Dashboard at http://${address.address}:${address.port}/ (run \`ruby dashboard\` for a login link)`);
+      if (config.dashboard.enabled) log('info', `Dashboard at http://${address.address}:${address.port}/ (run \`garnet dashboard\` for a login link)`);
     }
   } catch (e) {
     await scheduler.stop();
     await gateway.stop(0);
     throw e;
   }
-  const jobs = ruby.jobBook.jobs();
+  const jobs = garnet.jobBook.jobs();
   if (jobs.length) {
-    log('info', `Scheduler: ${jobs.filter((j) => j.enabled).length} of ${jobs.length} job(s) enabled (${ruby.timezone})${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
+    log('info', `Scheduler: ${jobs.filter((j) => j.enabled).length} of ${jobs.length} job(s) enabled (${garnet.timezone})${config.scheduler.enabled ? '' : ' (scheduler switched off)'}`);
   }
-  for (const p of ruby.jobBook.problems()) log('warn', `job ${p.id} is not scheduled: ${p.problem}`);
-  if (channels.length === 0 && !api) log('warn', 'No channels or API enabled; Ruby is idle. Enable one in config.json.');
+  for (const p of garnet.jobBook.problems()) log('warn', `job ${p.id} is not scheduled: ${p.problem}`);
+  if (channels.length === 0 && !api) log('warn', 'No channels or API enabled; Garnet is idle. Enable one in config.json.');
   return {
     gateway,
     api,

@@ -90,7 +90,7 @@ export const SHORTCUTS: readonly [string, string][] = [
   ['Shift+Enter, Alt+Enter, Ctrl+J, or \\ then Enter', 'new line'],
   ['Up / Down', 'previous / next message from history (or move between lines)'],
   ['Tab', 'complete a /command or session id'],
-  ['Esc or Ctrl+C', 'interrupt Ruby while it works'],
+  ['Esc or Ctrl+C', 'interrupt Garnet while it works'],
   ['Ctrl+C', 'clear the input; twice on an empty line to exit'],
   ['Ctrl+D', 'exit (on an empty line)'],
   ['Ctrl+L', 'clear the screen'],

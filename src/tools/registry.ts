@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RubyError, type ToolDefinition, type ToolSchema } from '../contracts/index.ts';
+import { GarnetError, type ToolDefinition, type ToolSchema } from '../contracts/index.ts';
 
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
@@ -9,8 +9,8 @@ export class ToolRegistry {
   private readonly schemaCache = new Map<string, ToolSchema>();
 
   register(tool: ToolDefinition): this {
-    if (!NAME.test(tool.name)) throw new RubyError('internal', `Invalid tool name "${tool.name}"`);
-    if (this.tools.has(tool.name)) throw new RubyError('internal', `Tool "${tool.name}" registered twice`);
+    if (!NAME.test(tool.name)) throw new GarnetError('internal', `Invalid tool name "${tool.name}"`);
+    if (this.tools.has(tool.name)) throw new GarnetError('internal', `Tool "${tool.name}" registered twice`);
     this.tools.set(tool.name, tool);
     return this;
   }
@@ -29,7 +29,7 @@ export class ToolRegistry {
       const cached = this.schemaCache.get(name);
       if (cached) return cached;
       const tool = this.tools.get(name);
-      if (!tool) throw new RubyError('internal', `Unknown tool "${name}"`);
+      if (!tool) throw new GarnetError('internal', `Unknown tool "${name}"`);
       const { $schema: _ignored, ...inputSchema } = z.toJSONSchema(tool.input, { io: 'input' }) as Record<string, unknown>;
       const schema: ToolSchema = { name, description: tool.description, inputSchema };
       this.schemaCache.set(name, schema);

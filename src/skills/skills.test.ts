@@ -13,7 +13,7 @@ function setup() {
   const store = new SkillStore({ root, now: () => new Date(t) });
   const file = (n: string, f = 'SKILL.md') => join(root, n, f);
   const read = (n: string, f = 'SKILL.md') => readFileSync(file(n, f), 'utf8');
-  const meta = (n: string) => JSON.parse(read(n, '.ruby.json'));
+  const meta = (n: string) => JSON.parse(read(n, '.garnet.json'));
   return { root, store, clock, file, read, meta };
 }
 

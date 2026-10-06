@@ -8,8 +8,8 @@ import type { Scanner } from './safefs.ts';
 import type { SkillRequirements, Source } from './types.ts';
 
 /**
- * Tools of OpenClaw and Hermes that skills call by name. A skill whose body mentions one Ruby has
- * not registered is flagged. Names Ruby may gain later (web_fetch, web_search…) are checked against
+ * Tools of OpenClaw and Hermes that skills call by name. A skill whose body mentions one Garnet has
+ * not registered is flagged. Names Garnet may gain later (web_fetch, web_search…) are checked against
  * the live registry, so the flag disappears once the tool exists.
  */
 const FOREIGN_TOOLS = [
@@ -30,7 +30,7 @@ const FOREIGN_TOOLS = [
   'search_files',
   'memory_search',
 ];
-/** Old shell tool names; Ruby's equivalent is run_command. */
+/** Old shell tool names; Garnet's equivalent is run_command. */
 const SHELL_TOOLS = ['terminal', 'exec', 'bash', 'process'];
 
 const NAME = /^[A-Za-z0-9_.+-]{1,64}$/;
@@ -64,7 +64,7 @@ export function emptyRequirements(): SkillRequirements {
 /**
  * Requirements from the frontmatter: OpenClaw `metadata: { openclaw: { requires: { bins, anyBins, env }, os } }`
  * (JSON5), Hermes `prerequisites: { commands, env_vars }` and `platforms` (YAML).
- * Returns the requirements and the original `metadata` as one-line JSON (kept on the Ruby skill).
+ * Returns the requirements and the original `metadata` as one-line JSON (kept on the Garnet skill).
  */
 export function frontmatterRequirements(raw: Record<string, string>): { requires: SkillRequirements; metadata: string | null } {
   const req = emptyRequirements();
@@ -99,12 +99,12 @@ export function frontmatterRequirements(raw: Record<string, string>): { requires
   return { requires: req, metadata };
 }
 
-/** Tool names the body refers to that Ruby does not have. */
-export function missingTools(body: string, rubyTools: string[]): string[] {
-  const have = new Set(rubyTools);
+/** Tool names the body refers to that Garnet does not have. */
+export function missingTools(body: string, garnetTools: string[]): string[] {
+  const have = new Set(garnetTools);
   const out: string[] = [];
   for (const t of FOREIGN_TOOLS) if (!have.has(t) && new RegExp(`\\b${t}\\b`).test(body)) out.push(t);
-  if (/\bbrowser_[a-z_]+\b/.test(body) && !rubyTools.some((t) => t.startsWith('browser_')) && !out.some((t) => t.startsWith('browser_'))) out.push('browser');
+  if (/\bbrowser_[a-z_]+\b/.test(body) && !garnetTools.some((t) => t.startsWith('browser_')) && !out.some((t) => t.startsWith('browser_'))) out.push('browser');
   return out;
 }
 

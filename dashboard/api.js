@@ -1,6 +1,6 @@
 // All network access. Sends the bearer key, normalizes errors, parses the chat SSE stream.
-const KEY = 'ruby-key';
-const MINTED = 'ruby-key-minted';
+const KEY = 'garnet-key';
+const MINTED = 'garnet-key-minted';
 let key = null;
 try { key = sessionStorage.getItem(KEY); } catch { /* storage blocked: key lives in memory only */ }
 
@@ -13,7 +13,7 @@ export const session = {
   },
   clear() { key = null; try { sessionStorage.removeItem(KEY); sessionStorage.removeItem(MINTED); } catch { /* ignore */ } },
   get minted() { try { return sessionStorage.getItem(MINTED) === '1'; } catch { return false; } },
-  /** The id part of ruby_<id>_<secret>, to recognise "this session's" key in lists. */
+  /** The id part of garnet_<id>_<secret>, to recognise "this session's" key in lists. */
   get id() { return key ? key.split('_')[1] : null; },
 };
 
@@ -27,7 +27,7 @@ async function fail(res, signOutOn401 = true) {
   try { msg = (await res.json()).error?.message || msg; } catch { /* not JSON */ }
   const retry = Number(res.headers.get('Retry-After')) || 0;
   if (res.status === 401) { if (signOutOn401) hooks.unauthorized(); return new ApiError(401, 'Your API key was rejected. Please sign in again.'); }
-  if (res.status === 403) return new ApiError(403, `${msg} Create a key with the needed scope (read, chat or admin) from the API keys page, or run \`ruby dashboard\`.`);
+  if (res.status === 403) return new ApiError(403, `${msg} Create a key with the needed scope (read, chat or admin) from the API keys page, or run \`garnet dashboard\`.`);
   if (res.status === 429) return new ApiError(429, `Too many requests. Try again in ${retry || 'a few'} seconds.`, retry);
   return new ApiError(res.status, msg);
 }
@@ -37,7 +37,7 @@ async function send(path, init, k = key) {
     return await fetch(path, { ...init, headers: { ...init.headers, Authorization: `Bearer ${k}` } });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
-    throw new ApiError(0, 'Cannot reach Ruby. Is it running? The dashboard will retry when you try again.');
+    throw new ApiError(0, 'Cannot reach Garnet. Is it running? The dashboard will retry when you try again.');
   }
 }
 
@@ -61,13 +61,13 @@ export const api = {
 };
 export const enc = encodeURIComponent;
 
-/** Streams an assistant reply. Ruby keeps history server-side, so only the newest message is sent. */
+/** Streams an assistant reply. Garnet keeps history server-side, so only the newest message is sent. */
 export async function streamChat({ conversation, text, signal, onText }) {
   const res = await send('/v1/chat/completions', {
     method: 'POST',
     signal,
-    headers: { 'Content-Type': 'application/json', 'X-Ruby-Conversation': conversation },
-    body: JSON.stringify({ model: 'ruby', stream: true, messages: [{ role: 'user', content: text }] }),
+    headers: { 'Content-Type': 'application/json', 'X-Garnet-Conversation': conversation },
+    body: JSON.stringify({ model: 'garnet', stream: true, messages: [{ role: 'user', content: text }] }),
   });
   if (!res.ok) throw await fail(res);
   const reader = res.body.getReader();

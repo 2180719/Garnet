@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { isRubyError } from '../contracts/index.ts';
+import { isGarnetError } from '../contracts/index.ts';
 import { DockerSandbox, LocalSandbox, NOBODY, OutputCollector, assertSandboxReady, canWrite, createSandbox, openSandbox, sandboxUser, type SpawnFn } from './index.ts';
 
 class FakeChild extends EventEmitter {
@@ -83,26 +83,26 @@ const req = (over: Partial<Parameters<DockerSandbox['run']>[0]> = {}) => ({
 test('docker run uses the full lockdown flag set, an args array and no host environment', async () => {
   const workspace = realpathSync(tempDir());
   mkdirSync(join(workspace, 'sub'));
-  process.env.RUBY_SANDBOX_TEST_SECRET = 'hunter2';
+  process.env.GARNET_SANDBOX_TEST_SECRET = 'hunter2';
   const fake = fakeDocker();
   const sb = new DockerSandbox({ workspace, spawn: fake.spawn, image: 'busybox:latest', user: '1000:1000' });
-  const command = `echo "$RUBY_SANDBOX_TEST_SECRET" '; rm -rf /' $(id)`;
+  const command = `echo "$GARNET_SANDBOX_TEST_SECRET" '; rm -rf /' $(id)`;
   const pending = sb.run(req({ command, cwd: 'sub', env: { FOO: 'bar baz' } }));
   const run = fake.runCall();
   run.child.stdout.write('out');
   run.child.close(0);
   const result = await pending;
-  delete process.env.RUBY_SANDBOX_TEST_SECRET;
+  delete process.env.GARNET_SANDBOX_TEST_SECRET;
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, 'out');
   assert.equal(run.cmd, 'docker');
   const name = run.args[run.args.indexOf('--name') + 1]!;
-  assert.match(name, /^ruby-exec-[0-9a-f]{16}$/);
+  assert.match(name, /^garnet-exec-[0-9a-f]{16}$/);
   assert.deepEqual(run.args, [
     'run', '--rm', '-i',
     '--name', name,
-    '--label', `ruby.exec.workspace=${workspace}`,
+    '--label', `garnet.exec.workspace=${workspace}`,
     '--pull', 'never',
     '--network', 'none',
     '--memory', '512m',
@@ -127,7 +127,7 @@ test('docker run uses the full lockdown flag set, an args array and no host envi
   assert.equal(run.opts.shell, undefined);
   // The docker client gets an allowlisted environment; the secret appears nowhere.
   assert.equal(JSON.stringify(run.opts.env).includes('hunter2'), false);
-  assert.equal(Object.keys(run.opts.env ?? {}).some((k) => k.startsWith('RUBY_')), false);
+  assert.equal(Object.keys(run.opts.env ?? {}).some((k) => k.startsWith('GARNET_')), false);
   // Every -e is NAME=value (a bare -e NAME would copy from the client's environment).
   run.args.forEach((a, i) => {
     if (a === '-e') assert.match(run.args[i + 1]!, /^[A-Za-z_][A-Za-z0-9_]*=/);
@@ -147,9 +147,9 @@ const userArg = (args: string[]) => args[args.indexOf('--user') + 1];
 test('the container user is never root', () => {
   const root = { uid: 0, gid: 0 };
   const owner = { uid: 1000, gid: 1000 };
-  // Ruby as a regular user: the host uid:gid, so files written in the workspace belong to the owner.
+  // Garnet as a regular user: the host uid:gid, so files written in the workspace belong to the owner.
   assert.equal(sandboxUser({ host: { uid: 501, gid: 20 }, workspaceOwner: root }), '501:20');
-  // Ruby as root: the workspace owner when that is a regular user, else nobody.
+  // Garnet as root: the workspace owner when that is a regular user, else nobody.
   assert.equal(sandboxUser({ host: root, workspaceOwner: owner }), '1000:1000');
   assert.equal(sandboxUser({ host: root, workspaceOwner: root }), NOBODY);
   // No uids on this platform.
@@ -158,7 +158,7 @@ test('the container user is never root', () => {
   // Explicit users win, but never uid 0, and must be numeric uid:gid.
   assert.equal(sandboxUser({ user: '2000:2000', host: root, workspaceOwner: root }), '2000:2000');
   for (const user of ['0:0', '0:1000', '00:5', 'root', '1000', '1000:', ':1000', '1000:1000 --privileged']) {
-    assert.throws(() => sandboxUser({ user, host: owner, workspaceOwner: owner }), (e) => isRubyError(e, 'config'), user);
+    assert.throws(() => sandboxUser({ user, host: owner, workspaceOwner: owner }), (e) => isGarnetError(e, 'config'), user);
   }
   assert.equal(NOBODY, '65534:65534');
 });
@@ -174,7 +174,7 @@ test('canWrite applies owner, group and other bits without supplementary groups'
   assert.equal(canWrite('65534:65534', { uid: 0, gid: 0, mode: 0o40776 }), false, 'needs search (x) as well as write');
 });
 
-test('docker --user: host uid:gid for a regular user; never root when Ruby runs as root', async () => {
+test('docker --user: host uid:gid for a regular user; never root when Garnet runs as root', async () => {
   const workspace = tempDir();
   const run = async (opts: Partial<ConstructorParameters<typeof DockerSandbox>[0]>) => {
     const fake = fakeDocker();
@@ -191,13 +191,13 @@ test('docker --user: host uid:gid for a regular user; never root when Ruby runs 
   const expected = process.getuid!() !== 0 ? `${process.getuid!()}:${process.getgid!()}` : real.uid !== 0 ? `${real.uid}:${real.gid}` : NOBODY;
   assert.equal(userArg(args), expected);
   assert.equal(userArg(await run({ hostIds: { uid: 1234, gid: 99 } })), '1234:99');
-  // Ruby as root (or no uids): never 0, whatever owns the workspace.
+  // Garnet as root (or no uids): never 0, whatever owns the workspace.
   for (const hostIds of [{ uid: 0, gid: 0 }, null]) {
     const user = userArg(await run({ hostIds }));
     assert.notEqual(user!.split(':')[0], '0');
     assert.equal(user, real.uid !== 0 ? `${real.uid}:${real.gid}` : NOBODY);
   }
-  assert.throws(() => new DockerSandbox({ workspace, user: '0:0' }), (e) => isRubyError(e, 'config'));
+  assert.throws(() => new DockerSandbox({ workspace, user: '0:0' }), (e) => isGarnetError(e, 'config'));
   // Every docker run carries exactly one --user.
   assert.equal(args.filter((a) => a === '--user').length, 1);
 });
@@ -213,7 +213,7 @@ test('docker check refuses a workspace the container user cannot write', async (
   assert.equal(status.ok, false);
   assert.match(status.detail, /cannot write the workspace/);
   assert.match(status.detail, new RegExp(`chown -R ${stranger}`));
-  await assert.rejects(assertSandboxReady(sb), (e) => isRubyError(e, 'config'));
+  await assert.rejects(assertSandboxReady(sb), (e) => isGarnetError(e, 'config'));
   chmodSync(workspace, 0o777);
   assert.equal((await sb.check()).ok, true);
   chmodSync(workspace, 0o700);
@@ -226,7 +226,7 @@ test('cwd escapes, missing directories, bad env names and bad workspaces are rej
   const fake = fakeDocker();
   const sb = new DockerSandbox({ workspace, spawn: fake.spawn });
   const rejects = async (over: Parameters<typeof req>[0], category: string) =>
-    assert.rejects(sb.run(req(over)), (e) => isRubyError(e) && e.category === category);
+    assert.rejects(sb.run(req(over)), (e) => isGarnetError(e) && e.category === category);
   await rejects({ cwd: '../' }, 'denied');
   await rejects({ cwd: '/etc' }, 'denied');
   await rejects({ cwd: 'link' }, 'denied');
@@ -237,14 +237,14 @@ test('cwd escapes, missing directories, bad env names and bad workspaces are rej
 
   const colon = join(tempDir(), 'a:b');
   mkdirSync(colon);
-  assert.throws(() => new DockerSandbox({ workspace: colon }), (e) => isRubyError(e, 'config'));
+  assert.throws(() => new DockerSandbox({ workspace: colon }), (e) => isGarnetError(e, 'config'));
   const comma = join(tempDir(), 'a,b');
   mkdirSync(comma);
-  assert.throws(() => new DockerSandbox({ workspace: comma }), (e) => isRubyError(e, 'config'));
-  assert.throws(() => new DockerSandbox({ workspace: '/' }), (e) => isRubyError(e, 'config'));
-  assert.throws(() => new DockerSandbox({ workspace: 'relative' }), (e) => isRubyError(e, 'config'));
-  assert.throws(() => new DockerSandbox({ workspace, image: '--privileged' }), (e) => isRubyError(e, 'config'));
-  assert.throws(() => new DockerSandbox({ workspace, network: 'host' as 'none' }), (e) => isRubyError(e, 'config'));
+  assert.throws(() => new DockerSandbox({ workspace: comma }), (e) => isGarnetError(e, 'config'));
+  assert.throws(() => new DockerSandbox({ workspace: '/' }), (e) => isGarnetError(e, 'config'));
+  assert.throws(() => new DockerSandbox({ workspace: 'relative' }), (e) => isGarnetError(e, 'config'));
+  assert.throws(() => new DockerSandbox({ workspace, image: '--privileged' }), (e) => isGarnetError(e, 'config'));
+  assert.throws(() => new DockerSandbox({ workspace, network: 'host' as 'none' }), (e) => isGarnetError(e, 'config'));
 });
 
 test('output is capped per stream, keeps the head and keeps draining', async () => {
@@ -309,7 +309,7 @@ test('check reports docker and image problems; isolated sandboxes never fall bac
   const workspace = userWorkspace();
   const down = new DockerSandbox({ workspace, spawn: fakeDocker({ version: 1 }).spawn });
   assert.equal((await down.check()).ok, false);
-  await assert.rejects(assertSandboxReady(down), (e) => isRubyError(e, 'config'));
+  await assert.rejects(assertSandboxReady(down), (e) => isGarnetError(e, 'config'));
   const noImage = new DockerSandbox({ workspace, image: 'busybox', spawn: fakeDocker({ image: 1 }).spawn });
   const status = await noImage.check();
   assert.equal(status.ok, false);
@@ -317,8 +317,8 @@ test('check reports docker and image problems; isolated sandboxes never fall bac
   const up = new DockerSandbox({ workspace, spawn: fakeDocker().spawn });
   assert.equal((await up.check()).ok, true);
 
-  await assert.rejects(openSandbox('docker', { workspace, spawn: fakeDocker({ version: 1 }).spawn }), (e) => isRubyError(e, 'config'));
-  await assert.rejects(openSandbox('local', { workspace }, { requireIsolated: true }), (e) => isRubyError(e, 'config'));
+  await assert.rejects(openSandbox('docker', { workspace, spawn: fakeDocker({ version: 1 }).spawn }), (e) => isGarnetError(e, 'config'));
+  await assert.rejects(openSandbox('local', { workspace }, { requireIsolated: true }), (e) => isGarnetError(e, 'config'));
   assert.equal((await openSandbox('local', { workspace })).isolated, false);
   assert.equal(createSandbox('docker', { workspace, spawn: fakeDocker().spawn }).isolated, true);
   // A missing docker binary is a check failure, not a crash.
@@ -329,13 +329,13 @@ test('check reports docker and image problems; isolated sandboxes never fall bac
 test('local sandbox runs in the workspace with a minimal environment', async () => {
   const workspace = realpathSync(tempDir());
   mkdirSync(join(workspace, 'sub'));
-  process.env.RUBY_SANDBOX_TEST_SECRET = 'hunter2';
+  process.env.GARNET_SANDBOX_TEST_SECRET = 'hunter2';
   const sb = new LocalSandbox({ workspace });
-  const r = await sb.run(req({ command: 'pwd; echo "[$RUBY_SANDBOX_TEST_SECRET]"; echo "$HOME"; echo $X; exit 4', cwd: 'sub', env: { X: 'y' } }));
-  delete process.env.RUBY_SANDBOX_TEST_SECRET;
+  const r = await sb.run(req({ command: 'pwd; echo "[$GARNET_SANDBOX_TEST_SECRET]"; echo "$HOME"; echo $X; exit 4', cwd: 'sub', env: { X: 'y' } }));
+  delete process.env.GARNET_SANDBOX_TEST_SECRET;
   assert.equal(r.exitCode, 4);
   assert.equal(r.stdout, `${join(workspace, 'sub')}\n[]\n${workspace}\ny\n`);
-  await assert.rejects(sb.run(req({ cwd: '..' })), (e) => isRubyError(e, 'denied'));
+  await assert.rejects(sb.run(req({ cwd: '..' })), (e) => isGarnetError(e, 'denied'));
 });
 
 test('local sandbox timeout kills the whole process group promptly', async () => {

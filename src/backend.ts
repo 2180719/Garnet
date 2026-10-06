@@ -2,12 +2,12 @@
 // every module. Keeps the gateway free of memory, skills and scheduler imports.
 import { Achievements, type Stats } from './achievements/index.ts';
 import { changedProtectedPaths, configSchema, loadConfig, PROTECTED_CONFIG_PATHS, parseConfig, redact, writeConfig } from './config/index.ts';
-import { RubyError, type ContentBlock, type SessionEvent } from './contracts/index.ts';
+import { GarnetError, type ContentBlock, type SessionEvent } from './contracts/index.ts';
 import { approvePairing, ChatDirectory, type AdminBackend, type Gateway, type Scope } from './gateway/index.ts';
 import { isMemoryFile } from './memory/index.ts';
 import { describeNext, describeSchedule, parseWhen, type JobEntry, type Scheduler } from './scheduler/index.ts';
 import { StatsStore } from './store/index.ts';
-import type { Ruby } from './main.ts';
+import type { Garnet } from './main.ts';
 
 const CLIP = 4000;
 /** Shortens long strings anywhere in a value so one huge tool result cannot flood the page. */
@@ -56,17 +56,17 @@ function jobView(e: JobEntry, now: Date, label: (n: { channel: string; account: 
   };
 }
 
-export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler, version: string): AdminBackend & { unlockEasterEgg(id: string): boolean } {
-  const stats = new StatsStore(ruby.db);
-  const achievements = new Achievements(ruby.db);
+export function createBackend(garnet: Garnet, gateway: Gateway, scheduler: Scheduler, version: string): AdminBackend & { unlockEasterEgg(id: string): boolean } {
+  const stats = new StatsStore(garnet.db);
+  const achievements = new Achievements(garnet.db);
   const notifyLabel = (n: { channel: string; account: string; chatId: string }): string => {
-    const known = ruby.directory.chats().find((c) => c.channel === n.channel && c.chatId === n.chatId);
+    const known = garnet.directory.chats().find((c) => c.channel === n.channel && c.chatId === n.chatId);
     return ChatDirectory.label(known ?? { ...n, senderId: null, name: null });
   };
   const startedAt = new Date().toISOString();
   stats.setMetaOnce('first_start', startedAt);
   const memFile = (f: string) => {
-    if (!isMemoryFile(f)) throw new RubyError('invalid_input', 'File must be "memory" or "user".');
+    if (!isMemoryFile(f)) throw new GarnetError('invalid_input', 'File must be "memory" or "user".');
     return f;
   };
 
@@ -80,8 +80,8 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
     return {
       tasksCompleted: c.tasksCompleted,
       toolCalls: c.toolCalls,
-      agentSkills: ruby.skills.list().filter((s) => s.provenance === 'agent').length,
-      memoryChars: ruby.memory.read('default', 'memory').length + ruby.memory.read('default', 'user').length,
+      agentSkills: garnet.skills.list().filter((s) => s.provenance === 'agent').length,
+      memoryChars: garnet.memory.read('default', 'memory').length + garnet.memory.read('default', 'user').length,
       channelsPaired: c.identities,
       approvalsDecided: c.approvalsDecided,
       jobRuns: c.jobRuns,
@@ -96,121 +96,121 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
   return {
     overview: () => ({
       version,
-      model: ruby.model.id,
+      model: garnet.model.id,
       startedAt,
       firstStart: stats.getMeta('first_start') ?? startedAt,
       counts: stats.counts(),
-      pendingApprovals: ruby.approvals.pending().length,
+      pendingApprovals: garnet.approvals.pending().length,
       health: gateway.health(),
-      scheduler: { enabled: ruby.config.scheduler.enabled, jobs: ruby.jobBook.jobs().length },
-      api: { host: ruby.config.api.host, port: ruby.config.api.port },
+      scheduler: { enabled: garnet.config.scheduler.enabled, jobs: garnet.jobBook.jobs().length },
+      api: { host: garnet.config.api.host, port: garnet.config.api.port },
     }),
     // The file, not the startup config: after a PUT the page must show what was saved.
     getConfig: () => ({
-      config: loadConfig(ruby.paths.home).config,
+      config: loadConfig(garnet.paths.home).config,
       schema: configSchema.toJSONSchema({ io: 'input', unrepresentable: 'any' }),
       protectedPaths: PROTECTED_CONFIG_PATHS,
     }),
     putConfig: (raw) => {
       const parsed = parseConfig(raw); // throws a config error listing every problem
-      const changed = changedProtectedPaths(loadConfig(ruby.paths.home).config, parsed);
+      const changed = changedProtectedPaths(loadConfig(garnet.paths.home).config, parsed);
       if (changed.length > 0) {
-        throw new RubyError('denied', `These settings can only be changed by editing config.json on the host (then run "ruby config check"), not over the API: ${changed.join(', ')}.`, { paths: changed });
+        throw new GarnetError('denied', `These settings can only be changed by editing config.json on the host (then run "garnet config check"), not over the API: ${changed.join(', ')}.`, { paths: changed });
       }
-      writeConfig(ruby.paths.home, parsed);
+      writeConfig(garnet.paths.home, parsed);
       return { restartRequired: true };
     },
-    approvals: () => ({ pending: ruby.approvals.pending() }),
+    approvals: () => ({ pending: garnet.approvals.pending() }),
     decideApproval: (code, decision) => gateway.resolveApproval(code, decision),
     memory: (ns) => ({
       namespace: ns,
       files: (['memory', 'user'] as const).map((f) => ({
         file: f,
-        name: ruby.memory.fileName(f),
-        content: ruby.memory.read(ns, f),
-        limit: ruby.memory.limit(f),
-        history: ruby.memory.history(ns, f).slice(0, 20),
+        name: garnet.memory.fileName(f),
+        content: garnet.memory.read(ns, f),
+        limit: garnet.memory.limit(f),
+        history: garnet.memory.history(ns, f).slice(0, 20),
       })),
     }),
-    writeMemory: (ns, file, content) => ruby.memory.write(ns, memFile(file), content),
-    rollbackMemory: (ns, file, id) => ruby.memory.rollback(ns, memFile(file), id),
+    writeMemory: (ns, file, content) => garnet.memory.write(ns, memFile(file), content),
+    rollbackMemory: (ns, file, id) => garnet.memory.rollback(ns, memFile(file), id),
     skills: () => ({
-      skills: ruby.skills.list(),
-      archived: ruby.skills.archived(),
-      problems: ruby.skills.problems(),
-      stale: ruby.skills.stale().map((s) => s.name),
+      skills: garnet.skills.list(),
+      archived: garnet.skills.archived(),
+      problems: garnet.skills.problems(),
+      stale: garnet.skills.stale().map((s) => s.name),
     }),
     skill: (name) => {
-      const info = [...ruby.skills.list(), ...ruby.skills.archived()].find((s) => s.name === name);
-      if (!info) throw new RubyError('invalid_input', `No skill "${name}".`);
+      const info = [...garnet.skills.list(), ...garnet.skills.archived()].find((s) => s.name === name);
+      if (!info) throw new GarnetError('invalid_input', `No skill "${name}".`);
       // Read without counting a use: the owner looking is not the agent using it.
-      return { ...info, proposal: ruby.skills.proposal(name), body: ruby.skills.read(name).body };
+      return { ...info, proposal: garnet.skills.proposal(name), body: garnet.skills.read(name).body };
     },
     skillAction: (name, action) => {
-      if (action === 'accept') ruby.skills.acceptProposal(name);
-      else if (action === 'reject') ruby.skills.rejectProposal(name);
-      else ruby.skills[action](name);
+      if (action === 'accept') garnet.skills.acceptProposal(name);
+      else if (action === 'reject') garnet.skills.rejectProposal(name);
+      else garnet.skills[action](name);
       return { ok: true };
     },
     jobs: () => {
       const now = new Date();
       return {
-        enabled: ruby.config.scheduler.enabled,
-        timezone: ruby.timezone,
-        problems: ruby.jobBook.problems(),
-        jobs: ruby.jobBook.list().map((e) => ({ ...jobView(e, now, notifyLabel), runs: ruby.jobStore.runs(e.job.id, 10) })),
+        enabled: garnet.config.scheduler.enabled,
+        timezone: garnet.timezone,
+        problems: garnet.jobBook.problems(),
+        jobs: garnet.jobBook.list().map((e) => ({ ...jobView(e, now, notifyLabel), runs: garnet.jobStore.runs(e.job.id, 10) })),
       };
     },
     jobAction: async (id, action) => {
-      if (!ruby.jobBook.find(id)) throw new RubyError('invalid_input', `No job "${id}".`);
-      if (action === 'resume') ruby.jobBook.resume(id);
-      else if (action === 'pause') ruby.jobBook.pause(id);
+      if (!garnet.jobBook.find(id)) throw new GarnetError('invalid_input', `No job "${id}".`);
+      if (action === 'resume') garnet.jobBook.resume(id);
+      else if (action === 'pause') garnet.jobBook.pause(id);
       else await scheduler.runNow(id);
-      return { state: ruby.jobStore.state(id), last: ruby.jobStore.runs(id, 1)[0] ?? null };
+      return { state: garnet.jobStore.state(id), last: garnet.jobStore.runs(id, 1)[0] ?? null };
     },
     updateJob: (id, body) => {
       const b = (body ?? {}) as { when?: unknown; instructions?: unknown; message?: unknown };
       const patch: Record<string, unknown> = {};
-      const found = ruby.jobBook.find(id);
-      if (!found) throw new RubyError('invalid_input', `No job "${id}".`);
+      const found = garnet.jobBook.find(id);
+      if (!found) throw new GarnetError('invalid_input', `No job "${id}".`);
       if (typeof b.when === 'string' && b.when.trim()) {
-        const w = parseWhen(b.when, { now: new Date(), zone: ruby.jobBook.zoneOf(found.job) });
+        const w = parseWhen(b.when, { now: new Date(), zone: garnet.jobBook.zoneOf(found.job) });
         Object.assign(patch, w.kind === 'once' ? { kind: 'once', at: w.at.toISOString() } : w.kind === 'heartbeat' ? { kind: 'heartbeat', everyMinutes: w.everyMinutes } : { kind: 'cron', cron: w.cron });
       }
       if (typeof b.instructions === 'string' && b.instructions.trim()) patch.instructions = b.instructions.trim();
       if (typeof b.message === 'string' && b.message.trim()) patch.message = b.message.trim();
-      return jobView(ruby.jobBook.update(id, patch, 'owner'), new Date(), notifyLabel);
+      return jobView(garnet.jobBook.update(id, patch, 'owner'), new Date(), notifyLabel);
     },
     deleteJob: (id) => {
-      ruby.jobBook.remove(id);
+      garnet.jobBook.remove(id);
       return { deleted: true };
     },
-    keys: () => ({ keys: ruby.keys.list() }),
-    createKey: (name, scopes: Scope[], days) => ruby.keys.create(name, scopes, days),
-    revokeKey: (id) => ruby.keys.revoke(id),
-    pairing: () => ({ pending: ruby.gatewayStore.pairings(new Date().toISOString()), identities: ruby.gatewayStore.identities() }),
+    keys: () => ({ keys: garnet.keys.list() }),
+    createKey: (name, scopes: Scope[], days) => garnet.keys.create(name, scopes, days),
+    revokeKey: (id) => garnet.keys.revoke(id),
+    pairing: () => ({ pending: garnet.gatewayStore.pairings(new Date().toISOString()), identities: garnet.gatewayStore.identities() }),
     approvePairing: (code) => {
-      const p = approvePairing(ruby.gatewayStore, code);
-      if (!p) throw new RubyError('invalid_input', 'No pending pairing request with that code.');
+      const p = approvePairing(garnet.gatewayStore, code);
+      if (!p) throw new GarnetError('invalid_input', 'No pending pairing request with that code.');
       void gateway.deliver();
       return p;
     },
-    revokeIdentity: (channel, senderId) => ruby.gatewayStore.removeIdentity(channel, senderId),
+    revokeIdentity: (channel, senderId) => garnet.gatewayStore.removeIdentity(channel, senderId),
     sessions: (opts) => stats.sessionPage(opts),
     sessionEvents: (id, after, limit) => {
-      const session = ruby.store.getSession(id);
-      if (!session) throw new RubyError('invalid_input', `No session "${id}".`);
-      const { events, lastSeq } = ruby.store.eventsPage(id, after, limit);
+      const session = garnet.store.getSession(id);
+      if (!session) throw new GarnetError('invalid_input', `No session "${id}".`);
+      const { events, lastSeq } = garnet.store.eventsPage(id, after, limit);
       const next = events.at(-1)?.seq ?? after;
       return {
-        session: { id, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt, conversation: ruby.gatewayStore.keyForSession(id) ?? null },
+        session: { id, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt, conversation: garnet.gatewayStore.keyForSession(id) ?? null },
         events: events.map(eventView),
         lastSeq,
         nextAfter: next < lastSeq ? next : null,
       };
     },
     audit: (opts) => {
-      const { entries, total } = ruby.keyStore.auditPage(opts);
+      const { entries, total } = garnet.keyStore.auditPage(opts);
       return { total, entries: entries.map((e) => ({ ...e, path: redact(e.path.replace(AUDIT_PATH_SECRETS, '$1…')) })) };
     },
     failures: (opts) => {
@@ -218,13 +218,13 @@ export function createBackend(ruby: Ruby, gateway: Gateway, scheduler: Scheduler
       return { total, items: items.map((f) => ({ ...f, detail: f.detail === null ? null : (clip(redact(f.detail)) as string) })) };
     },
     routing: ({ limit, offset }) => ({
-      routes: ruby.config.routes,
-      conversations: ruby.gatewayStore.conversationPage(limit, offset),
-      identities: ruby.gatewayStore.identities(),
-      pending: ruby.gatewayStore.pairings(new Date().toISOString()),
+      routes: garnet.config.routes,
+      conversations: garnet.gatewayStore.conversationPage(limit, offset),
+      identities: garnet.gatewayStore.identities(),
+      pending: garnet.gatewayStore.pairings(new Date().toISOString()),
     }),
-    unlinkConversation: (key) => ruby.gatewayStore.removeConversation(key),
-    denyPairing: (code) => ruby.gatewayStore.removePairing(code),
+    unlinkConversation: (key) => garnet.gatewayStore.removeConversation(key),
+    denyPairing: (code) => garnet.gatewayStore.removePairing(code),
     usage: (days) => ({ days: stats.usageByDay(days) }),
     achievements: () => ({ achievements: achievements.evaluate(collect()) }),
     unlockEasterEgg: (id) => achievements.unlockEasterEgg(id),

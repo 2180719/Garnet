@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { isRubyError } from '../contracts/index.ts';
+import { isGarnetError } from '../contracts/index.ts';
 import {
   KEY_FILE_ENV,
   PASSPHRASE_ENV,
@@ -35,7 +35,7 @@ function store(home: string, material: string | null = PASS, calls = { n: 0 }) {
   });
 }
 
-const configError = (pattern: RegExp) => (e: unknown) => isRubyError(e, 'config') && pattern.test(e.message);
+const configError = (pattern: RegExp) => (e: unknown) => isGarnetError(e, 'config') && pattern.test(e.message);
 
 test('round trip: values survive a fresh store; neither names nor values are in the file', () => {
   const home = tempDir();
@@ -59,7 +59,7 @@ test('round trip: values survive a fresh store; neither names nor values are in 
   assert.equal(text.includes('ANTHROPIC_API_KEY'), false);
   assert.equal(text.includes(PASS), false);
   const env = JSON.parse(text);
-  assert.equal(env.format, 'ruby-secrets');
+  assert.equal(env.format, 'garnet-secrets');
   assert.equal(env.version, 1);
   assert.equal(env.cipher, 'aes-256-gcm');
   assert.deepEqual({ name: env.kdf.name, N: env.kdf.N, r: env.kdf.r, p: env.kdf.p }, { name: 'scrypt', ...kdf });
@@ -115,9 +115,9 @@ test('a tampered file fails authentication: ciphertext, tag, nonce, salt and KDF
     assert.throws(() => store(home).get('A_KEY'), configError(/wrong, or the file was modified/), edit.toString());
   }
   for (const [text, pattern] of [
-    ['not json', /not a valid Ruby secret store \(not JSON\)/],
+    ['not json', /not a valid Garnet secret store \(not JSON\)/],
     [JSON.stringify({ format: 'other' }), /unknown format/],
-    [JSON.stringify({ ...JSON.parse(original), version: 99 }), /version 99.*Upgrade Ruby/],
+    [JSON.stringify({ ...JSON.parse(original), version: 99 }), /version 99.*Upgrade Garnet/],
     [JSON.stringify({ ...JSON.parse(original), kdf: { ...JSON.parse(original).kdf, N: 2 ** 30 } }), /out of range/],
     [JSON.stringify({ ...JSON.parse(original), kdf: { ...JSON.parse(original).kdf, N: 1000 } }), /out of range/],
     // Each bound alone is fine, but together they would make scrypt allocate 2 GiB.
@@ -153,13 +153,13 @@ test('locked: a clear error naming the unlock variables, only when the store is 
   // No file yet: listing needs no key; writing does.
   assert.deepEqual(locked.names(), []);
   assert.equal(calls.n, 0);
-  assert.throws(() => locked.set('A_KEY', 'v'), configError(/is locked\. Set RUBY_SECRETS_PASSPHRASE/));
+  assert.throws(() => locked.set('A_KEY', 'v'), configError(/is locked\. Set GARNET_SECRETS_PASSPHRASE/));
   store(home).set('A_KEY', VALUE);
   assert.throws(() => store(home, null).get('A_KEY'), configError(/is locked/));
   // Short passphrases cannot create or rewrite a store.
   assert.throws(() => store(tempDir(), 'short').set('A_KEY', 'v'), configError(/too short/));
-  assert.throws(() => store(home).set('bad-name', 'v'), (e) => isRubyError(e, 'invalid_input'));
-  assert.throws(() => store(home).set('EMPTY', ''), (e) => isRubyError(e, 'invalid_input'));
+  assert.throws(() => store(home).set('bad-name', 'v'), (e) => isGarnetError(e, 'invalid_input'));
+  assert.throws(() => store(home).set('EMPTY', ''), (e) => isGarnetError(e, 'invalid_input'));
 });
 
 test('lookup: the environment wins; the store is only decrypted for names the environment lacks', () => {
@@ -207,23 +207,23 @@ test('unlock sources: passphrase or a private key file, not both', () => {
   openSecretStore(home, { [KEY_FILE_ENV]: keyFile }, { kdf }).set('A_KEY', VALUE);
   assert.equal(openSecretStore(home, { [KEY_FILE_ENV]: keyFile }).get('A_KEY'), VALUE);
   assert.throws(() => openSecretStore(home, { [PASSPHRASE_ENV]: PASS }).get('A_KEY'), configError(/wrong/));
-  assert.throws(() => openSecretStore(home, {}).get('A_KEY'), configError(/locked\. Set RUBY_SECRETS_PASSPHRASE, or RUBY_SECRETS_KEY_FILE/));
+  assert.throws(() => openSecretStore(home, {}).get('A_KEY'), configError(/locked\. Set GARNET_SECRETS_PASSPHRASE, or GARNET_SECRETS_KEY_FILE/));
   assert.ok(existsSync(join(home, 'secrets')));
 });
 
 test('warnings when the unlock material sits next to the store', () => {
   const home = tempDir();
-  assert.deepEqual(unlockWarnings(home, { [KEY_FILE_ENV]: '/etc/ruby/key' }), []);
+  assert.deepEqual(unlockWarnings(home, { [KEY_FILE_ENV]: '/etc/garnet/key' }), []);
   assert.match(unlockWarnings(home, { [KEY_FILE_ENV]: join(home, 'key') })[0]!, /inside/);
-  assert.match(unlockWarnings(home, { [PASSPHRASE_ENV]: PASS }, [PASSPHRASE_ENV])[0]!, /RUBY_SECRETS_PASSPHRASE is in .*env/);
+  assert.match(unlockWarnings(home, { [PASSPHRASE_ENV]: PASS }, [PASSPHRASE_ENV])[0]!, /GARNET_SECRETS_PASSPHRASE is in .*env/);
   assert.equal(unlockWarnings(home, { [PASSPHRASE_ENV]: PASS }).length, 0);
   assert.equal(unlockWarnings(home, { [KEY_FILE_ENV]: join(home, 'key') }).join('').includes(PASS), false);
 });
 
 test('a key file in a sibling directory whose name starts with ".." is not "inside" home', () => {
   const home = tempDir();
-  assert.deepEqual(unlockWarnings(join(home, 'ruby'), { [KEY_FILE_ENV]: join(home, 'ruby', '..key', 'k') }).length, 1, 'a "..key" child is inside');
-  assert.deepEqual(unlockWarnings(join(home, 'ruby'), { [KEY_FILE_ENV]: join(home, 'k') }), []);
+  assert.deepEqual(unlockWarnings(join(home, 'garnet'), { [KEY_FILE_ENV]: join(home, 'garnet', '..key', 'k') }).length, 1, 'a "..key" child is inside');
+  assert.deepEqual(unlockWarnings(join(home, 'garnet'), { [KEY_FILE_ENV]: join(home, 'k') }), []);
 });
 
 test('a secret named __proto__ is stored and read back like any other', () => {

@@ -5,7 +5,7 @@ export const CONFIG_VERSION = 1;
 
 const permission = z.enum(['allow', 'ask', 'deny']);
 
-// Every field has a description: the dashboard and `ruby config explain` render them.
+// Every field has a description: the dashboard and `garnet config explain` render them.
 const capabilityGrant = z.object({
   'fs.read': permission.default('allow'),
   'fs.write': permission.default('deny'),
@@ -28,7 +28,7 @@ export const jobSchema = z
     everyMinutes: z.number().int().min(5).max(10_080).optional().describe('Interval for kind=heartbeat.'),
     at: z.iso.datetime({ offset: true }).optional().describe('When a kind=once job runs: an ISO date-time with a zone offset, e.g. 2026-10-07T09:00:00+01:00.'),
     timezone: z.string().optional().describe('IANA time zone, e.g. Europe/London. Defaults to the top-level timezone, then the host zone.'),
-    instructions: z.string().min(1).max(4000).optional().describe('What Ruby should do on each run (runs the agent). Give exactly one of instructions, message or script.'),
+    instructions: z.string().min(1).max(4000).optional().describe('What Garnet should do on each run (runs the agent). Give exactly one of instructions, message or script.'),
     message: z.string().min(1).max(4000).optional().describe('Fixed text sent as is on each run, without calling the model (cheap reminders).'),
     script: z
       .object({
@@ -57,7 +57,7 @@ export const jobSchema = z
       .object({ channel: z.string(), chatId: z.string(), account: z.string().default('default') })
       .optional()
       .describe('Where to send results. Without it, results are only kept in run history.'),
-    notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Ruby has something worth reporting (script jobs: when the output changed).'),
+    notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Garnet has something worth reporting (script jobs: when the output changed).'),
     catchUp: z.boolean().default(true).describe('After downtime, run missed occurrences once (coalesced). Otherwise skip them.'),
   })
   .strict()
@@ -93,7 +93,7 @@ export const configSchema = z
       .string()
       .refine(validTimeZone, "Unknown time zone (use an IANA name like Europe/London)")
       .optional()
-      .describe("Your IANA time zone, e.g. Europe/London. Ruby shows each message's send time in it, and jobs without their own timezone use it. Defaults to the host zone."),
+      .describe("Your IANA time zone, e.g. Europe/London. Garnet shows each message's send time in it, and jobs without their own timezone use it. Defaults to the host zone."),
     model: z
       .object({
         provider: z
@@ -110,7 +110,7 @@ export const configSchema = z
         apiKeyEnv: z
           .string()
           .default('ANTHROPIC_API_KEY')
-          .describe('Name of the environment variable (or encrypted secret, see `ruby secrets`) holding the API key. Keys never live in config.'),
+          .describe('Name of the environment variable (or encrypted secret, see `garnet secrets`) holding the API key. Keys never live in config.'),
         baseUrl: z.string().url().optional().describe('Provider API base URL. Required for openai-compatible, e.g. http://127.0.0.1:11434/v1.'),
         contextWindow: z.number().int().min(4096).optional().describe('Context window of an openai-compatible model.'),
         maxOutputTokens: z.number().int().positive().default(32_000).describe('Output token cap per model call.'),
@@ -148,11 +148,11 @@ export const configSchema = z
       .describe('Context window management.'),
     memory: z
       .object({
-        memoryChars: z.number().int().min(200).max(20_000).default(2200).describe("Cap for MEMORY.md, Ruby's own notes."),
-        userChars: z.number().int().min(200).max(20_000).default(1400).describe('Cap for USER.md, what Ruby knows about you.'),
+        memoryChars: z.number().int().min(200).max(20_000).default(2200).describe("Cap for MEMORY.md, Garnet's own notes."),
+        userChars: z.number().int().min(200).max(20_000).default(1400).describe('Cap for USER.md, what Garnet knows about you.'),
       })
       .prefault({})
-      .describe('Bounded memory, shown to Ruby at the start of each session.'),
+      .describe('Bounded memory, shown to Garnet at the start of each session.'),
     media: z
       .object({
         enabled: z.boolean().default(true).describe('Accept photos, voice notes and files (chats, the API, /attach in the terminal) and offer the send_file tool. Off: files get a polite "cannot receive files" reply.'),
@@ -228,7 +228,7 @@ export const configSchema = z
           .regex(/^[0-9]+:[0-9]+$/)
           .refine((u) => Number(u.split(':')[0]) !== 0, 'the sandbox never runs as root (uid 0)')
           .optional()
-          .describe('Container user as uid:gid (docker). Unset: your uid:gid, or the workspace owner when Ruby runs as root, else 65534:65534. Never root.'),
+          .describe('Container user as uid:gid (docker). Unset: your uid:gid, or the workspace owner when Garnet runs as root, else 65534:65534. Never root.'),
       })
       .prefault({})
       .describe('Where run_command executes. Only used when the exec permission is allow or ask.'),
@@ -257,7 +257,7 @@ export const configSchema = z
         fetchSeenUrls: z
           .boolean()
           .default(true)
-          .describe('In such a conversation, still fetch without asking a URL that a search result or fetched page contained word for word (it carries nothing Ruby composed). URLs you wrote yourself are always allowed.'),
+          .describe('In such a conversation, still fetch without asking a URL that a search result or fetched page contained word for word (it carries nothing Garnet composed). URLs you wrote yourself are always allowed.'),
       })
       .prefault({})
       .describe('Prompt-injection containment: untrusted content cannot quietly trigger actions. Lasts until /new starts a fresh conversation.'),
@@ -318,7 +318,7 @@ export const configSchema = z
           .object({
             enabled: z.boolean().default(false).describe('Serve a public, keyless demo chat for your website at /v1/demo/chat/completions.'),
             model: z.string().default('claude-haiku-4-5').describe('Cheap model for the demo (same provider and key as the main model).'),
-            allowedOrigins: z.array(z.string().url()).default([]).describe('Website origins allowed to call the demo, e.g. https://ruby.example.com.'),
+            allowedOrigins: z.array(z.string().url()).default([]).describe('Website origins allowed to call the demo, e.g. https://garnet.example.com.'),
             perIpPerHour: z.number().int().min(1).max(1000).default(20).describe('Messages per visitor IP per hour.'),
             dailyTokenBudget: z.number().int().min(1000).default(200_000).describe('Total demo tokens per day; the demo pauses when spent.'),
             maxOutputTokens: z.number().int().min(50).max(4000).default(400).describe('Reply length cap.'),
@@ -359,7 +359,7 @@ export const configSchema = z
       .object({
         maxConcurrent: z.number().int().min(1).max(64).default(4).describe('Tasks that may run at once across all conversations.'),
         pairingTtlMinutes: z.number().int().min(1).max(1440).default(60).describe('How long a pairing code stays valid.'),
-        messagesPerHour: z.number().int().min(1).max(1000).default(20).describe('Messages Ruby may send on its own with send_message per hour, across all chats. Replies and job results are not counted.'),
+        messagesPerHour: z.number().int().min(1).max(1000).default(20).describe('Messages Garnet may send on its own with send_message per hour, across all chats. Replies and job results are not counted.'),
       })
       .prefault({})
       .describe('Message routing and delivery.'),
@@ -384,7 +384,7 @@ export const configSchema = z
       .object({
         enabled: z.boolean().default(true).describe('Global switch for cron jobs and heartbeats. Off stops all new scheduled runs.'),
         tickSeconds: z.number().int().min(5).max(300).default(30).describe('How often the scheduler checks for due jobs.'),
-        maxAgentJobs: z.number().int().min(0).max(500).default(25).describe('Jobs Ruby may create from chat with the schedule tool (0 turns that off). Jobs in this file do not count.'),
+        maxAgentJobs: z.number().int().min(0).max(500).default(25).describe('Jobs Garnet may create from chat with the schedule tool (0 turns that off). Jobs in this file do not count.'),
       })
       .prefault({})
       .describe('Scheduled work.'),
@@ -429,5 +429,5 @@ export const configSchema = z
     }
   });
 
-export type RubyConfig = z.infer<typeof configSchema>;
+export type GarnetConfig = z.infer<typeof configSchema>;
 export type Permission = z.infer<typeof permission>;

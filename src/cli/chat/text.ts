@@ -51,7 +51,7 @@ export function stripAnsi(text: string): string {
  * Unicode control pictures (ESC as `␛`, CR as `␍`) instead of reaching the
  * terminal, where they could erase or rewrite what the owner sees (for
  * example the command in an approval prompt) or set the clipboard. C1
- * controls become `�`. Apply it to the data before adding Ruby's own styles.
+ * controls become `�`. Apply it to the data before adding Garnet's own styles.
  */
 export function sanitize(text: string): string {
   // eslint-disable-next-line no-control-regex

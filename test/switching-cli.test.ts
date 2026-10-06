@@ -1,4 +1,4 @@
-// CLI wiring for switchers: `ruby pair add`, `ruby service --name`, and `ruby import` writing
+// CLI wiring for switchers: `garnet pair add`, `garnet service --name`, and `garnet import` writing
 // config (raised caps, disabled jobs) and pairings through the real composition root.
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -6,14 +6,14 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from './helpers.ts';
 import { main, type Io } from '../src/cli/main.ts';
-import { createRuby } from '../src/main.ts';
+import { createGarnet } from '../src/main.ts';
 import { defaultConfig, parseConfig } from '../src/config/index.ts';
 
 async function withHome<T>(fn: (home: string, run: (args: string[]) => Promise<{ code: number; out: string; err: string }>) => Promise<T>): Promise<T> {
   const home = tempDir();
   writeFileSync(join(home, 'config.json'), JSON.stringify({ ...defaultConfig(), model: { ...defaultConfig().model, provider: 'fake' } }));
-  const saved = process.env.RUBY_HOME;
-  process.env.RUBY_HOME = home;
+  const saved = process.env.GARNET_HOME;
+  process.env.GARNET_HOME = home;
   const run = async (args: string[]) => {
     let out = '';
     let err = '';
@@ -24,12 +24,12 @@ async function withHome<T>(fn: (home: string, run: (args: string[]) => Promise<{
   try {
     return await fn(home, run);
   } finally {
-    if (saved === undefined) delete process.env.RUBY_HOME;
-    else process.env.RUBY_HOME = saved;
+    if (saved === undefined) delete process.env.GARNET_HOME;
+    else process.env.GARNET_HOME = saved;
   }
 }
 
-test('`ruby pair add` pairs a known sender, validates IDs and is idempotent', async () => {
+test('`garnet pair add` pairs a known sender, validates IDs and is idempotent', async () => {
   await withHome(async (home, run) => {
     const ok = await run(['pair', 'add', 'telegram', '123456789', '--name', 'Sam']);
     assert.equal(ok.code, 0, ok.err);
@@ -44,34 +44,34 @@ test('`ruby pair add` pairs a known sender, validates IDs and is idempotent', as
     assert.equal((await run(['pair', 'add', 'telegram'])).code, 2);
     assert.equal((await run(['pair', 'add', 'discord', '<@234567890123456789>'])).code, 0);
     assert.match((await run(['pair', 'add', 'signal', '+4912345678'])).out, /UUID/);
-    const ruby = createRuby({ home, noModel: true });
+    const garnet = createGarnet({ home, noModel: true });
     try {
       assert.deepEqual(
-        ruby.gatewayStore.identities().map((i) => `${i.channel}:${i.senderId}:${i.displayName ?? ''}`),
+        garnet.gatewayStore.identities().map((i) => `${i.channel}:${i.senderId}:${i.displayName ?? ''}`),
         ['telegram:123456789:Sam', 'discord:234567890123456789:', 'signal:+4912345678:'],
       );
     } finally {
-      ruby.close();
+      garnet.close();
     }
   });
 });
 
-test('`ruby service show --name` plans a separate instance; bad names are refused', async () => {
+test('`garnet service show --name` plans a separate instance; bad names are refused', async () => {
   await withHome(async (home, run) => {
     const r = await run(['service', 'show', '--name', 'work']);
     if (process.platform === 'linux') {
       assert.equal(r.code, 0, r.err);
-      assert.match(r.out, /ruby-work\.service/);
-      assert.ok(r.out.includes(`RUBY_HOME=${home}`));
+      assert.match(r.out, /garnet-work\.service/);
+      assert.ok(r.out.includes(`GARNET_HOME=${home}`));
     }
     const bad = await run(['service', 'install', '--name', 'Bad Name']);
     assert.equal(bad.code, process.platform === 'linux' || process.platform === 'darwin' ? 2 : 1);
     assert.equal((await run(['service', 'frobnicate'])).code, 2);
-    assert.match((await run(['help'])).out, /--name lets several RUBY_HOMEs run side by side/);
+    assert.match((await run(['help'])).out, /--name lets several GARNET_HOMEs run side by side/);
   });
 });
 
-test('`ruby import --apply --raise-caps --pairings` writes caps and disabled jobs to config.json', async () => {
+test('`garnet import --apply --raise-caps --pairings` writes caps and disabled jobs to config.json', async () => {
   await withHome(async (home, run) => {
     const src = tempDir();
     const put = (rel: string, text: string) => {

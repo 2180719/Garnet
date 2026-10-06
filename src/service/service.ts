@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 
 export type ServicePlan = {
   platform: 'systemd' | 'launchd';
-  /** Ruby's data directory (RUBY_HOME); logs and the env file live here. */
+  /** Garnet's data directory (GARNET_HOME); logs and the env file live here. */
   home: string;
   /** Where the unit / plist file is written. */
   path: string;
@@ -15,11 +15,13 @@ export type ServicePlan = {
    */
   commands: { prepare: string[][]; install: string[][]; uninstall: string[][]; status: string[][]; restart: string[][] };
   notes: string[];
+  /** The service file this instance had before the rename to Garnet, and the commands that stop it. */
+  legacy: { path: string; stop: string[][] };
 };
 
 export type PlanOptions = {
   platform: NodeJS.Platform;
-  /** Ruby's data directory (RUBY_HOME). */
+  /** Garnet's data directory (GARNET_HOME). */
   home: string;
   /** The user's home directory (where unit files live). */
   userHome: string;
@@ -30,8 +32,8 @@ export type PlanOptions = {
   /** launchd only: numeric user id for the gui/<uid> domain. Defaults to process.getuid(). */
   uid?: number;
   /**
-   * Instance name, so several Ruby homes can run side by side: `ruby-<name>.service` /
-   * `dev.ruby.agent.<name>`. Omitted (or "ruby"): the default `ruby.service` / `dev.ruby.agent`.
+   * Instance name, so several Garnet homes can run side by side: `garnet-<name>.service` /
+   * `dev.garnet.agent.<name>`. Omitted (or "garnet"): the default `garnet.service` / `dev.garnet.agent`.
    */
   name?: string | undefined;
 };
@@ -58,25 +60,28 @@ export type ServiceResult = {
   notes: string[];
 };
 
-const SYSTEMD_UNIT = 'ruby.service';
-const LAUNCHD_LABEL = 'dev.ruby.agent';
+const SYSTEMD_UNIT = 'garnet.service';
+const LAUNCHD_LABEL = 'dev.garnet.agent';
 /** Instance names: short, lowercase, safe in unit names, labels and file names. */
 export const SERVICE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 /** Throws on an invalid instance name; returns the normalized one (undefined = default). */
 export function checkServiceName(name: string | undefined): string | undefined {
-  if (name === undefined || name === '' || name === 'ruby') return undefined;
+  if (name === undefined || name === '' || name === 'garnet') return undefined;
   if (!SERVICE_NAME_RE.test(name)) throw new Error(`Invalid service name "${name}": use 1-32 lowercase letters, digits and hyphens.`);
   return name;
 }
 
 /** The systemd unit file name for an instance. */
-export const systemdUnit = (name?: string): string => (checkServiceName(name) ? `ruby-${name}.service` : SYSTEMD_UNIT);
+export const systemdUnit = (name?: string): string => (checkServiceName(name) ? `garnet-${name}.service` : SYSTEMD_UNIT);
 /** The launchd label for an instance. */
+/** Pre-rename names: `ruby[-name].service` and `dev.ruby.agent[.name]`. */
+const legacySystemdUnit = (name?: string): string => (checkServiceName(name) ? `ruby-${name}.service` : 'ruby.service');
+const legacyLaunchdLabel = (name?: string): string => (checkServiceName(name) ? `dev.ruby.agent.${name}` : 'dev.ruby.agent');
 export const launchdLabel = (name?: string): string => (checkServiceName(name) ? `${LAUNCHD_LABEL}.${name}` : LAUNCHD_LABEL);
 const NODE_FLAGS = ['--disable-warning=ExperimentalWarning'];
 /**
- * Seconds the service manager waits after SIGTERM before killing Ruby. Shutdown closes the API
+ * Seconds the service manager waits after SIGTERM before killing Garnet. Shutdown closes the API
  * (up to 20 s for in-flight requests), then drains running tasks (up to 20 s, then 5 s after
  * cancelling them) and flushes deliveries, so 30 s could kill it mid-drain.
  */
@@ -112,7 +117,7 @@ function planSystemd(o: PlanOptions): ServicePlan {
   const unit = systemdUnit(o.name);
   const exec = [o.nodePath, ...NODE_FLAGS, o.entry, 'start'].map(systemdQuote).join(' ');
   const contents = `[Unit]
-Description=Ruby personal agent${checkServiceName(o.name) ? ` (${o.name})` : ''}
+Description=Garnet personal agent${checkServiceName(o.name) ? ` (${o.name})` : ''}
 After=network-online.target
 Wants=network-online.target
 
@@ -120,7 +125,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=${exec}
 WorkingDirectory=${systemdPath(repoRoot(o.entry))}
-Environment=${systemdQuote(`RUBY_HOME=${o.home}`)}
+Environment=${systemdQuote(`GARNET_HOME=${o.home}`)}
 EnvironmentFile=-${systemdPath(join(o.home, 'env'))}
 Restart=on-failure
 RestartSec=5
@@ -149,9 +154,10 @@ WantedBy=default.target
       status: [['systemctl', '--user', 'status', unit, '--no-pager']],
       restart: [['systemctl', '--user', 'restart', unit]],
     },
+    legacy: { path: join(o.userHome, '.config', 'systemd', 'user', legacySystemdUnit(o.name)), stop: [['systemctl', '--user', 'disable', '--now', legacySystemdUnit(o.name)]] },
     notes: [
-      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`ruby secrets set\` and put only RUBY_SECRETS_KEY_FILE=<path> there.`,
-      'To keep Ruby running without an active login, run: loginctl enable-linger $USER',
+      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`garnet secrets set\` and put only GARNET_SECRETS_KEY_FILE=<path> there.`,
+      'To keep Garnet running without an active login, run: loginctl enable-linger $USER',
       `Logs: journalctl --user -u ${unit} -f`,
     ],
   };
@@ -163,11 +169,11 @@ function planLaunchd(o: PlanOptions): ServicePlan {
   const path = join(o.userHome, 'Library', 'LaunchAgents', `${label}.plist`);
   // launchd cannot read an env file, so a small sh wrapper sources it before exec'ing node.
   const script =
-    'set -a; [ -f "$RUBY_HOME/env" ] && . "$RUBY_HOME/env"; set +a; exec ' +
+    'set -a; [ -f "$GARNET_HOME/env" ] && . "$GARNET_HOME/env"; set +a; exec ' +
     [o.nodePath, ...NODE_FLAGS, o.entry, 'start'].map(shellQuote).join(' ');
   const args = ['/bin/sh', '-c', script].map((a) => `    <string>${xmlEscape(a)}</string>`).join('\n');
   // launchd's default PATH is /usr/bin:/bin:/usr/sbin:/sbin, which misses Homebrew and Docker Desktop
-  // (the Docker sandbox runs `docker`). Deterministic, so `ruby doctor` can compare the file.
+  // (the Docker sandbox runs `docker`). Deterministic, so `garnet doctor` can compare the file.
   const searchPath = [...new Set([dirname(o.nodePath), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
   const contents = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -181,7 +187,7 @@ ${args}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>RUBY_HOME</key>
+    <key>GARNET_HOME</key>
     <string>${xmlEscape(o.home)}</string>
     <key>PATH</key>
     <string>${xmlEscape(searchPath)}</string>
@@ -198,9 +204,9 @@ ${args}
   <key>ExitTimeOut</key>
   <integer>${STOP_TIMEOUT_SEC}</integer>
   <key>StandardOutPath</key>
-  <string>${xmlEscape(join(o.home, 'logs', 'ruby.out.log'))}</string>
+  <string>${xmlEscape(join(o.home, 'logs', 'garnet.out.log'))}</string>
   <key>StandardErrorPath</key>
-  <string>${xmlEscape(join(o.home, 'logs', 'ruby.err.log'))}</string>
+  <string>${xmlEscape(join(o.home, 'logs', 'garnet.err.log'))}</string>
 </dict>
 </plist>
 `;
@@ -218,26 +224,38 @@ ${args}
       status: [['launchctl', 'print', target]],
       restart: [['launchctl', 'kickstart', '-k', target]],
     },
+    legacy: { path: join(o.userHome, 'Library', 'LaunchAgents', `${legacyLaunchdLabel(o.name)}.plist`), stop: [['launchctl', 'bootout', `gui/${uid}/${legacyLaunchdLabel(o.name)}`]] },
     notes: [
-      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`ruby secrets set\` and put only RUBY_SECRETS_KEY_FILE=<path> there.`,
+      `Put secrets such as ANTHROPIC_API_KEY in ${join(o.home, 'env')} (KEY=value lines, mode 0600), or encrypt them with \`garnet secrets set\` and put only GARNET_SECRETS_KEY_FILE=<path> there.`,
       `Logs: ${join(o.home, 'logs')}`,
     ],
   };
 }
 
-/** The RUBY_HOME a unit file or plist runs, or null when it names none. */
+/** The GARNET_HOME a unit file or plist runs, or null when it names none. */
 export function serviceHomeOf(contents: string): string | null {
-  const unit = /^Environment="RUBY_HOME=((?:[^"\\]|\\.)*)"$/m.exec(contents);
+  const unit = /^Environment="GARNET_HOME=((?:[^"\\]|\\.)*)"$/m.exec(contents);
   if (unit) return unit[1]!.replace(/\\(.)/g, '$1').replace(/\$\$/g, '$').replace(/%%/g, '%');
-  const plist = /<key>RUBY_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(contents);
+  const plist = /<key>GARNET_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(contents);
   if (plist) return plist[1]!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
   return null;
 }
 
-export type InstalledService = { name: string | undefined; path: string; home: string | null };
+/**
+ * The RUBY_HOME run by a service file that Garnet (then called Ruby) wrote before the rename, or
+ * null when the file is not one of ours. The markers are the description / label and the RUBY_HOME
+ * setting that only our templates contain.
+ */
+export function legacyServiceHomeOf(contents: string): string | null {
+  const unit = /^Environment="RUBY_HOME=((?:[^"\\]|\\.)*)"$/m.exec(contents);
+  if (unit && /^Description=Ruby personal agent/m.test(contents)) return unit[1]!.replace(/\\(.)/g, '$1').replace(/\$\$/g, '$').replace(/%%/g, '%');
+  const plist = /<key>RUBY_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(contents);
+  if (plist && /<string>dev\.ruby\.agent(?:\.[a-z0-9-]+)?<\/string>/.test(contents)) return plist[1]!.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  return null;
+}
 
-/** Ruby services installed for this user (any instance name), with the RUBY_HOME each runs. */
-export function installedServices(opts: { platform: NodeJS.Platform; userHome: string }, deps: Partial<Pick<ServiceDeps, 'list' | 'read'>> = {}): InstalledService[] {
+/** Legacy `ruby` services (written by us before the rename) installed for this user; foreign files with the same name are ignored. */
+export function legacyServices(opts: { platform: NodeJS.Platform; userHome: string }, deps: Partial<Pick<ServiceDeps, 'list' | 'read'>> = {}): InstalledService[] {
   const list = deps.list ?? defaultDeps.list;
   const read = deps.read ?? defaultDeps.read;
   const where =
@@ -245,6 +263,33 @@ export function installedServices(opts: { platform: NodeJS.Platform; userHome: s
       ? { dir: join(opts.userHome, '.config', 'systemd', 'user'), re: /^ruby(?:-([a-z0-9][a-z0-9-]{0,31}))?\.service$/ }
       : opts.platform === 'darwin'
         ? { dir: join(opts.userHome, 'Library', 'LaunchAgents'), re: /^dev\.ruby\.agent(?:\.([a-z0-9][a-z0-9-]{0,31}))?\.plist$/ }
+        : null;
+  if (!where) return [];
+  const out: InstalledService[] = [];
+  for (const file of list(where.dir).sort()) {
+    const m = where.re.exec(file);
+    if (!m) continue;
+    try {
+      const home = legacyServiceHomeOf(read(join(where.dir, file)));
+      if (home !== null) out.push({ name: m[1], path: join(where.dir, file), home });
+    } catch {
+      /* unreadable: not ours to touch */
+    }
+  }
+  return out;
+}
+
+export type InstalledService = { name: string | undefined; path: string; home: string | null };
+
+/** Garnet services installed for this user (any instance name), with the GARNET_HOME each runs. */
+export function installedServices(opts: { platform: NodeJS.Platform; userHome: string }, deps: Partial<Pick<ServiceDeps, 'list' | 'read'>> = {}): InstalledService[] {
+  const list = deps.list ?? defaultDeps.list;
+  const read = deps.read ?? defaultDeps.read;
+  const where =
+    opts.platform === 'linux'
+      ? { dir: join(opts.userHome, '.config', 'systemd', 'user'), re: /^garnet(?:-([a-z0-9][a-z0-9-]{0,31}))?\.service$/ }
+      : opts.platform === 'darwin'
+        ? { dir: join(opts.userHome, 'Library', 'LaunchAgents'), re: /^dev\.garnet\.agent(?:\.([a-z0-9][a-z0-9-]{0,31}))?\.plist$/ }
         : null;
   if (!where) return [];
   const out: InstalledService[] = [];
@@ -263,7 +308,7 @@ export function installedServices(opts: { platform: NodeJS.Platform; userHome: s
 }
 
 /**
- * Picks the service for this RUBY_HOME: the given name, else the instance already installed for
+ * Picks the service for this GARNET_HOME: the given name, else the instance already installed for
  * this home, else the default. `conflict` is set when that service file already runs another home
  * (installing would take it over).
  */
@@ -273,13 +318,13 @@ export function resolveService(
 ): { plan: ServicePlan; conflict: string | null } | { unsupported: string } {
   checkServiceName(opts.name);
   const installed = installedServices(opts, deps);
-  const mine = installed.find((s) => s.home === opts.home);
+  const mine = installed.find((s) => s.home === opts.home) ?? legacyServices(opts, deps).find((s) => s.home === opts.home);
   const plan = planService({ ...opts, name: opts.name !== undefined ? opts.name : mine?.name });
   if ('unsupported' in plan) return plan;
   const existing = installed.find((s) => s.path === plan.path);
   const conflict =
     existing && existing.home !== null && existing.home !== opts.home
-      ? `${plan.path} already runs RUBY_HOME=${existing.home}. Give this instance its own name: \`ruby service install --name <name>\`.`
+      ? `${plan.path} already runs GARNET_HOME=${existing.home}. Give this instance its own name: \`garnet service install --name <name>\`.`
       : null;
   return { plan, conflict };
 }
@@ -293,7 +338,7 @@ export function planService(opts: PlanOptions): ServicePlan | { unsupported: str
       return planLaunchd(opts);
     default:
       return {
-        unsupported: `Service install is not supported yet on ${opts.platform}; run \`ruby start\` under your own supervisor.`,
+        unsupported: `Service install is not supported yet on ${opts.platform}; run \`garnet start\` under your own supervisor.`,
       };
   }
 }
@@ -315,7 +360,7 @@ const defaultDeps: ServiceDeps = {
     writeFileSync(path, contents, { mode });
     chmodSync(path, mode); // the open() mode is masked by umask and ignored for existing files
   },
-  // RUBY_HOME holds the env file with secrets: keep directories private to the user.
+  // GARNET_HOME holds the env file with secrets: keep directories private to the user.
   mkdir: (path) => void mkdirSync(path, { recursive: true, mode: 0o700 }),
   exists: (path) => existsSync(path),
   remove: (path) => rmSync(path, { force: true }),
@@ -331,7 +376,7 @@ const defaultDeps: ServiceDeps = {
 };
 
 const ENV_TEMPLATE =
-  '# Environment for Ruby: one KEY=value per line (for example ANTHROPIC_API_KEY=...). Keep this file private (mode 0600).\n';
+  '# Environment for Garnet: one KEY=value per line (for example ANTHROPIC_API_KEY=...). Keep this file private (mode 0600).\n';
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -345,6 +390,21 @@ async function runAll(cmds: string[][], d: ServiceDeps, result: ServiceResult, m
     }
     result.commands.push({ cmd, ...r });
     if (r.code !== 0 && !mayFail) result.ok = false;
+  }
+}
+
+/** Stops and removes this instance's pre-rename `ruby` service, but only a file we wrote that runs the same home. */
+async function removeLegacy(plan: ServicePlan, d: ServiceDeps, result: ServiceResult): Promise<void> {
+  const { path, stop } = plan.legacy;
+  try {
+    if (!d.exists(path) || legacyServiceHomeOf(d.read(path)) !== plan.home) return;
+    await runAll(stop, d, result, true);
+    await d.remove(path);
+    result.files.push(path);
+    result.notes.push(`Removed the legacy service from before the rename (${path}); Garnet replaces it.`);
+    if (plan.platform === 'systemd') await runAll([['systemctl', '--user', 'daemon-reload']], d, result, true);
+  } catch (e) {
+    result.notes.push(`Could not remove the legacy service ${path}: ${errorText(e)}`);
   }
 }
 
@@ -368,6 +428,7 @@ export async function installService(plan: ServicePlan, deps: Partial<ServiceDep
     return result;
   }
   await runAll(plan.commands.prepare, d, result, true);
+  await removeLegacy(plan, d, result);
   await runAll(plan.commands.install, d, result);
   return result;
 }

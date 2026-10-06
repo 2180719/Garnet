@@ -2,6 +2,8 @@ export {
   planService,
   resolveService,
   installedServices,
+  legacyServices,
+  legacyServiceHomeOf,
   serviceHomeOf,
   checkServiceName,
   systemdUnit,

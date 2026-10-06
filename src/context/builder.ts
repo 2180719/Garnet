@@ -2,7 +2,7 @@ import type { ChatMessage, ContentBlock, SessionEvent, ToolCallBlock, ToolSchema
 
 export type SystemPromptInput = {
   persona?: string | undefined;
-  /** The assistant's name. Defaults to the `Your name is X.` line in the persona, else "Ruby". */
+  /** The assistant's name. Defaults to the `Your name is X.` line in the persona, else "Garnet". */
   name?: string | undefined;
   workspace: string;
   /** True when user messages carry their send time (see `MessageOptions.timeZone`). */
@@ -11,11 +11,11 @@ export type SystemPromptInput = {
   sections?: string[];
 };
 
-export const DEFAULT_ASSISTANT_NAME = 'Ruby';
+export const DEFAULT_ASSISTANT_NAME = 'Garnet';
 
 /**
  * The assistant's configured name: the first `Your name is X.` line in the
- * persona (written by `ruby setup` and by `ruby import`), else "Ruby".
+ * persona (written by `garnet setup` and by `garnet import`), else "Garnet".
  */
 export function assistantName(persona: string | undefined): string {
   const m = /^Your name is ([^\r\n]{1,60}?)\.\s*$/m.exec(persona ?? '');

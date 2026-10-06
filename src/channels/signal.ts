@@ -1,6 +1,6 @@
 // Signal adapter: talks to a local signal-cli daemon (HTTP mode): SSE receive, JSON-RPC send.
 import {
-  RubyError,
+  GarnetError,
   errorMessage,
   type ChannelAdapter,
   type ChannelCapabilities,
@@ -97,7 +97,7 @@ export class SignalChannel implements ChannelAdapter {
 
   constructor(options: SignalOptions) {
     if (typeof options.account !== 'string' || !NUMBER_SHAPE.test(options.account)) {
-      throw new RubyError('config', 'Signal account must be an E.164 phone number such as "+15551234567"');
+      throw new GarnetError('config', 'Signal account must be an E.164 phone number such as "+15551234567"');
     }
     this.account = options.account;
     const raw = options.baseUrl ?? 'http://127.0.0.1:8080';
@@ -105,13 +105,13 @@ export class SignalChannel implements ChannelAdapter {
     try {
       url = new URL(raw);
     } catch {
-      throw new RubyError('config', 'Signal baseUrl is not a valid URL');
+      throw new GarnetError('config', 'Signal baseUrl is not a valid URL');
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new RubyError('config', 'Signal baseUrl must be an http(s) URL');
+      throw new GarnetError('config', 'Signal baseUrl must be an http(s) URL');
     }
     if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
-      throw new RubyError(
+      throw new GarnetError(
         'config',
         'Refusing non-loopback http Signal baseUrl: the signal-cli JSON-RPC endpoint is unauthenticated. Use a loopback address or an https URL (e.g. behind an authenticating reverse proxy).',
       );
@@ -134,7 +134,7 @@ export class SignalChannel implements ChannelAdapter {
       await res.body?.cancel().catch(() => {});
     } catch {
       this.#controller = null;
-      throw new RubyError('config', UNREACHABLE_HINT(this.#base, this.account));
+      throw new GarnetError('config', UNREACHABLE_HINT(this.#base, this.account));
     }
     this.#lastSuccessAt = Date.now();
     this.#lastError = null;

@@ -11,10 +11,10 @@ test('achievements unlock once, hidden ones stay secret, earned ones cannot be f
   assert.ok(list.every((x) => x.unlockedAt === null));
   assert.equal(list.find((x) => x.id === 'night-owl')?.title, '???');
   list = a.evaluate({ ...zero, tasksCompleted: 1, lateNightTasks: 1 });
-  const hello = list.find((x) => x.id === 'hello-ruby')!;
+  const hello = list.find((x) => x.id === 'hello-garnet')!;
   assert.ok(hello.unlockedAt);
   assert.equal(list.find((x) => x.id === 'night-owl')?.title, 'Night Owl');
-  assert.equal(a.evaluate({ ...zero, tasksCompleted: 5 }).find((x) => x.id === 'hello-ruby')?.unlockedAt, hello.unlockedAt, 'first unlock date is kept');
+  assert.equal(a.evaluate({ ...zero, tasksCompleted: 5 }).find((x) => x.id === 'hello-garnet')?.unlockedAt, hello.unlockedAt, 'first unlock date is kept');
   assert.equal(a.unlockEasterEgg('regular'), false);
   assert.equal(a.unlockEasterEgg('konami'), true);
   assert.equal(a.unlockEasterEgg('konami'), false, 'already unlocked');

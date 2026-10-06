@@ -1,7 +1,7 @@
-// Optional live checks for `ruby setup`. Each makes one cheap request that
+// Optional live checks for `garnet setup`. Each makes one cheap request that
 // costs no tokens, and only runs when the owner agreed to it. Results never
 // contain the key or token: it is scrubbed from every message.
-import type { RubyConfig } from '../../config/index.ts';
+import type { GarnetConfig } from '../../config/index.ts';
 
 /** `warn`: it works, but something deserves a look (for example the model is not listed). */
 export type CheckResult = { ok: boolean; detail: string; warn?: boolean };
@@ -35,7 +35,7 @@ async function request(fetchFn: FetchFn, url: string, init: RequestInit, secret?
 const trimSlash = (u: string) => u.replace(/\/+$/, '');
 
 /** Checks a model provider's key (and that the server answers) by listing models. */
-export async function checkModel(model: RubyConfig['model'], key: string | undefined, fetchFn: FetchFn = fetch): Promise<CheckResult> {
+export async function checkModel(model: GarnetConfig['model'], key: string | undefined, fetchFn: FetchFn = fetch): Promise<CheckResult> {
   if (model.provider === 'fake') return { ok: true, detail: 'the offline model needs no key' };
   if (model.provider === 'anthropic') {
     if (!key) return { ok: false, detail: 'no key to check' };

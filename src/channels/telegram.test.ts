@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
-import { RubyError, type InboundMessage } from '../contracts/index.ts';
+import { GarnetError, type InboundMessage } from '../contracts/index.ts';
 import { TelegramChannel } from './index.ts';
 
 const TOKEN = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw_x';
@@ -33,7 +33,7 @@ function fakeApi(handlers: Record<string, Handler> = {}, updateScript: Handler[]
     if (method === 'getUpdates') return (queue.shift() ?? hang)(body, init?.signal ?? undefined);
     const handler = handlers[method];
     if (handler) return handler(body, init?.signal ?? undefined);
-    if (method === 'getMe') return ok({ id: 1, is_bot: true, username: 'ruby_bot' });
+    if (method === 'getMe') return ok({ id: 1, is_bot: true, username: 'garnet_bot' });
     if (method === 'deleteWebhook') return ok(true);
     return ok(true);
   }) as typeof fetch;
@@ -70,7 +70,7 @@ const textUpdate = (id: number, text: string, extra: object = {}) => ({
 test('rejects a malformed token before any request', () => {
   const api = fakeApi();
   for (const token of ['', 'abc', '123:short', 'notdigits:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw_x']) {
-    assert.throws(() => new TelegramChannel({ token, fetch: api.fetch }), (e) => e instanceof RubyError && e.category === 'config' && !e.message.includes(token || '\0'));
+    assert.throws(() => new TelegramChannel({ token, fetch: api.fetch }), (e) => e instanceof GarnetError && e.category === 'config' && !e.message.includes(token || '\0'));
   }
   assert.equal(api.calls.length, 0);
 });
@@ -81,7 +81,7 @@ test('start fails fast with a config error when Telegram rejects the token', asy
     const { channel } = setup(api);
     await assert.rejects(
       channel.start(async () => {}),
-      (e) => e instanceof RubyError && e.category === 'config' && e.message === 'Telegram rejected the bot token' && !e.message.includes(TOKEN),
+      (e) => e instanceof GarnetError && e.category === 'config' && e.message === 'Telegram rejected the bot token' && !e.message.includes(TOKEN),
     );
     assert.equal(api.of('getUpdates').length, 0);
   }
