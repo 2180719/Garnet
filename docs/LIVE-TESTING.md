@@ -179,6 +179,17 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 4. Run `sleep 600` and cancel with `/stop`; expect the container to be killed. Check `docker ps` for leftovers.
 5. Docker not running: expect a clear failure, not a silent fallback to the local backend.
 
+### 11b. SSH sandbox
+
+Use a throwaway VM or a dedicated unprivileged account, never your own login.
+
+1. On the remote: `mkdir -p /srv/garnet/work`. Set `permissions.exec = "ask"`, `sandbox.backend = "ssh"` and `sandbox.ssh` (`host`, `user`, `workdir`, and `agent: true` or `identityFile`). Leave `hostKeyChecking` at `strict`.
+2. `garnet sandbox check` before the host is in `known_hosts`: expect a failure that says how to add the key. Add it (`ssh-keyscan`), check again: expect ok and the real workdir. `garnet doctor` shows the same under `sandbox`.
+3. Ask Garnet to run `hostname; id; pwd`. Expect the remote host, the remote account and the workdir. Run with `cwd: "sub"` after `mkdir sub` remotely; try `cwd: ".."` (expect a refusal) and a symlink out of `workdir` (expect a refusal).
+4. Run `sleep 600` and cancel with `/stop`; expect the local `ssh` client to exit. Check the remote with `ps` for leftovers (a command that ignores SIGHUP may keep running; the account's limits are the backstop).
+5. Wrong user or key: expect a clear failure, never a fallback to `local` or Docker. With a passphrase-protected key and `passphraseEnv` set, expect it to work without a prompt (OpenSSH 8.4+).
+6. Change the remote host key (or use a different `known_hosts`): expect refusal under `strict`.
+
 ### 12. Backup and restore
 
 1. With secrets in the store, run `garnet backup /path/to/dir`. Confirm the encrypted `secrets` file is in it and the key file is not.

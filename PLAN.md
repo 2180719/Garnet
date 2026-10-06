@@ -138,7 +138,7 @@ Task states: `running`, `waiting_for_user`, `waiting_for_approval`, `completed`,
 
 - Permission profiles grant capabilities: `fs.read`, `fs.write`, `net.fetch`, `exec`, `message.send`, `schedule.edit`, `memory.write`, and so on. Each is `allow`, `ask` or `deny`, plus path and host scopes.
 - Approvals are persisted, bound to one pending operation, accepted only from an authorized identity, and expire (default 24h). In chat they use inline buttons where available, otherwise a short code (today: short code only).
-- Sandbox backends: `local` (workspace roots only; not an isolation boundary), `docker`, then `ssh` (not built yet). A profile marked isolated must use a real boundary; an unavailable backend is an error, never a silent downgrade.
+- Sandbox backends: `local` (workspace roots only; not an isolation boundary), `docker`, and `ssh` (the system ssh client; a boundary only as strong as the remote account, with its own remote workdir). Other runtimes slot in behind the same `Sandbox` interface. A profile marked isolated must use a real boundary; an unavailable backend is an error, never a silent downgrade.
 - Credentials are injected into tools by name, never placed in prompts, and redacted from logs and tool output (redaction is built; injecting named secrets into commands is not yet).
 
 ## Scheduler

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### SSH sandbox backend
+- `sandbox.backend = "ssh"` runs `run_command` on a remote host through the system `ssh` client (no new dependency). argv only on this side; the remote command, cwd and environment are single-quoted; `BatchMode`, no password prompts, no forwarding, and `~/.ssh/config` is ignored. Host key checking is `strict` by default (`accept-new` and `off` are opt-in; doctor warns on `off`). Authenticate with a key file, ssh-agent, or both; a key passphrase is a secret name (`sandbox.ssh.passphraseEnv`), passed to ssh through a private one-use askpass helper, never argv or config.
+- The remote `workdir` stands in for the workspace: `cwd` is relative to it and cannot leave it, symlinks included (checked on the remote with `pwd -P`). It is not synced with the local workspace. Timeouts, cancellation and output caps match the other backends.
+- Honest boundary: ssh is only as strong as the remote account. Use a dedicated, unprivileged account or a disposable VM. Output is treated as untrusted (the remote has a network).
+- The backend table in `src/sandbox/factory.ts` is the extension point for other runtimes. New: `garnet sandbox check`, doctor's ssh probe (only when `exec` is allowed; read-only), `sandbox.ssh.*` in `garnet config explain`, `src/cli/setup/sandbox.ts` (setup questions, not yet wired into the wizard).
+
 ### Review fixes
 - Security: results of jobs and agent-sent messages that read untrusted content now carry that state into the chat they land in; forwarded voice notes and audio files count as untrusted (only a live voice note from the paired owner in a private chat does not); links in approval text are no longer treated as the owner's; "message the owner" and relative times are resolved before approval, so the action that runs is exactly the one approved; the agent cannot pause or resume `config.json` jobs, granting a job `exec` needs exec approval, and agent messages never go to group chats.
 - `web_fetch` no longer leaks a connection when a compressed response stalls.

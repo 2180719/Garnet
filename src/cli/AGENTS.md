@@ -1,6 +1,6 @@
 # cli
 
-The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lists config, chat-made and CLI-added jobs with their schedule and next run in words; `add`/`edit` take natural schedules (`parseWhen`); `delete`/`edit` refuse config.json jobs. Commands: `setup`, `doctor`, `init`, `chat [--fake] [--session <id>] [--plain]`, `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `garnet help` lists them all).
+The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lists config, chat-made and CLI-added jobs with their schedule and next run in words; `add`/`edit` take natural schedules (`parseWhen`); `delete`/`edit` refuse config.json jobs. Commands: `setup`, `doctor`, `sandbox check` (`sandbox.ts`: read-only probe of the configured backend, same check doctor runs), `init`, `chat [--fake] [--session <id>] [--plain]`, `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `garnet help` lists them all).
 
 - `main(argv, io)` returns an exit code and writes through `io`, so it is testable.
 - The CLI is a surface, not logic: it calls `createGarnet()` from `src/main.ts` and renders runtime events.
@@ -12,11 +12,12 @@ The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lis
 ## setup and doctor
 
 - `setup/` holds `garnet setup` (and `garnet init`, which offers it on a terminal). `wizard.ts` is the flow; every question goes through the `Prompter` interface in `prompt.ts` and every side effect through `SetupDeps`, so tests script it fully. `command.ts` parses flags and wires real dependencies (the composition root, the service module, the importer).
+- `setup/sandbox.ts` holds the sandbox questions (`sandboxStep`: docker, ssh or local; for ssh the host, user, remote workdir, agent or key file, the passphrase secret NAME and host key policy). It takes and returns the `sandbox` config and asks for no secret value. The wizard does not call it yet; wiring it in is `draft.sandbox = await sandboxStep(p, draft.sandbox)` plus its flags (`--sandbox`, `--ssh-host`, `--ssh-user`, `--ssh-workdir`, `--ssh-auth`, `--ssh-key`, `--ssh-passphrase-env`, `--ssh-host-keys`) in `FLAGS` and `SETUP_USAGE`.
 - Each prompt has a stable `id` that doubles as its `--flag` in non-interactive mode (`AnswerPrompter`). Adding a question: give it an id, a `default`, and an `auto` (what a script gets without the flag; optional steps must default to off), and add the flag to `FLAGS` and `SETUP_USAGE`.
 - Nothing is written before the save step, except an import the owner applies (memory and skills go straight to their stores). Secrets go to the encrypted store or `<home>/env`, never config, and never into output. A new key file for the store must be outside `<home>`.
 - Live checks (`checks.ts`) run only after the owner agrees, cost no tokens, and scrub the secret from every message. Tests inject `fetch`.
 - The persona basics live between `<!-- garnet setup -->` markers in `config.persona`, so hand-written or imported text survives re-runs.
-- `doctor.ts` is read-only and offline: it reports which secret names exist but never prints a value, never calls a provider, and probes Docker only when `exec` is allowed. Each finding has a fix. `--json` for scripts; exit 1 when anything fails.
+- `doctor.ts` is read-only and offline: it reports which secret names exist but never prints a value, never calls a provider, and probes the sandbox (Docker or ssh) only when `exec` is allowed and the backend is configured, never changes anything on the remote, and warns on `sandbox.ssh.hostKeyChecking = off`. Each finding has a fix. `--json` for scripts; exit 1 when anything fails.
 - The installer (`install.sh` at the repo root) is POSIX sh. Check it with `sh -n install.sh`; see the root AGENTS.md.
 
 ## `garnet chat` (`chat/`)
