@@ -75,7 +75,7 @@ export class AnthropicModel implements ModelAdapter {
           // Breakpoint on the stable prefix (tools + system) and automatic caching of the conversation.
           system: [{ type: 'text', text: request.system, cache_control: { type: 'ephemeral' } }],
           cache_control: { type: 'ephemeral' },
-          messages: request.messages.map(toParam),
+          messages: toParams(request.messages),
           ...(tools.length ? { tools } : {}),
           ...(this.options.effort ? { output_config: { effort: this.options.effort } } : {}),
           ...(useFallbacks ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
@@ -99,22 +99,29 @@ export class AnthropicModel implements ModelAdapter {
   }
 }
 
-function toParam(message: ChatMessage): BetaMessageParam {
-  return { role: message.role, content: message.content.map(toBlockParam) };
+/**
+ * The API rejects empty text blocks, so they are left out, and so are blocks
+ * from other providers. A message left with no content is dropped (the API
+ * merges the consecutive user turns that can leave behind).
+ */
+function toParams(messages: ChatMessage[]): BetaMessageParam[] {
+  return messages.flatMap((m) => {
+    const content = m.content.flatMap((b) => toBlockParam(b) ?? []);
+    return content.length ? [{ role: m.role, content }] : [];
+  });
 }
 
-function toBlockParam(block: ContentBlock): BetaContentBlockParam {
+function toBlockParam(block: ContentBlock): BetaContentBlockParam | null {
   switch (block.type) {
     case 'text':
-      return { type: 'text', text: block.text };
+      return block.text ? { type: 'text', text: block.text } : null;
     case 'tool_call':
       return { type: 'tool_use', id: block.id, name: block.name, input: block.input as Record<string, unknown> };
     case 'tool_result':
       return { type: 'tool_result', tool_use_id: block.callId, content: block.content, is_error: block.isError };
     case 'provider':
       // Opaque blocks from this provider are replayed unchanged.
-      if (block.provider === PROVIDER) return block.data as BetaContentBlockParam;
-      return { type: 'text', text: '' };
+      return block.provider === PROVIDER ? (block.data as BetaContentBlockParam) : null;
   }
 }
 
@@ -161,7 +168,12 @@ function toErrorEvent(e: unknown): ModelEvent {
   if (e instanceof Anthropic.BadRequestError) return fail('provider_fatal', `Bad request: ${e.message}`);
   if (e instanceof Anthropic.RateLimitError) return fail('provider_transient', 'Rate limited.', retryAfter(e.headers));
   if (e instanceof Anthropic.APIError) {
-    const status = e.status ?? 0;
+    if (e.status === undefined) {
+      // An `error` event in the middle of a stream: there is no HTTP status, only the error type.
+      const type = e.type ?? 'unknown_error';
+      return fail(TRANSIENT_TYPES.has(type) ? 'provider_transient' : 'provider_fatal', `Provider error (${type}): ${e.message}`);
+    }
+    const status = e.status;
     if (status >= 500 || status === 408 || status === 409) {
       return fail('provider_transient', `Provider error ${status}: ${e.message}`, retryAfter(e.headers));
     }
@@ -169,6 +181,9 @@ function toErrorEvent(e: unknown): ModelEvent {
   }
   return fail('internal', e instanceof Error ? e.message : String(e));
 }
+
+/** Error types (https://docs.anthropic.com/en/api/errors) worth retrying. */
+const TRANSIENT_TYPES: ReadonlySet<string> = new Set(['overloaded_error', 'api_error', 'rate_limit_error', 'timeout_error']);
 
 function retryAfter(headers: Headers | undefined): number | undefined {
   const value = headers?.get('retry-after');
