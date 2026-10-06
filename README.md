@@ -6,40 +6,65 @@ Ruby runs on your own VPS or computer and is designed to be reached through Tele
 
 > **Status: pre-release.** Working today: the agent loop, tools with approvals (including over chat), bounded memory, skills, compaction, the gateway, Telegram, Signal and Discord, a key-gated OpenAI-compatible API, cron jobs and heartbeats, Anthropic and OpenAI-compatible models, and service install. A Docker sandbox for commands, backup and restore, and importing from OpenClaw or Hermes are in too. So is the opt-in dashboard (`ruby dashboard`). See [PLAN.md](PLAN.md).
 
-## Try it
+## Install
 
-Requires Node.js 22.18 or newer.
+Requires Node.js 22.18 or newer and git. No sudo; nothing outside your home directory.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2180719/Ruby/main/install.sh | sh
+```
+
+The installer checks Node.js (and says how to get it if it is missing or too old), clones Ruby into `~/.local/share/ruby`, installs its two dependencies, and puts a `ruby` command in `~/.local/bin`. Then it starts `ruby setup`. Run it again any time to update; it leaves local changes alone. `sh install.sh --help` lists the options (`--dir`, `--bin-dir`, `--name`, `--ref`, `--no-setup`).
+
+> **Already have the Ruby programming language?** Its interpreter is also called `ruby`. The installer never overwrites it and warns when one shadows the other; install with `--name rubyagent` to keep both.
+
+From a clone instead (to develop, or to read the code first):
 
 ```sh
 git clone https://github.com/2180719/Ruby && cd Ruby
 npm install
-npm run ruby -- init
-npm run ruby -- chat --fake        # offline, no API key needed
-export ANTHROPIC_API_KEY=...       # then chat for real
-npm run ruby -- chat
+npm link            # optional: puts `ruby` on your PATH (otherwise use `npm run ruby -- <command>`)
 ```
 
-### Run it as a Telegram bot
+`npm install -g` from a tarball or the npm registry does not work: Node.js will not run TypeScript from `node_modules`. `npm link` and `npm install -g .` from a clone do.
 
-1. Create a bot with [@BotFather](https://t.me/BotFather) and put the token in `~/.ruby/env` (mode 600) along with your provider key:
-   ```sh
-   ANTHROPIC_API_KEY=...
-   TELEGRAM_BOT_TOKEN=...
-   ```
-2. Set `"channels": { "telegram": { "enabled": true } }` in `~/.ruby/config.json` (`npm run ruby -- config explain` lists every setting).
-3. `npm run ruby -- start`, then message your bot. It replies with a pairing code; approve it with `npm run ruby -- pair approve <code>`.
-4. Keep it running with `npm run ruby -- service install` (systemd on Linux, launchd on macOS).
-
-### Encrypt your secrets (optional)
-
-Instead of plain-text values in `~/.ruby/env`, Ruby can keep them in an encrypted store (`~/.ruby/secrets`, AES-256-GCM with a scrypt-derived key):
+## Set up
 
 ```sh
-npm run ruby -- secrets keygen /etc/ruby/key      # a key file outside ~/.ruby, mode 600
+ruby setup     # model and key, persona, channels, background service, pairing
+ruby doctor    # checks the install and setup, and says how to fix what it finds
+ruby chat      # talk to Ruby in the terminal (`ruby chat --fake` needs no key)
+```
+
+`ruby setup` asks a few questions and saves nothing until the end:
+
+- **Model:** Anthropic, OpenRouter, a local server (Ollama, LM Studio, llama.cpp, vLLM), any OpenAI-compatible API, or the offline demo model.
+- **Keys and tokens:** typed hidden, then kept in the encrypted secret store (setup creates a key file outside `~/.ruby`), in `~/.ruby/env` (mode 600), or left to your own environment variables. Config only ever stores the *name*. If you agree, setup checks each key with one request that costs no tokens.
+- **Persona:** the assistant's name, what to call you, and a line about how you like answers.
+- **Channels:** Telegram, Discord and Signal, with the steps for each.
+- **Service and pairing:** installs the background service (systemd or launchd), then helps you approve your own account when you message the bot.
+- **Import:** if it finds OpenClaw or Hermes, it previews what it can bring over before importing.
+
+Run it again to change one part: it shows what is set and offers a menu. For scripts and CI, `ruby setup -y` takes every answer from flags (`ruby setup --help`), for example:
+
+```sh
+printf '%s' "$KEY" | ruby setup -y --provider anthropic --key-stdin --name Juno --telegram --service
+```
+
+### Telegram by hand
+
+`ruby setup` covers this. Without it: create a bot with [@BotFather](https://t.me/BotFather), store the token (`ruby secrets set TELEGRAM_BOT_TOKEN`, or a `TELEGRAM_BOT_TOKEN=...` line in `~/.ruby/env`), set `"channels": { "telegram": { "enabled": true } }` in `~/.ruby/config.json` (`ruby config explain` lists every setting), run `ruby start`, message your bot, and approve the pairing code it sends with `ruby pair approve <code>`. `ruby service install` keeps it running.
+
+### Encrypted secrets
+
+`ruby setup` uses the encrypted store by default (`~/.ruby/secrets`, AES-256-GCM with a scrypt-derived key). To manage it by hand:
+
+```sh
+ruby secrets keygen /etc/ruby/key      # a key file outside ~/.ruby, mode 600
 export RUBY_SECRETS_KEY_FILE=/etc/ruby/key         # or put this line in ~/.ruby/env; the path is not secret
-npm run ruby -- secrets import-env                 # move the keys config refers to out of ~/.ruby/env
-npm run ruby -- secrets set TELEGRAM_BOT_TOKEN     # or add one; the value is read from stdin
-npm run ruby -- secrets list                       # names only
+ruby secrets import-env                # move the keys config refers to out of ~/.ruby/env
+ruby secrets set TELEGRAM_BOT_TOKEN    # or add one; the value is read from stdin
+ruby secrets list                      # names only
 ```
 
 `RUBY_SECRETS_PASSPHRASE` works instead of a key file. Environment variables always win over stored secrets, so existing setups keep working unchanged.
@@ -47,8 +72,8 @@ npm run ruby -- secrets list                       # names only
 ### Use the API (optional, off by default)
 
 ```sh
-npm run ruby -- api enable
-npm run ruby -- api key create --name laptop --scopes chat
+ruby api enable
+ruby api key create --name laptop --scopes chat
 ```
 
 Point any OpenAI-compatible client at `http://127.0.0.1:7311/v1` with that key. Ruby keeps the conversation on the server: it only reads your newest message.

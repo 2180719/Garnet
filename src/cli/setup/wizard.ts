@@ -406,7 +406,7 @@ async function checked(
     }
     if (!st.consent) return null;
     const result = await o.check(value);
-    io.out(`  ${result.ok ? s.ok('✓') : s.bad('✗')} ${result.detail}\n`);
+    io.out(`  ${!result.ok ? s.bad('✗') : result.warn ? s.warn('!') : s.ok('✓')} ${result.detail}\n`);
     if (result.ok) return result;
     if (!p.interactive) throw new RubyError('config', `The ${o.what} check failed: ${result.detail}. Nothing was saved.`);
     if (!o.canRetry || !(await p.confirm({ id: `retry-${o.what}`, message: 'Enter it again?', default: true }))) {
@@ -561,7 +561,7 @@ async function serviceStep(p: Prompter, io: Io, deps: SetupDeps, st: State, aske
   const installed = svc.installed();
   heading(io, s, 'Background service');
   if (installed && !asked) {
-    if (!(await p.confirm({ id: 'restart', message: `Restart the ${svc.label} so it uses the new settings?`, default: true, auto: false }))) return 'skipped';
+    if (!(await p.confirm({ id: 'service', message: `Restart the ${svc.label} so it uses the new settings?`, default: true, auto: false }))) return 'skipped';
     return report(io, s, await svc.restart(), 'restarted');
   }
   const want = await p.confirm({

@@ -3,7 +3,8 @@
 // contain the key or token: it is scrubbed from every message.
 import type { RubyConfig } from '../../config/index.ts';
 
-export type CheckResult = { ok: boolean; detail: string };
+/** `warn`: it works, but something deserves a look (for example the model is not listed). */
+export type CheckResult = { ok: boolean; detail: string; warn?: boolean };
 export type FetchFn = typeof fetch;
 
 const TIMEOUT_MS = 10_000;
@@ -23,7 +24,8 @@ async function request(fetchFn: FetchFn, url: string, init: RequestInit, secret?
     }
     return { status: res.status, body };
   } catch (e) {
-    const cause = (e as { cause?: { code?: string } }).cause?.code;
+    const c = (e as { cause?: { code?: string; message?: string; errors?: { code?: string }[] } }).cause;
+    const cause = c?.code ?? c?.errors?.find((x) => x.code)?.code ?? c?.message;
     const name = (e as Error).name;
     const why = name === 'TimeoutError' ? 'timed out' : (cause ?? (e as Error).message);
     return { error: scrub(`could not reach ${new URL(url).host}: ${why}`, secret) };
@@ -44,7 +46,8 @@ export async function checkModel(model: RubyConfig['model'], key: string | undef
     if (r.status !== 200) return { ok: false, detail: `unexpected HTTP ${r.status} from ${new URL(base).host}` };
     const ids = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((m) => m.id);
     const known = ids.includes(model.name);
-    return { ok: true, detail: `key accepted${ids.length && !known ? `; note: "${model.name}" was not in the first ${ids.length} models listed` : ''}` };
+    if (ids.length && !known) return { ok: true, warn: true, detail: `key accepted, but "${model.name}" was not among the ${ids.length} models listed; check the model ID` };
+    return { ok: true, detail: 'key accepted' };
   }
   const base = trimSlash(model.baseUrl ?? '');
   if (!base) return { ok: false, detail: 'no base URL' };
@@ -57,7 +60,7 @@ export async function checkModel(model: RubyConfig['model'], key: string | undef
   if (r.status !== 200) return { ok: false, detail: `unexpected HTTP ${r.status} from ${new URL(base).host}` };
   if (openrouter) return { ok: true, detail: 'OpenRouter accepted the key' };
   const ids = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((m) => m.id).filter(Boolean);
-  if (ids.length && !ids.includes(model.name)) return { ok: true, detail: `server answered, but "${model.name}" is not among its models (${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ', …' : ''})` };
+  if (ids.length && !ids.includes(model.name)) return { ok: true, warn: true, detail: `server answered, but "${model.name}" is not among its models (${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ', …' : ''})` };
   return { ok: true, detail: 'server answered' };
 }
 

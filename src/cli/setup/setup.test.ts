@@ -11,6 +11,7 @@ import { init, setup } from './command.ts';
 import { readPersona, writePersona } from './persona.ts';
 import { AnswerPrompter, makeStyle, type Answer } from './prompt.ts';
 import { runSetup, type Pairing, type SetupDeps } from './wizard.ts';
+import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
 
 const kdf = { N: 2 ** 10, r: 8, p: 1 };
 const KEY = 'sk-ant-api03-NEVER-PRINT-THIS-0123456789';
@@ -190,7 +191,7 @@ test('re-run: the menu edits one section, keeps hand-written persona text and th
   start.persona = 'Always answer in British English.';
   start.budgets.maxToolCalls = 7;
   writeConfig(h.home, start);
-  const { p, done } = h.run({ section: ['persona', 'done'], name: 'Juno', owner: '', notes: '', restart: true });
+  const { p, done } = h.run({ section: ['persona', 'done'], name: 'Juno', owner: '', notes: '', service: true });
   assert.equal(await done, 0);
   const c = h.config();
   assert.equal(c.model.name, 'some/model');
@@ -327,4 +328,49 @@ test('AnswerPrompter: flags answer by id; bad choices and missing answers are cl
   assert.equal(await p.text({ id: 'seq', message: 's' }), 'b');
   assert.equal(await p.text({ id: 'seq', message: 's' }), 'b');
   await assert.rejects(p.text({ id: 'v', message: 'v', default: 'x', validate: () => 'nope' }), /--v: nope/);
+});
+
+test('checks: right endpoint and auth per service; secrets are scrubbed from errors', async () => {
+  const seen: { url: string; auth?: string }[] = [];
+  const reply = (status: number, body: unknown) =>
+    (async (input: string | URL | Request, init?: RequestInit) => {
+      const h = (init?.headers ?? {}) as Record<string, string>;
+      seen.push({ url: String(input), auth: h.authorization });
+      return new Response(JSON.stringify(body), { status });
+    }) as typeof fetch;
+  const model = { ...defaultConfig().model, provider: 'openai-compatible' as const, baseUrl: 'https://openrouter.ai/api/v1/', name: 'a/b' };
+  assert.deepEqual(await checkModel(model, 'or-key', reply(200, { data: {} })), { ok: true, detail: 'OpenRouter accepted the key' });
+  assert.deepEqual(seen.pop(), { url: 'https://openrouter.ai/api/v1/key', auth: 'Bearer or-key' });
+  assert.equal((await checkModel(model, 'or-key', reply(401, {}))).ok, false);
+  const anthropic = { ...defaultConfig().model };
+  const warn = await checkModel(anthropic, KEY, reply(200, { data: [{ id: 'other' }] }));
+  assert.equal(warn.ok && warn.warn, true);
+  assert.equal((await checkModel(anthropic, undefined, reply(200, {}))).ok, false);
+
+  assert.equal((await checkDiscord('dtok', reply(200, { username: 'juno' }))).detail, 'connected as juno');
+  assert.deepEqual(seen.pop(), { url: 'https://discord.com/api/v10/users/@me', auth: 'Bot dtok' });
+  assert.equal((await checkDiscord('dtok', reply(401, {}))).detail, 'Discord rejected the token');
+  assert.equal((await checkTelegram(TG, reply(401, { ok: false }))).detail, 'Telegram rejected the token');
+  assert.equal((await checkSignal('http://127.0.0.1:8080/', reply(200, {}))).ok, true);
+  assert.equal(seen.pop()!.url, 'http://127.0.0.1:8080/api/v1/check');
+
+  const leaky = (async (input: string | URL | Request) => {
+    throw new TypeError(`request to ${String(input)} failed`);
+  }) as typeof fetch;
+  const r = await checkTelegram(TG, leaky);
+  assert.equal(r.ok, false);
+  assert.equal(r.detail.includes(TG), false);
+  assert.match(r.detail, /could not reach api\.telegram\.org/);
+});
+
+test('non-interactive: the service is only touched with --service (install, or restart when installed)', async () => {
+  const quiet = harness({ installed: true });
+  assert.equal(await quiet.run({ provider: 'fake' }, {}, false).done, 0);
+  assert.equal(quiet.svc.restarts + quiet.svc.installs, 0);
+  const restart = harness({ installed: true });
+  assert.equal(await restart.run({ provider: 'fake', service: true }, {}, false).done, 0);
+  assert.equal(restart.svc.restarts, 1);
+  const fresh = harness();
+  assert.equal(await fresh.run({ provider: 'fake', service: true }, {}, false).done, 0);
+  assert.equal(fresh.svc.installs, 1);
 });

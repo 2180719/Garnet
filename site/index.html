@@ -197,17 +197,13 @@ Pick up where we left off.</pre>
 <section class="sec wrap" id="install" aria-labelledby="h-install">
   <h2 id="h-install"><span class="section-index">05 / GET STARTED</span>A new home<br>for Ruby.</h2>
   <div class="body">
-    <p class="intro">You need Node.js 22.18 or newer, and an Anthropic key or an OpenAI-compatible endpoint once you're past the fake model.</p>
+    <p class="intro">One line, no sudo. You need Node.js 22.18 or newer and git; the installer tells you how to get Node.js if it is missing.</p>
     <figure class="term">
       <figcaption class="bar"><span>Shell</span><button id="copy-btn" class="copy" type="button" aria-describedby="install-code">Copy</button></figcaption>
-<pre><code id="install-code">git clone https://github.com/2180719/Ruby &amp;&amp; cd Ruby
-npm install
-npm run ruby -- init
-npm run ruby -- chat --fake    # offline, no key needed
-export ANTHROPIC_API_KEY=...
-npm run ruby -- chat</code></pre>
+<pre><code id="install-code">curl -fsSL https://raw.githubusercontent.com/2180719/Ruby/main/install.sh | sh</code></pre>
     </figure>
-    <p>For Telegram, create a bot with @BotFather, put <code>TELEGRAM_BOT_TOKEN</code> in <code>~/.ruby/env</code>, set <code>channels.telegram.enabled</code> to <code>true</code>, and run <code>ruby start</code>. The <a href="https://github.com/2180719/Ruby#readme">README</a> covers the rest, including the API and keeping it running as a service.</p>
+    <p>It clones Ruby into <code>~/.local/share/ruby</code>, adds a <code>ruby</code> command to <code>~/.local/bin</code>, and starts <code>ruby setup</code>: pick a model (Anthropic, OpenRouter or one running on your machine), paste your key, which goes into an encrypted store and never into config, give your assistant a name, and connect Telegram, Discord or Signal if you like. Setup can install the background service and walk you through pairing your own account. Run <code>ruby setup</code> again to change any of it, and <code>ruby doctor</code> to check that everything is wired up.</p>
+    <p>Already have the Ruby programming language? Its command is also <code>ruby</code>; the installer never overwrites it, and <code>--name rubyagent</code> keeps both. Prefer to read the code first? <code>git clone https://github.com/2180719/Ruby</code>, then <code>npm install</code> and <code>npm link</code>. The <a href="https://github.com/2180719/Ruby#readme">README</a> covers the rest, including scripted setup and the API.</p>
   </div>
 </section>
 
