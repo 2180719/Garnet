@@ -84,3 +84,24 @@ test('refuses a public bind without any key', async () => {
   const api = new ApiServer({ gateway: t.gateway, keys: new ApiKeys(keyStore), keyStore, sessions: t.sessions, rateLimitPerMinute: 10, version: 't' });
   await assert.rejects(api.listen('0.0.0.0', 0), /without an API key/);
 });
+
+test('the public demo is keyless, tool-less, origin-checked and rate-limited', async () => {
+  const { DemoChat } = await import('./index.ts');
+  const { FakeModel } = await import('../models/index.ts');
+  const t = setup();
+  const keyStore = new KeyStore(t.db);
+  const model = new FakeModel([{ text: 'Hi from the demo!' }, { text: 'again' }]);
+  const demo = new DemoChat({ model, allowedOrigins: ['https://ruby.example'], perIpPerHour: 2, dailyTokenBudget: 10_000, maxOutputTokens: 100 });
+  const api = new ApiServer({ gateway: t.gateway, keys: new ApiKeys(keyStore), keyStore, sessions: t.sessions, rateLimitPerMinute: 10, version: 't', demo });
+  const { port } = await api.listen('127.0.0.1', 0);
+  after(() => api.close(0));
+  const post = (origin: string, messages: unknown) =>
+    fetch(`http://127.0.0.1:${port}/v1/demo/chat/completions`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ messages }) });
+  const ok = await post('https://ruby.example', [{ role: 'user', content: 'hello' }]);
+  assert.equal(ok.headers.get('access-control-allow-origin'), 'https://ruby.example');
+  assert.equal(((await ok.json()) as any).choices[0].message.content, 'Hi from the demo!');
+  assert.deepEqual(model.requests[0]!.tools, [], 'no tools in the demo');
+  assert.equal((await post('https://evil.example', [{ role: 'user', content: 'x' }])).status, 403);
+  await post('https://ruby.example', [{ role: 'user', content: 'two' }]);
+  assert.equal((await post('https://ruby.example', [{ role: 'user', content: 'three' }])).status, 429, 'per-IP limit');
+});

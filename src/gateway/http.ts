@@ -6,6 +6,7 @@ import type { KeyStore, SessionStore } from '../store/index.ts';
 import type { Gateway } from './gateway.ts';
 import { RateLimiter, type ApiKeys, type Scope } from './keys.ts';
 import { adminRoutes, type AdminBackend, type AdminRoute } from './admin.ts';
+import type { DemoChat } from './demo.ts';
 
 const MAX_BODY = 1_000_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -22,6 +23,10 @@ export type ApiServerDeps = {
   fallback?: (req: IncomingMessage, res: ServerResponse) => boolean;
   /** Dashboard/admin operations under /api/*. */
   admin?: AdminBackend;
+  /** Public website demo (keyless, tool-less, rate-limited). */
+  demo?: DemoChat;
+  /** Use the first X-Forwarded-For address as the client IP (only behind your own reverse proxy). */
+  trustProxy?: boolean;
 };
 
 type Ctx = { req: IncomingMessage; res: ServerResponse; url: URL; keyId: string | null; scopes: string[]; ip: string | null };
@@ -91,12 +96,14 @@ export class ApiServer {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://ruby.local');
-    const ctx: Ctx = { req, res, url, keyId: null, scopes: [], ip: req.socket.remoteAddress ?? null };
+    const forwarded = this.deps.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() : '';
+    const ctx: Ctx = { req, res, url, keyId: null, scopes: [], ip: forwarded || req.socket.remoteAddress || null };
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
     try {
       if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, { status: 'ok', version: this.deps.version });
+      if (this.deps.demo && (await this.deps.demo.handle(req, res, url.pathname, ctx.ip ?? 'unknown', () => readJson(req)))) return;
       if (!url.pathname.startsWith('/v1/') && !url.pathname.startsWith('/api/')) {
         if (this.deps.fallback?.(req, res)) return;
         throw new HttpError(404, 'Not found.');

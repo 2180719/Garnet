@@ -24,12 +24,15 @@ Upload the contents of `site/` to any static host and serve it from the site roo
 
 The demo section is hidden unless `<body data-demo-endpoint="...">` is non-empty. To enable it:
 
-1. Run a Ruby gateway with a bounded `demo` key profile (cheap model, no tools, no memory, daily budgets).
-2. Set `data-demo-endpoint` to its base URL without a trailing slash, for example `https://demo.example.com`, and `data-demo-key` to the demo key.
-3. Allow CORS from the website's origin on the gateway.
+1. On a Ruby install reachable from the internet (behind your own HTTPS reverse proxy), set in `config.json`:
+   ```json
+   "api": {
+     "enabled": true,
+     "trustProxy": true,
+     "demo": { "enabled": true, "allowedOrigins": ["https://your-site.example"] }
+   }
+   ```
+   The demo endpoint needs no API key. It uses a cheap model (`api.demo.model`, default `claude-haiku-4-5`), has no tools, no memory and keeps no history, and is limited per visitor IP (`perIpPerHour`) and by a global daily token budget (`dailyTokenBudget`). Ruby refuses to listen on a public address until at least one API key exists, so create one (`ruby api key create --name admin --scopes admin`) even if only the demo is public.
+2. Set `data-demo-endpoint` to that Ruby's base URL without a trailing slash, e.g. `https://demo.example.com`.
 
-The page POSTs `{model: "ruby-demo", messages: [...]}` (non-streaming) to `{endpoint}/v1/chat/completions` with `Authorization: Bearer <key>`. Input is capped at 500 characters and replies are rendered with `textContent`. The key is visible to every visitor, so it must be low-privilege and rate-limited.
-
-## Privacy
-
-No analytics, cookies or external fonts. `localStorage` holds only the theme choice (`ruby-theme`).
+The page POSTs `{model: "ruby-demo", messages: [...]}` to `{endpoint}/v1/demo/chat/completions`. Input is capped at 500 characters and replies are rendered with `textContent`.

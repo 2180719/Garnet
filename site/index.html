@@ -14,11 +14,10 @@
 <!--
   Optional "Talk to Ruby" demo. Hidden unless data-demo-endpoint is non-empty.
   To enable: set data-demo-endpoint to your gateway's base URL (no trailing slash,
-  e.g. https://demo.example.com) and data-demo-key to a scoped, rate-limited demo key.
-  The key is visible to every visitor, so use only a low-privilege "demo" profile with budgets.
-  The gateway must allow CORS from this site's origin. The page POSTs to {endpoint}/v1/chat/completions.
+  e.g. https://demo.example.com). That Ruby needs api.demo.enabled with this site's origin in api.demo.allowedOrigins; the demo is keyless, tool-less and rate-limited.
+  See site/README.md. The page POSTs to {endpoint}/v1/demo/chat/completions.
 -->
-<body data-demo-endpoint="" data-demo-key="">
+<body data-demo-endpoint="">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <defs>
     <symbol id="gem" viewBox="0 0 64 64">

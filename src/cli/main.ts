@@ -12,6 +12,7 @@ import { Achievements } from '../achievements/index.ts';
 import { api, dashboard, jobs, pair, service, start } from './admin.ts';
 import { memory, skills } from './knowledge.ts';
 import { backup, restore } from './backup.ts';
+import { runImport } from '../migrate/index.ts';
 
 const HELP = `ruby — a persistent personal agent you can actually read
 
@@ -37,6 +38,8 @@ Usage:
                             Inspect and correct what Ruby remembers
   ruby skills list|show|proposal|accept|reject|archive|stale
                             Review skills Ruby has learned
+  ruby import <openclaw|hermes> [--from <dir>] [--apply]
+                            Bring memory, persona and skills over (dry run unless --apply)
   ruby backup [dir]         Copy the database, config, memory, skills and workspace
   ruby restore <dir>        Restore a backup (stop Ruby first)
   ruby service install|uninstall|status|show
@@ -88,6 +91,21 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return await jobs(rest, io);
       case 'dashboard':
         return dashboard(io);
+      case 'import': {
+        const ruby = createRuby({ noModel: true });
+        try {
+          const { config, paths } = ruby;
+          return runImport(rest, io, {
+            memory: ruby.memory,
+            skills: ruby.skills,
+            workspace: paths.workspace,
+            getPersona: () => config.persona,
+            setPersona: (persona) => writeConfig(paths.home, { ...config, persona }),
+          });
+        } finally {
+          ruby.close();
+        }
+      }
       case 'backup':
         return backup(rest, io);
       case 'restore':

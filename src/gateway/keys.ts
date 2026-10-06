@@ -76,26 +76,34 @@ export class ApiKeys {
   }
 }
 
-/** Per-key token bucket. In memory: limits reset on restart, which is acceptable for abuse control. */
+/** Token bucket per key: `limit` requests per `windowMs`, refilled continuously. In memory: limits reset on restart, which is acceptable for abuse control. */
 export class RateLimiter {
   private readonly buckets = new Map<string, { tokens: number; at: number }>();
-  private readonly perMinute: number;
+  private readonly limit: number;
+  private readonly windowMs: number;
 
-  constructor(perMinute: number) {
-    this.perMinute = perMinute;
+  constructor(limit: number, windowMs = 60_000) {
+    this.limit = limit;
+    this.windowMs = windowMs;
   }
 
   /** Returns 0 when allowed, otherwise milliseconds until the next token. */
   take(key: string, now = Date.now()): number {
-    const rate = this.perMinute / 60_000;
-    const b = this.buckets.get(key) ?? { tokens: this.perMinute, at: now };
-    b.tokens = Math.min(this.perMinute, b.tokens + (now - b.at) * rate);
+    const rate = this.limit / this.windowMs;
+    const b = this.buckets.get(key) ?? { tokens: this.limit, at: now };
+    b.tokens = Math.min(this.limit, b.tokens + (now - b.at) * rate);
     b.at = now;
     this.buckets.set(key, b);
+    if (this.buckets.size > 10_000) this.prune(now);
     if (b.tokens >= 1) {
       b.tokens -= 1;
       return 0;
     }
     return Math.ceil((1 - b.tokens) / rate);
+  }
+
+  /** Drops full buckets so memory stays bounded under many distinct keys (e.g. visitor IPs). */
+  private prune(now: number): void {
+    for (const [k, b] of this.buckets) if (b.tokens + (now - b.at) * (this.limit / this.windowMs) >= this.limit) this.buckets.delete(k);
   }
 }

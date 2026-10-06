@@ -67,7 +67,6 @@
   var demo = document.getElementById('demo');
   if (endpoint && demo) {
     demo.hidden = false;
-    var key = document.body.getAttribute('data-demo-key') || '';
     var form = document.getElementById('demo-form');
     var input = document.getElementById('demo-input');
     var log = document.getElementById('demo-log');
@@ -95,8 +94,7 @@
       sendBtn.disabled = true;
       status.textContent = 'Ruby is thinking…';
       var headers = { 'Content-Type': 'application/json' };
-      if (key) headers['Authorization'] = 'Bearer ' + key;
-      fetch(endpoint + '/v1/chat/completions', {
+      fetch(endpoint + '/v1/demo/chat/completions', {
         method: 'POST',
         headers: headers,
         body: JSON.stringify({ model: 'ruby-demo', stream: false, messages: history })

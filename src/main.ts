@@ -1,10 +1,10 @@
 // Composition root: the only place modules are wired together.
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SignalChannel, TelegramChannel } from './channels/index.ts';
+import { DiscordChannel, SignalChannel, TelegramChannel } from './channels/index.ts';
 import { loadConfig, redact, rubyHome, type Paths, type RubyConfig } from './config/index.ts';
 import { RubyError, type Budget, type ChannelAdapter, type ModelAdapter } from './contracts/index.ts';
-import { ApiKeys, ApiServer, Gateway, persistentApprover, staticFiles, type LogFn } from './gateway/index.ts';
+import { ApiKeys, ApiServer, DemoChat, Gateway, persistentApprover, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
@@ -134,6 +134,13 @@ export function createModel(config: RubyConfig, env: NodeJS.ProcessEnv): ModelAd
   });
 }
 
+/** The website demo uses its own cheap model with the same provider and credentials. */
+function createDemo(ruby: Ruby): DemoChat {
+  const d = ruby.config.api.demo;
+  const model = createModel({ ...ruby.config, model: { ...ruby.config.model, name: d.model, effort: 'low' } }, ruby.env);
+  return new DemoChat({ model, allowedOrigins: d.allowedOrigins, perIpPerHour: d.perIpPerHour, dailyTokenBudget: d.dailyTokenBudget, maxOutputTokens: d.maxOutputTokens });
+}
+
 export function createChannels(config: RubyConfig, env: NodeJS.ProcessEnv): ChannelAdapter[] {
   const channels: ChannelAdapter[] = [];
   const tg = config.channels.telegram;
@@ -141,6 +148,12 @@ export function createChannels(config: RubyConfig, env: NodeJS.ProcessEnv): Chan
     const token = env[tg.tokenEnv];
     if (!token) throw new RubyError('config', `Telegram is enabled but ${tg.tokenEnv} is not set.`);
     channels.push(new TelegramChannel({ token }));
+  }
+  const dc = config.channels.discord;
+  if (dc.enabled) {
+    const token = env[dc.tokenEnv];
+    if (!token) throw new RubyError('config', `Discord is enabled but ${dc.tokenEnv} is not set.`);
+    channels.push(new DiscordChannel({ token }));
   }
   const sig = config.channels.signal;
   if (sig.enabled) channels.push(new SignalChannel({ account: sig.account!, baseUrl: sig.baseUrl }));
@@ -217,6 +230,8 @@ export async function startService(ruby: Ruby, log: LogFn, overrides: { channels
         version: VERSION,
         log,
         admin: createBackend(ruby, gateway, scheduler, VERSION),
+        trustProxy: config.api.trustProxy,
+        ...(config.api.demo.enabled ? { demo: createDemo(ruby) } : {}),
         ...(config.dashboard.enabled ? { fallback: staticFiles(join(import.meta.dirname, '..', 'dashboard')) } : {}),
       });
       const address = await api.listen(config.api.host, config.api.port);

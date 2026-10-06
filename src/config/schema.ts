@@ -155,6 +155,18 @@ export const configSchema = z
         host: z.string().default('127.0.0.1').describe('Bind address. Non-loopback requires at least one API key.'),
         port: z.number().int().min(1).max(65535).default(7311).describe('HTTP port.'),
         rateLimitPerMinute: z.number().int().positive().default(60).describe('Requests per minute allowed for each API key.'),
+        trustProxy: z.boolean().default(false).describe('Behind your own reverse proxy: take the client IP from X-Forwarded-For.'),
+        demo: z
+          .object({
+            enabled: z.boolean().default(false).describe('Serve a public, keyless demo chat for your website at /v1/demo/chat/completions.'),
+            model: z.string().default('claude-haiku-4-5').describe('Cheap model for the demo (same provider and key as the main model).'),
+            allowedOrigins: z.array(z.string().url()).default([]).describe('Website origins allowed to call the demo, e.g. https://ruby.example.com.'),
+            perIpPerHour: z.number().int().min(1).max(1000).default(20).describe('Messages per visitor IP per hour.'),
+            dailyTokenBudget: z.number().int().min(1000).default(200_000).describe('Total demo tokens per day; the demo pauses when spent.'),
+            maxOutputTokens: z.number().int().min(50).max(4000).default(400).describe('Reply length cap.'),
+          })
+          .prefault({})
+          .describe('No tools, no memory, no history kept. Off by default.'),
       })
       .prefault({})
       .describe('Opt-in, key-gated external access.'),
@@ -167,6 +179,13 @@ export const configSchema = z
           })
           .prefault({})
           .describe('Telegram bot channel.'),
+        discord: z
+          .object({
+            enabled: z.boolean().default(false).describe('Connect a Discord bot (direct messages). Enable the Message Content intent in the developer portal.'),
+            tokenEnv: z.string().default('DISCORD_BOT_TOKEN').describe('Environment variable holding the bot token.'),
+          })
+          .prefault({})
+          .describe('Discord bot channel.'),
         signal: z
           .object({
             enabled: z.boolean().default(false).describe('Connect Signal through a local signal-cli daemon.'),
@@ -239,8 +258,8 @@ export const configSchema = z
       ctx.addIssue({ code: 'custom', path: ['channels', 'signal', 'account'], message: "Signal needs the bot's number" });
     }
     for (const [i, j] of c.jobs.entries()) {
-      if (j.notify && !(j.notify.channel === 'telegram' || j.notify.channel === 'signal')) {
-        ctx.addIssue({ code: 'custom', path: ['jobs', i, 'notify', 'channel'], message: 'notify.channel must be telegram or signal' });
+      if (j.notify && !['telegram', 'signal', 'discord'].includes(j.notify.channel)) {
+        ctx.addIssue({ code: 'custom', path: ['jobs', i, 'notify', 'channel'], message: 'notify.channel must be telegram, signal or discord' });
       }
     }
   });
