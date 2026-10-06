@@ -1,5 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { statSync } from 'node:fs';
 import { RubyError } from '../contracts/index.ts';
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
@@ -25,8 +26,10 @@ export type DockerSandboxOptions = {
   /** Byte cap per stream (stdout, stderr). */
   maxOutputBytes?: number;
   dockerPath?: string;
-  /** Container user as "uid:gid". Defaults to the host process's uid:gid, else 65534:65534. */
+  /** Container user as "uid:gid". Never root; see `sandboxUser` for the default. */
   user?: string;
+  /** The host process's ids (tests). Defaults to process.getuid/getgid; null when the platform has none. */
+  hostIds?: { uid: number; gid: number } | null;
   spawn?: SpawnFn;
   /** Environment for the docker *client* (not the container). Defaults to process.env. */
   hostEnv?: NodeJS.ProcessEnv;
@@ -37,6 +40,49 @@ const WORKSPACE_LABEL = 'ruby.exec.workspace';
 /** Variables the docker client itself may need. None of them reach the container. */
 const CLIENT_ENV = ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY', 'XDG_RUNTIME_DIR'];
 const KILL_RETRY_MS = 250;
+/** `nobody:nogroup` on most distributions. */
+export const NOBODY = '65534:65534';
+
+type Ids = { uid: number; gid: number };
+
+/**
+ * Picks the container user. The container never runs as root:
+ * 1. an explicit `user` (uid 0 is refused);
+ * 2. else the host process's uid:gid when Ruby is not root, so files the
+ *    command writes in the workspace belong to the owner;
+ * 3. else (Ruby runs as root, or the platform has no uids) the workspace
+ *    directory's owner when that is not root, so a workspace handed to a
+ *    regular user stays writable;
+ * 4. else 65534:65534 (nobody). `check()` then reports that the workspace
+ *    is not writable and how to fix it.
+ */
+export function sandboxUser(opts: { user?: string | undefined; host: Ids | null; workspaceOwner: Ids | null }): string {
+  if (opts.user !== undefined) {
+    if (!/^[0-9]+:[0-9]+$/.test(opts.user)) throw new RubyError('config', `Invalid sandbox user "${opts.user}"; use uid:gid.`);
+    if (Number(opts.user.split(':')[0]) === 0) {
+      throw new RubyError('config', 'The sandbox never runs as root (uid 0). Set sandbox.user to a regular uid:gid, or leave it unset.');
+    }
+    return opts.user;
+  }
+  if (opts.host && opts.host.uid !== 0) return `${opts.host.uid}:${opts.host.gid}`;
+  if (opts.workspaceOwner && opts.workspaceOwner.uid !== 0) return `${opts.workspaceOwner.uid}:${opts.workspaceOwner.gid}`;
+  return NOBODY;
+}
+
+/** Whether uid:gid (with no supplementary groups) may create files in a directory with this owner and mode. */
+export function canWrite(user: string, dir: { uid: number; gid: number; mode: number }): boolean {
+  const [uid, gid] = user.split(':').map(Number);
+  const wx = (shift: number) => ((dir.mode >> shift) & 0o3) === 0o3;
+  if (dir.uid === uid) return wx(6);
+  if (dir.gid === gid) return wx(3);
+  return wx(0);
+}
+
+function hostIds(): Ids | null {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  return uid !== undefined && gid !== undefined ? { uid, gid } : null;
+}
 const KILL_GIVE_UP_MS = 30_000;
 
 /**
@@ -77,13 +123,16 @@ export class DockerSandbox implements Sandbox {
     if (!Number.isInteger(this.pidsLimit) || this.pidsLimit < 1) throw new RubyError('config', 'Sandbox pidsLimit must be a positive integer.');
     this.maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.docker = opts.dockerPath ?? 'docker';
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
-    this.user = opts.user ?? (uid !== undefined && gid !== undefined ? `${uid}:${gid}` : '65534:65534');
-    if (!/^[0-9]+:[0-9]+$/.test(this.user)) throw new RubyError('config', `Invalid sandbox user "${this.user}"; use uid:gid.`);
+    const ws = statSync(this.workspace);
+    this.user = sandboxUser({ user: opts.user, host: opts.hostIds === undefined ? hostIds() : opts.hostIds, workspaceOwner: { uid: ws.uid, gid: ws.gid } });
     this.spawn = opts.spawn ?? (nodeSpawn as SpawnFn);
     const hostEnv = opts.hostEnv ?? process.env;
     this.clientEnv = Object.fromEntries(CLIENT_ENV.filter((k) => hostEnv[k] !== undefined).map((k) => [k, hostEnv[k]]));
+  }
+
+  /** The container user ("uid:gid"); never root. */
+  get containerUser(): string {
+    return this.user;
   }
 
   /** The full `docker run` argument list for a request (exported for review and tests). */
@@ -147,8 +196,22 @@ export class DockerSandbox implements Sandbox {
     });
   }
 
-  /** Checks that the daemon is reachable and the image is present locally. */
+  /** Checks that the workspace is writable by the container user, the daemon is reachable and the image is present locally. */
   async check(): Promise<{ ok: boolean; detail: string }> {
+    let ws;
+    try {
+      ws = statSync(this.workspace);
+    } catch (e) {
+      return { ok: false, detail: `The workspace ${this.workspace} is not accessible: ${(e as Error).message}` };
+    }
+    if (!canWrite(this.user, ws)) {
+      return {
+        ok: false,
+        detail:
+          `The sandbox runs as ${this.user} (never root), which cannot write the workspace ${this.workspace} (owner ${ws.uid}:${ws.gid}, mode ${(ws.mode & 0o777).toString(8)}). ` +
+          `Run Ruby as a regular user (recommended), give the workspace to the sandbox user (chown -R ${this.user} ${this.workspace}), or set sandbox.user to the uid:gid that owns it.`,
+      };
+    }
     const version = await this.quiet(['version', '--format', '{{.Server.Version}}'], 15_000);
     if (version.code !== 0) {
       return { ok: false, detail: `Docker is not available (${this.docker} version failed: ${version.output.trim() || 'no output'}). Install and start Docker, or set the exec permission to deny.` };
@@ -157,7 +220,7 @@ export class DockerSandbox implements Sandbox {
     if (image.code !== 0) {
       return { ok: false, detail: `Docker ${version.output.trim()} is running but the sandbox image "${this.image}" is not present. Pull it with: docker pull ${this.image}` };
     }
-    return { ok: true, detail: `Docker ${version.output.trim()}, image ${this.image}, network ${this.network}` };
+    return { ok: true, detail: `Docker ${version.output.trim()}, image ${this.image}, network ${this.network}, user ${this.user}` };
   }
 
   /** Removes containers left over from a previous crash of this workspace's sandbox. Returns how many. */

@@ -30,6 +30,20 @@ npm run ruby -- chat
 3. `npm run ruby -- start`, then message your bot. It replies with a pairing code; approve it with `npm run ruby -- pair approve <code>`.
 4. Keep it running with `npm run ruby -- service install` (systemd on Linux, launchd on macOS).
 
+### Encrypt your secrets (optional)
+
+Instead of plain-text values in `~/.ruby/env`, Ruby can keep them in an encrypted store (`~/.ruby/secrets`, AES-256-GCM with a scrypt-derived key):
+
+```sh
+npm run ruby -- secrets keygen /etc/ruby/key      # a key file outside ~/.ruby, mode 600
+export RUBY_SECRETS_KEY_FILE=/etc/ruby/key         # or put this line in ~/.ruby/env; the path is not secret
+npm run ruby -- secrets import-env                 # move the keys config refers to out of ~/.ruby/env
+npm run ruby -- secrets set TELEGRAM_BOT_TOKEN     # or add one; the value is read from stdin
+npm run ruby -- secrets list                       # names only
+```
+
+`RUBY_SECRETS_PASSPHRASE` works instead of a key file. Environment variables always win over stored secrets, so existing setups keep working unchanged.
+
 ### Use the API (optional, off by default)
 
 ```sh

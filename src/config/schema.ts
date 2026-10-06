@@ -86,7 +86,7 @@ export const configSchema = z
         apiKeyEnv: z
           .string()
           .default('ANTHROPIC_API_KEY')
-          .describe('Name of the environment variable holding the API key. Keys never live in config.'),
+          .describe('Name of the environment variable (or encrypted secret, see `ruby secrets`) holding the API key. Keys never live in config.'),
         baseUrl: z.string().url().optional().describe('Provider API base URL. Required for openai-compatible, e.g. http://127.0.0.1:11434/v1.'),
         contextWindow: z.number().int().min(4096).optional().describe('Context window of an openai-compatible model.'),
         maxOutputTokens: z.number().int().positive().default(32_000).describe('Output token cap per model call.'),
@@ -129,6 +129,12 @@ export const configSchema = z
         memory: z.string().regex(/^[0-9]+[bkmg]?$/i).default('512m').describe('Memory limit per command (swap disabled).'),
         cpus: z.number().positive().default(1).describe('CPU limit per command.'),
         pidsLimit: z.number().int().min(16).default(256).describe('Maximum processes per command.'),
+        user: z
+          .string()
+          .regex(/^[0-9]+:[0-9]+$/)
+          .refine((u) => Number(u.split(':')[0]) !== 0, 'the sandbox never runs as root (uid 0)')
+          .optional()
+          .describe('Container user as uid:gid (docker). Unset: your uid:gid, or the workspace owner when Ruby runs as root, else 65534:65534. Never root.'),
       })
       .prefault({})
       .describe('Where run_command executes. Only used when the exec permission is allow or ask.'),
@@ -175,14 +181,14 @@ export const configSchema = z
         telegram: z
           .object({
             enabled: z.boolean().default(false).describe('Connect a Telegram bot.'),
-            tokenEnv: z.string().default('TELEGRAM_BOT_TOKEN').describe('Environment variable holding the bot token from @BotFather.'),
+            tokenEnv: z.string().default('TELEGRAM_BOT_TOKEN').describe('Environment variable (or encrypted secret) holding the bot token from @BotFather.'),
           })
           .prefault({})
           .describe('Telegram bot channel.'),
         discord: z
           .object({
             enabled: z.boolean().default(false).describe('Connect a Discord bot (direct messages). Enable the Message Content intent in the developer portal.'),
-            tokenEnv: z.string().default('DISCORD_BOT_TOKEN').describe('Environment variable holding the bot token.'),
+            tokenEnv: z.string().default('DISCORD_BOT_TOKEN').describe('Environment variable (or encrypted secret) holding the bot token.'),
           })
           .prefault({})
           .describe('Discord bot channel.'),
