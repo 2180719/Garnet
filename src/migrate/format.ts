@@ -43,7 +43,7 @@ export function formatPlan(plan: ImportPlan): string {
   if (!plan.notImported.length) L.push('  nothing notable');
   for (const n of plan.notImported) L.push(`  ${n.what}: ${n.why}`);
   if (plan.envVars.length) {
-    L.push('', 'Environment variables you may need in ~/.ruby/env (names only; set the values yourself):');
+    L.push('', 'Environment variables you may need (names only; set the values yourself with `ruby secrets set <NAME>`):');
     L.push(`  ${plan.envVars.join(', ')}`);
   }
   if (plan.warnings.length) {

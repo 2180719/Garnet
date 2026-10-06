@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util';
 import { CONFIG_VERSION, parseConfig, parseEnv, rubyHome, type RubyConfig } from '../config/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
-import { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore, unlockWarnings } from '../secrets/index.ts';
+import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
 import { defaultEntry, planService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
@@ -130,6 +130,15 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       }
     }
 
+    // Workspace and API exposure
+    const workspace = resolve(d.home, config.workspace ?? 'workspace');
+    if (isInside(workspace, d.home)) {
+      add('workspace', 'fail', `${workspace} contains Ruby's home, so file tools could change config.json and secrets; Ruby refuses to start`, 'Point "workspace" in config.json at a directory of its own (or remove it for the default).');
+    }
+    if (config.api.enabled && !LOOPBACK.includes(config.api.host)) {
+      add('api', 'warn', `The API listens on ${config.api.host}:${config.api.port}, reachable from other machines (it needs a key, and has no TLS)`, 'Bind to 127.0.0.1 and use Tailscale or a reverse proxy with TLS.');
+    }
+
     // Channels
     const ch = config.channels;
     const enabled = (['telegram', 'discord', 'signal'] as const).filter((n) => ch[n].enabled);
@@ -146,7 +155,6 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
     if (config.permissions.exec === 'deny') add('sandbox', 'info', 'Shell commands are off (permissions.exec = deny), so no sandbox is needed');
     else if (config.sandbox.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker.');
     else {
-      const workspace = resolve(d.home, config.workspace ?? 'workspace');
       const r = await d.sandboxCheck(config, workspace).catch((e: unknown) => ({ ok: false, detail: errorMessage(e) }));
       // The sandbox's own detail already says how to fix it.
       add('sandbox', r.ok ? 'ok' : 'fail', `Docker sandbox: ${r.detail}`);

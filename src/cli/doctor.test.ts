@@ -175,3 +175,19 @@ test('formatting and exit code: symbols plus words, fixes indented, 1 when anyth
   assert.equal(await doctor(['--json'], io, d), 1);
   assert.ok(Array.isArray(JSON.parse(out)));
 });
+
+test('a workspace containing home fails; an API bound beyond loopback is a warning', async () => {
+  const d = deps();
+  mkdirSync(d.home, { recursive: true, mode: 0o700 });
+  configure(d.home, (c) => {
+    c.model.provider = 'fake';
+    c.workspace = '..';
+    c.api.enabled = true;
+    c.api.host = '0.0.0.0';
+  });
+  const fs = await diagnose(d);
+  assert.match(find(fs, 'workspace')[0]!.message, /contains Ruby's home/);
+  assert.equal(find(fs, 'workspace')[0]!.status, 'fail');
+  assert.equal(find(fs, 'api')[0]!.status, 'warn');
+  assert.match(find(fs, 'api')[0]!.message, /0\.0\.0\.0/);
+});

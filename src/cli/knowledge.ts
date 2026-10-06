@@ -12,7 +12,7 @@ const MEMORY_USAGE = 'Usage: ruby memory show [memory|user] | edit <memory|user>
 export function memory(args: string[], io: Io): number {
   const nsIndex = args.indexOf('--ns');
   const ns = nsIndex >= 0 ? (args[nsIndex + 1] ?? 'default') : 'default';
-  const [sub = 'show', file] = nsIndex >= 0 ? args.filter((_, i) => i !== nsIndex && i !== nsIndex + 1) : args;
+  const [sub = 'show', file, id] = nsIndex >= 0 ? args.filter((_, i) => i !== nsIndex && i !== nsIndex + 1) : args;
   const ruby = createRuby({ noModel: true });
   try {
     const store = ruby.memory;
@@ -33,8 +33,8 @@ export function memory(args: string[], io: Io): number {
       for (const v of versions) io.out(`${v.id}  ${v.at}  ${v.chars} chars\n`);
       return 0;
     }
-    if (sub === 'rollback' && args.at(-1) && args.at(-1) !== f) {
-      const r = store.rollback(ns, f, args.at(-1)!);
+    if (sub === 'rollback' && id) {
+      const r = store.rollback(ns, f, id);
       io.out(`Restored ${store.fileName(f)} (${r.used}/${r.limit} chars). The previous version was kept in history.\n`);
       return 0;
     }
@@ -43,10 +43,11 @@ export function memory(args: string[], io: Io): number {
       const tmp = join(dir, store.fileName(f));
       try {
         writeFileSync(tmp, store.read(ns, f), { mode: 0o600 });
-        const editor = process.env.VISUAL ?? process.env.EDITOR ?? 'vi';
-        const result = spawnSync(editor, [tmp], { stdio: 'inherit', shell: false });
+        // $VISUAL/$EDITOR may carry arguments ("code --wait"), so the shell splits it; the file is passed as "$1".
+        const editor = process.env.VISUAL || process.env.EDITOR || 'vi';
+        const result = spawnSync('/bin/sh', ['-c', `${editor} "$1"`, 'sh', tmp], { stdio: 'inherit' });
         if (result.status !== 0) {
-          io.err(`Editor exited with ${result.status ?? result.signal}; nothing saved.\n`);
+          io.err(`Editor ${result.error ? `could not start (${result.error.message})` : `exited with ${result.status ?? result.signal}`}; nothing saved.\n`);
           return 1;
         }
         const r = store.write(ns, f, readFileSync(tmp, 'utf8'));
@@ -76,7 +77,7 @@ export function skills(args: string[], io: Io): number {
           const flags = [s.provenance, s.locked ? 'locked' : '', s.hasProposal ? 'PROPOSAL' : ''].filter(Boolean).join(', ');
           io.out(`${s.name.padEnd(28)} ${String(s.uses).padStart(4)} uses  (${flags})  ${s.description}\n`);
         }
-        for (const p of store.problems()) io.out(`! ${JSON.stringify(p)}\n`);
+        for (const p of store.problems()) io.out(`! ${p.name}: ${p.problem}\n`);
         return 0;
       }
       case 'show':
@@ -103,9 +104,14 @@ export function skills(args: string[], io: Io): number {
         store[sub](name);
         io.out(`${sub === 'archive' ? 'Archived' : 'Restored'} ${name}.\n`);
         return 0;
-      case 'stale':
-        for (const s of store.stale(Number(name ?? 60))) io.out(`${s.name}  last used ${s.lastUsedAt ?? 'never'}\n`);
+      case 'stale': {
+        const days = Number(name ?? 60);
+        if (!Number.isFinite(days) || days < 0) break;
+        const stale = store.stale(days);
+        if (!stale.length) io.out(`No skills of Ruby's own unused for ${days} days.\n`);
+        for (const s of stale) io.out(`${s.name}  last used ${s.lastUsedAt ?? 'never'}\n`);
         return 0;
+      }
     }
     io.err('Usage: ruby skills list | show <name> | proposal <name> | accept <name> | reject <name> | archive <name> | unarchive <name> | stale [days]\n');
     return 2;

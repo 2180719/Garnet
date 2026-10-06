@@ -1,5 +1,4 @@
 import { existsSync } from 'node:fs';
-import { parseArgs } from 'node:util';
 import { loadConfig, loadEnvFile, redact, rubyHome, writeConfig, configSchema } from '../config/index.ts';
 import { errorMessage, isRubyError } from '../contracts/index.ts';
 import { createRuby, VERSION } from '../main.ts';
@@ -47,7 +46,8 @@ Usage:
                             Bring memory, persona and skills over (dry run unless --apply)
   ruby secrets list|set <NAME>|rm <NAME>|import-env [NAME...] [--keep]|keygen <path>
                             Encrypted secret store (values from stdin, never argv)
-  ruby backup [dir]         Copy the database, config, memory, skills and workspace
+  ruby backup [dir]         Copy the database, config, memory, skills, artifacts
+                            and workspace
   ruby restore <dir>        Restore a backup (stop Ruby first)
   ruby service install|uninstall|status|show
                             Run Ruby as a background service (systemd/launchd)
@@ -150,6 +150,11 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return 2;
     }
   } catch (e) {
+    // node:util parseArgs rejects unknown or malformed flags: that is a usage error, not a crash.
+    if (String((e as NodeJS.ErrnoException).code).startsWith('ERR_PARSE_ARGS')) {
+      io.err(`${errorMessage(e)}\nRun \`ruby help\` for usage.\n`);
+      return 2;
+    }
     io.err(`${isRubyError(e) ? '' : 'Unexpected error: '}${errorMessage(e)}\n`);
     return 1;
   }

@@ -9,7 +9,7 @@ import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
 import { init, setup } from './command.ts';
 import { readPersona, writePersona } from './persona.ts';
-import { AnswerPrompter, makeStyle, type Answer } from './prompt.ts';
+import { AnswerPrompter, makeStyle, stripKeySequences, type Answer } from './prompt.ts';
 import { runSetup, type Pairing, type SetupDeps } from './wizard.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
 
@@ -394,4 +394,9 @@ test('non-interactive: the service is only touched with --service (install, or r
   const fresh = harness();
   assert.equal(await fresh.run({ provider: 'fake', service: true }, {}, false).done, 0);
   assert.equal(fresh.svc.installs, 1);
+});
+
+test('hidden input ignores arrow keys and paste markers', () => {
+  assert.equal(stripKeySequences('sk-\x1b[Dab\x1bOHc\x1b[200~def\x1b[201~\x1b[1;5C'), 'sk-abcdef');
+  assert.equal(stripKeySequences('plain-value_123'), 'plain-value_123');
 });

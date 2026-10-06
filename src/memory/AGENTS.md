@@ -2,7 +2,7 @@
 
 Bounded, versioned, file-backed memory per namespace.
 
-- Public API: `MemoryStore` (read, snapshot, add, replace, remove, write, history, rollback), `memoryTool(store)`.
+- Public API: `MemoryStore` (read, snapshot, add, replace, remove, write, history, rollback), `memoryTool(store)`, `injectionReason(text)` (the heuristic below; skills and the importer use it too).
 - Layout: `<root>/<namespace>/MEMORY.md` (agent notes, cap 2200 chars) and `USER.md` (owner profile, cap 1400), plus `.history/<FILE>.<ISO timestamp>.md` snapshots (default 50 per file). Caps and history limit are constructor options.
 - Format: one entry per line, starting with `- `. Plain markdown a human can edit; every non-empty line counts toward the cap, only `- ` lines are matchable by replace/remove.
 - Rules:
