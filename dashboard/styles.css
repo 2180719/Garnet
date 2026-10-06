@@ -266,3 +266,26 @@ a.card.stack{display:grid}
 .main:focus{outline:none}
 figure{margin:0}
 dialog .tablewrap{margin-top:14px}
+
+/* paging, filters, logs */
+.pager{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between}
+.filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.filters .field{flex:1 1 150px}
+.filters input,.filters select{width:100%}
+.focus-target:focus{outline:none}
+.tabs a.btn[aria-current="page"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.tag-line{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center}
+.sess{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between}
+.evlog{display:grid;gap:10px}
+.ev{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:14px;padding:10px 14px;min-width:0;display:grid;gap:6px}
+.ev.user{border-left-color:var(--accent)}
+.ev.assistant{border-left-color:var(--c2)}
+.ev.tool{border-left-color:var(--c3)}
+.ev.bad{border-left-color:var(--err);background:var(--err-soft)}
+.ev.mark{border-left-color:var(--warn);background:var(--warn-soft)}
+.ev-head{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:.8rem;color:var(--muted)}
+.ev-head strong{color:var(--text);font-size:.78rem;letter-spacing:.06em;text-transform:uppercase}
+.ev-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.ev details>summary{cursor:pointer;font-weight:600;font-size:.9rem;overflow-wrap:anywhere}
+.ev details pre{margin-top:8px;max-height:360px;overflow:auto;padding:10px 12px;background:var(--code-bg);color:var(--code-text);border-radius:10px}
+ol.evlog{list-style:none;padding:0;margin:0}

@@ -43,6 +43,9 @@ const ICONS = {
   usage: 'M5 20V10M12 20V4M19 20v-7',
   settings: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
   achievements: 'M8 4h8v5a4 4 0 0 1-8 0zM8 6H4v1a4 4 0 0 0 4 4M16 6h4v1a4 4 0 0 1-4 4M12 13v4M8.5 20h7',
+  sessions: 'M4 6h16M4 12h16M4 18h10M18 16v4M16 18h4',
+  routing: 'M6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM6 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM18 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM6 8v8M8 7h4a4 4 0 0 1 4 4v0M8 17h4a4 4 0 0 0 4-4',
+  logs: 'M5 4h14v16H5zM9 9h6M9 13h6M9 17h3',
   moon: 'M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z',
   menu: 'M4 7h16M4 12h16M4 17h16',
   out: 'M10 4H5v16h5M15 8l4 4-4 4M19 12H9',
@@ -160,6 +163,16 @@ export function uptime(iso) {
   return d ? `${d}d ${hh}h` : hh ? `${hh}h ${Math.floor(s / 60)}m` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 export const link = (href, text, cls = '') => h('a', { href, class: cls }, text);
+
+/** "1-50 of 230" with Previous/Next buttons. `go(offset)` loads the page; the caller re-renders. */
+export function pager({ offset, limit, total, go }) {
+  const to = Math.min(total, offset + limit);
+  return h('nav', { class: 'pager', 'aria-label': 'Pages' },
+    h('span', { class: 'muted small', role: 'status' }, total ? `${num(offset + 1)}\u2013${num(to)} of ${num(total)}` : 'No results'),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: offset <= 0, onclick: () => go(Math.max(0, offset - limit)) }, 'Previous'),
+      h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: to >= total, onclick: () => go(offset + limit) }, 'Next')));
+}
 
 /** A table from header names and row arrays (cells may be strings or nodes). */
 export function table(heads, rows, numCols = []) {

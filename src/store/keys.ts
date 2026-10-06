@@ -83,4 +83,37 @@ export class KeyStore {
       status: r.status as number,
     }));
   }
+
+  /** Newest-first page of the audit log. `status` is an exact code or a class like `4xx`; `q` matches the path. */
+  auditPage(opts: { limit: number; offset: number; status?: string; method?: string; keyId?: string; q?: string }): { entries: ReturnType<KeyStore['auditLog']>; total: number } {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    const status = opts.status ?? '';
+    if (/^[1-5]xx$/.test(status)) {
+      where.push('status >= ? AND status < ?');
+      args.push(Number(status[0]) * 100, Number(status[0]) * 100 + 100);
+    } else if (/^\d{3}$/.test(status)) {
+      where.push('status = ?');
+      args.push(Number(status));
+    }
+    if (opts.method) { where.push('method = ?'); args.push(opts.method.toUpperCase()); }
+    if (opts.keyId) { where.push('key_id = ?'); args.push(opts.keyId); }
+    if (opts.q) { where.push("path LIKE ? ESCAPE '\\'"); args.push(`%${opts.q.replace(/[\\%_]/g, '\\$&')}%`); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM api_audit ${clause}`).get(...args) as { n: number }).n;
+    const rows = this.db
+      .prepare(`SELECT * FROM api_audit ${clause} ORDER BY at DESC, rowid DESC LIMIT ? OFFSET ?`)
+      .all(...args, opts.limit, opts.offset) as Record<string, string | number | null>[];
+    return {
+      total,
+      entries: rows.map((r) => ({
+        at: r.at as string,
+        keyId: (r.key_id as string | null) ?? null,
+        ip: (r.ip as string | null) ?? null,
+        method: r.method as string,
+        path: r.path as string,
+        status: r.status as number,
+      })),
+    };
+  }
 }

@@ -61,4 +61,80 @@ export class StatsStore {
   setMetaOnce(key: string, value: string): void {
     this.db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run(key, value);
   }
+
+  /** Sessions, newest activity first, with the conversation they belong to and their tasks' status and token totals. */
+  sessionPage(opts: { limit: number; offset: number; q?: string }): { items: SessionSummary[]; total: number } {
+    const conv = `COALESCE((SELECT MIN(key) FROM conversations WHERE session_id = s.id),
+      (SELECT channel || ':' || account || ':' || chat_id FROM inbox WHERE session_id = s.id ORDER BY received_at DESC LIMIT 1))`;
+    const args: string[] = [];
+    let where = '';
+    if (opts.q) {
+      const like = `%${opts.q.replace(/[\\%_]/g, '\\$&')}%`;
+      where = `WHERE s.id LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' OR ${conv} LIKE ? ESCAPE '\\'`;
+      args.push(like, like, like);
+    }
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM sessions s ${where}`).get(...args) as { n: number }).n;
+    const rows = this.db
+      .prepare(
+        `SELECT s.id, s.title, s.created_at, s.updated_at, ${conv} AS conversation,
+                EXISTS (SELECT 1 FROM conversations WHERE session_id = s.id) AS bound,
+                (SELECT COUNT(*) FROM events WHERE session_id = s.id) AS events
+         FROM sessions s ${where} ORDER BY s.updated_at DESC, s.id LIMIT ? OFFSET ?`,
+      )
+      .all(...args, opts.limit, opts.offset) as Record<string, string | number | null>[];
+    const tasks = this.db.prepare('SELECT status, usage FROM tasks WHERE session_id = ? ORDER BY started_at, rowid');
+    const items = rows.map((r): SessionSummary => {
+      const ts = tasks.all(r.id as string) as { status: string; usage: string }[];
+      const usage: Usage = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null };
+      for (const t of ts) {
+        const u = JSON.parse(t.usage) as Usage;
+        for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const) {
+          if (u[k] !== null) usage[k] = (usage[k] ?? 0) + u[k];
+        }
+      }
+      return {
+        id: r.id as string,
+        title: (r.title as string | null) ?? null,
+        createdAt: r.created_at as string,
+        updatedAt: r.updated_at as string,
+        conversation: (r.conversation as string | null) ?? null,
+        bound: r.bound === 1,
+        events: r.events as number,
+        tasks: ts.length,
+        taskStatus: ts.at(-1)?.status ?? null,
+        usage,
+      };
+    });
+    return { items, total };
+  }
+
+  /** Failed or budget-exhausted tasks and failed or uncertain deliveries, newest first. `kind` and `status` narrow the list. */
+  failurePage(opts: { limit: number; offset: number; kind?: string; status?: string }): { items: FailureRow[]; total: number } {
+    const parts: string[] = [];
+    if (opts.kind !== 'outbox') parts.push("SELECT 'task' AS kind, id, status, COALESCE(ended_at, started_at) AS at, reason AS detail, session_id AS ref FROM tasks WHERE status IN ('failed', 'budget_exhausted')");
+    if (opts.kind !== 'task') parts.push("SELECT 'outbox' AS kind, delivery_id AS id, status, COALESCE(sent_at, created_at) AS at, last_error AS detail, channel || ':' || account || ':' || chat_id AS ref FROM outbox WHERE status IN ('failed', 'uncertain')");
+    const source = `(${parts.join(' UNION ALL ')})`;
+    const args: string[] = [];
+    let where = '';
+    if (opts.status) { where = 'WHERE status = ?'; args.push(opts.status); }
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM ${source} ${where}`).get(...args) as { n: number }).n;
+    const rows = this.db.prepare(`SELECT * FROM ${source} ${where} ORDER BY at DESC, id LIMIT ? OFFSET ?`).all(...args, opts.limit, opts.offset) as Record<string, string | null>[];
+    return { total, items: rows.map((r) => ({ kind: r.kind as 'task' | 'outbox', id: r.id!, status: r.status!, at: r.at!, detail: r.detail ?? null, ref: r.ref ?? null })) };
+  }
 }
+
+export type SessionSummary = {
+  id: string;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Conversation key (`telegram:acct:chat`, `route:name`, `job:id`, ...), or the last chat that used a session no longer bound. */
+  conversation: string | null;
+  /** False for a session replaced by `/new` or unlinked. */
+  bound: boolean;
+  events: number;
+  tasks: number;
+  taskStatus: string | null;
+  usage: Usage;
+};
+export type FailureRow = { kind: 'task' | 'outbox'; id: string; status: string; at: string; detail: string | null; ref: string | null };

@@ -78,3 +78,118 @@ test('archived skills stay restorable; encoded ids route; config errors are stru
   const bad = (await (await s.call('PUT', '/api/config', s.admin, { ...config, api: { ...config.api, port: 0 } })).json()) as any;
   assert.ok(bad.error.issues.some((i: string) => i.startsWith('api.port')));
 });
+
+test('session log is paged, read-only, and never shows secrets, thinking or the frozen prompt', async () => {
+  const s = await boot();
+  const session = s.ruby.store.createSession('telegram chat');
+  s.ruby.gatewayStore.bindConversation('telegram:main:42', session.id);
+  s.ruby.store.append(session.id, { type: 'context_frozen', system: 'SYSTEM with memory: likes tea' });
+  s.ruby.store.append(session.id, { type: 'user_message', source: 'telegram', message: { role: 'user', content: [{ type: 'text', text: 'my key is sk-abcdefghijklmnopqrstuvwxyz123456' }] } });
+  s.ruby.store.append(session.id, {
+    type: 'assistant_message',
+    stopReason: 'tool_use',
+    model: 'fake',
+    usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: null, cacheWriteTokens: null },
+    message: { role: 'assistant', content: [{ type: 'provider', provider: 'anthropic', data: { thinking: 'SECRET THOUGHTS' }, bound: true }, { type: 'tool_call', id: 'c1', name: 'shell', input: { cmd: 'ls', apiKey: 'hunter2' } }] },
+  });
+  s.ruby.store.append(session.id, { type: 'tool_finished', callId: 'c1', operationId: 'op', result: { status: 'ok', content: 'x'.repeat(10_000), truncated: false, durationMs: 3 } });
+  for (let i = 0; i < 3; i++) s.ruby.store.append(session.id, { type: 'model_error', category: 'transient', message: `oops ${i}` });
+  const task = s.ruby.store.createTask(session.id, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: null });
+  task.status = 'completed';
+  s.ruby.store.updateTask(task);
+
+  const list = (await (await s.call('GET', '/api/log/sessions?q=telegram', s.reader)).json()) as any;
+  assert.equal(list.total, 1);
+  assert.equal(list.items[0].conversation, 'telegram:main:42');
+  assert.equal(list.items[0].taskStatus, 'completed');
+  assert.deepEqual(list.items[0].usage, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: null });
+  assert.equal(list.items[0].events, 7);
+  assert.equal(((await (await s.call('GET', '/api/log/sessions?q=nothing-like-this', s.reader)).json()) as any).total, 0);
+
+  const first = (await (await s.call('GET', `/api/log/sessions/${session.id}/events?limit=4`, s.reader)).json()) as any;
+  assert.equal(first.events.length, 4);
+  assert.equal(first.lastSeq, 7);
+  assert.equal(first.nextAfter, 4);
+  const second = (await (await s.call('GET', `/api/log/sessions/${session.id}/events?limit=4&after=${first.nextAfter}`, s.reader)).json()) as any;
+  assert.deepEqual(second.events.map((e: any) => e.seq), [5, 6, 7]);
+  assert.equal(second.nextAfter, null);
+
+  const text = JSON.stringify(first) + JSON.stringify(second);
+  assert.ok(!text.includes('sk-abcdefghijklmnopqrstuvwxyz'), 'key-shaped values are redacted');
+  assert.ok(!text.includes('hunter2'), 'secret-named fields are redacted');
+  assert.ok(!text.includes('SECRET THOUGHTS'), 'provider (thinking) blocks are omitted');
+  assert.ok(!text.includes('likes tea'), 'the frozen prompt is not sent');
+  assert.match(text, /more characters not shown/);
+
+  assert.equal((await s.call('GET', '/api/log/sessions/ses_missing/events', s.reader)).status, 400);
+  assert.equal((await s.call('GET', '/api/log/sessions?limit=0', s.reader)).status, 400);
+  assert.equal((await s.call('GET', '/api/log/sessions?limit=1000', s.reader)).status, 400);
+  assert.equal((await s.call('GET', `/api/log/sessions/${session.id}/events?after=-1`, s.reader)).status, 400);
+  assert.equal((await s.call('GET', '/api/log/sessions', 'ruby_nope_nope')).status, 401);
+});
+
+test('audit log and failures are paged and filterable', async () => {
+  const s = await boot();
+  for (let i = 0; i < 5; i++) s.ruby.keyStore.audit({ keyId: 'k1', ip: '127.0.0.1', method: 'GET', path: `/api/thing${i}`, status: i === 4 ? 404 : 200 });
+  s.ruby.keyStore.audit({ keyId: null, ip: null, method: 'POST', path: '/api/pairing/ABC123/approve', status: 200 });
+  const p1 = (await (await s.call('GET', '/api/log/audit?limit=3&keyId=k1&status=2xx', s.reader)).json()) as any;
+  assert.equal(p1.total, 4);
+  assert.equal(p1.entries.length, 3);
+  const p2 = (await (await s.call('GET', '/api/log/audit?limit=3&offset=3&keyId=k1&status=2xx', s.reader)).json()) as any;
+  assert.deepEqual([...p1.entries, ...p2.entries].map((e: any) => e.path), ['/api/thing3', '/api/thing2', '/api/thing1', '/api/thing0']);
+  const bad = (await (await s.call('GET', '/api/log/audit?status=404&keyId=k1', s.reader)).json()) as any;
+  assert.deepEqual(bad.entries.map((e: any) => e.path), ['/api/thing4']);
+  const post = (await (await s.call('GET', '/api/log/audit?method=POST&q=pairing', s.reader)).json()) as any;
+  assert.equal(post.entries[0].path, '/api/pairing/…/approve', 'pairing codes are masked');
+  assert.equal(((await (await s.call('GET', '/api/log/audit?q=%25', s.reader)).json()) as any).total, 0, 'LIKE wildcards are escaped');
+
+  const session = s.ruby.store.createSession('x');
+  const a = s.ruby.store.createTask(session.id, { inputTokens: 1, outputTokens: 1, cacheReadTokens: null, cacheWriteTokens: null });
+  a.status = 'failed';
+  a.reason = 'boom with Bearer abcdefghijklmnopqrstuvwxyz0123';
+  a.endedAt = new Date().toISOString();
+  s.ruby.store.updateTask(a);
+  const out = s.ruby.gatewayStore.enqueue({ channel: 'telegram', account: 'main', chatId: '1', text: 'private reply' });
+  s.ruby.gatewayStore.markOutbox(out.deliveryId, 'failed', 'HTTP 500');
+  const all = (await (await s.call('GET', '/api/log/failures?limit=1', s.reader)).json()) as any;
+  assert.equal(all.total, 2);
+  assert.equal(all.items.length, 1);
+  const next = (await (await s.call('GET', '/api/log/failures?limit=1&offset=1', s.reader)).json()) as any;
+  assert.notEqual(next.items[0].id, all.items[0].id);
+  const tasks = (await (await s.call('GET', '/api/log/failures?kind=task', s.reader)).json()) as any;
+  assert.equal(tasks.total, 1);
+  assert.equal(tasks.items[0].ref, session.id);
+  assert.ok(!JSON.stringify(tasks).includes('abcdefghijklmnopqrstuvwxyz0123'));
+  assert.ok(!JSON.stringify(all).includes('private reply'), 'message text is not exposed');
+  assert.equal(((await (await s.call('GET', '/api/log/failures?status=uncertain', s.reader)).json()) as any).total, 0);
+});
+
+test('routing is readable with read scope; unlinking and denying need admin', async () => {
+  const s = await boot();
+  const one = s.ruby.store.createSession('a');
+  const two = s.ruby.store.createSession('b');
+  s.ruby.gatewayStore.bindConversation('telegram:main:1', one.id);
+  s.ruby.gatewayStore.bindConversation('route:home', two.id);
+  s.ruby.gatewayStore.addIdentity('telegram', '1', 'Ada');
+  s.ruby.gatewayStore.addPairing({ code: 'ABCD2345', channel: 'telegram', account: 'main', senderId: '9', senderName: 'Eve', chatId: '9', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() });
+
+  const r = (await (await s.call('GET', '/api/routing?limit=1', s.reader)).json()) as any;
+  assert.equal(r.conversations.total, 2);
+  assert.equal(r.conversations.items.length, 1);
+  assert.equal(r.identities.length, 1);
+  assert.equal(r.pending.length, 1);
+  const r2 = (await (await s.call('GET', '/api/routing?limit=1&offset=1', s.reader)).json()) as any;
+  assert.notEqual(r2.conversations.items[0].key, r.conversations.items[0].key);
+
+  assert.equal((await s.call('DELETE', '/api/conversations/telegram%3Amain%3A1', s.reader)).status, 403);
+  assert.equal((await s.call('DELETE', '/api/pairing/ABCD2345', s.reader)).status, 403);
+  assert.equal(s.ruby.gatewayStore.conversation('telegram:main:1'), one.id, 'a refused unlink changes nothing');
+
+  const un = (await (await s.call('DELETE', '/api/conversations/telegram%3Amain%3A1', s.admin)).json()) as any;
+  assert.equal(un.removed, true);
+  assert.equal(s.ruby.gatewayStore.conversation('telegram:main:1'), undefined);
+  assert.ok(s.ruby.store.getSession(one.id), 'the session and its log are kept');
+  assert.equal(((await (await s.call('DELETE', '/api/conversations/telegram%3Amain%3A1', s.admin)).json()) as any).removed, false);
+  assert.equal(((await (await s.call('DELETE', '/api/pairing/ABCD2345', s.admin)).json()) as any).removed, true);
+  assert.equal(s.ruby.gatewayStore.pairings(new Date().toISOString()).length, 0);
+});
