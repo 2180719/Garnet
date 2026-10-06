@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent, SessionEventPayload } from '../contracts/index.ts';
-import { assistantName, extractSummary, messagesFromEvents, planCompaction, systemPrompt, turnTime } from './index.ts';
+import { symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tempDir } from '../../test/helpers.ts';
+import { MAX_PROJECT_INSTRUCTIONS, assistantName, extractSummary, messagesFromEvents, planCompaction, projectInstructionsSection, systemPrompt, turnTime } from './index.ts';
 
 const ev = (seq: number, p: SessionEventPayload): SessionEvent => ({ ...p, sessionId: 's', seq, at: '' });
 const usage = { inputTokens: 1, outputTokens: 1, cacheReadTokens: null, cacheWriteTokens: null };
@@ -116,4 +119,27 @@ test('with a time zone, each user message carries its send time; the system prom
   assert.equal(turnTime('2026-01-06T13:03:00Z', 'UTC'), '[Tue 2026-01-06 13:03 UTC, UTC+00:00]');
   assert.match(systemPrompt({ workspace: '/w', timestamps: true }), /starts with the time it was sent/);
   assert.doesNotMatch(systemPrompt({ workspace: '/w' }), /time it was sent/);
+});
+
+test('projectInstructionsSection: case-insensitive AGENTS.md, labelled, capped, no CLAUDE.md', () => {
+  const dir = tempDir();
+  assert.equal(projectInstructionsSection(dir), '');
+  writeFileSync(join(dir, 'CLAUDE.md'), 'ignored');
+  assert.equal(projectInstructionsSection(dir), '');
+  writeFileSync(join(dir, 'Agents.MD'), 'Use tabs.\n');
+  const s = projectInstructionsSection(dir);
+  assert.match(s, /^# Project instructions \(workspace AGENTS\.md, written by your owner\)\nUse tabs\.$/);
+  writeFileSync(join(dir, 'Agents.MD'), 'x'.repeat(MAX_PROJECT_INSTRUCTIONS + 500));
+  const t = projectInstructionsSection(dir);
+  assert.match(t, /\[Truncated: AGENTS\.md/);
+  assert.ok(t.length < MAX_PROJECT_INSTRUCTIONS + 300);
+  assert.match(systemPrompt({ workspace: dir, sections: [s] }), /Use tabs\./);
+});
+
+test('projectInstructionsSection ignores a symlinked AGENTS.md', () => {
+  const dir = tempDir();
+  const other = tempDir();
+  writeFileSync(join(other, 'real.md'), 'secret');
+  symlinkSync(join(other, 'real.md'), join(dir, 'AGENTS.md'));
+  assert.equal(projectInstructionsSection(dir), '');
 });

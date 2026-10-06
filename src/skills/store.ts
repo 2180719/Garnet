@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { GarnetError } from '../contracts/index.ts';
 import { injectionReason } from '../memory/index.ts';
 import { parseSkillFile, serializeSkillFile, type Entry } from './frontmatter.ts';
@@ -66,6 +66,11 @@ function checkFields(description: string, body: string): void {
   if (body.trim() === '') bad('Skill body must not be empty.');
   if (body.length > MAX_BODY) bad(`Skill body is too long (${body.length} characters; maximum ${MAX_BODY}). Make it more concise.`);
 }
+
+/** Largest bundled file `readFile` returns, in bytes. */
+export const MAX_SKILL_FILE = 64 * 1024;
+const MAX_FILE_DEPTH = 4;
+const MAX_LISTED_FILES = 100;
 
 export class SkillStore {
   readonly root: string;
@@ -261,6 +266,64 @@ export class SkillStore {
     if (s.meta.archived) bad(`Skill "${name}" is archived.`);
     this.writeMeta(name, { ...s.meta, uses: s.meta.uses + 1, lastUsedAt: this.iso() });
     return { name, description: s.description, body: s.body };
+  }
+
+  /** Files bundled with a skill (`references/`, `scripts/`, assets), as sorted relative paths. Skips SKILL.md, PROPOSED.md, dotfiles and symlinks. */
+  files(name: string): string[] {
+    const dir = this.dir(name);
+    const out: string[] = [];
+    const walk = (rel: string, depth: number): void => {
+      if (depth > MAX_FILE_DEPTH || out.length >= MAX_LISTED_FILES) return;
+      let entries;
+      try {
+        entries = readdirSync(join(dir, rel), { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+        if (e.name.startsWith('.') || e.isSymbolicLink()) continue;
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(r, depth + 1);
+        else if (e.isFile() && !(rel === '' && (e.name === 'SKILL.md' || e.name === 'PROPOSED.md')) && out.length < MAX_LISTED_FILES) out.push(r);
+      }
+    };
+    walk('', 0);
+    return out;
+  }
+
+  /**
+   * Reads one text file bundled with a skill. Contained to the skill's folder: relative paths only,
+   * no `..`, no symlinks (checked by real path), regular files only, UTF-8 text, at most MAX_SKILL_FILE bytes.
+   */
+  readFile(name: string, file: string): string {
+    const s = this.require(name);
+    if (s.meta.archived) bad(`Skill "${name}" is archived.`);
+    const dir = this.dir(name);
+    const parts = file.split(/[\\/]/);
+    if (!file || file.includes('\0') || isAbsolute(file) || parts.includes('..')) bad(`Invalid file "${file}": use a path relative to the skill folder, without "..".`);
+    const rel = parts.filter((p) => p && p !== '.').join('/');
+    if (!rel || rel.startsWith('.') || rel === 'PROPOSED.md' || rel.split('/').some((p) => p.startsWith('.'))) bad(`File "${file}" is not available. Use skill_view without "file" to list the bundled files.`);
+    const full = join(dir, rel);
+    let real: string;
+    try {
+      if (lstatSync(full).isSymbolicLink()) bad(`File "${file}" is a symbolic link and cannot be read.`);
+      real = realpathSync(full);
+    } catch (e) {
+      if (e instanceof GarnetError) throw e;
+      bad(`File "${file}" not found in skill "${name}". Use skill_view without "file" to list the bundled files.`);
+    }
+    const inside = relative(realpathSync(dir), real);
+    if (inside === '' || inside.startsWith('..') || isAbsolute(inside) || inside.split(sep).includes('..')) bad(`File "${file}" is outside the skill folder.`);
+    const st = lstatSync(real);
+    if (!st.isFile()) bad(`"${file}" is not a regular file.`);
+    if (st.size > MAX_SKILL_FILE) bad(`File "${file}" is ${st.size} bytes; the limit is ${MAX_SKILL_FILE}.`);
+    const buf = readFileSync(real);
+    if (buf.includes(0)) bad(`File "${file}" is binary; only text files can be read.`);
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    } catch {
+      return bad(`File "${file}" is not valid UTF-8 text.`);
+    }
   }
 
   // ---- agent writes ----

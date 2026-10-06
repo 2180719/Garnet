@@ -44,6 +44,7 @@ garnet chat      # talk to Garnet in the terminal (`garnet chat --fake` needs no
 - **Channels:** Telegram, Discord and Signal, with the steps for each.
 - **Service and pairing:** installs the background service (systemd or launchd), then helps you approve your own account when you message the bot.
 - **Import:** if it finds OpenClaw or Hermes, it previews what it can bring over before importing: memory (it offers bigger caps when yours is larger), persona and name, skills (flagging the tools and programs they need), scheduled jobs (added disabled for you to review), and the people on your allowlists (paired only if you say so). `garnet import openclaw|hermes` does the same outside setup.
+- **Workspace instructions and skill files:** an `AGENTS.md` in the workspace root (any letter case; `CLAUDE.md` is not read) is put in the prompt as your project instructions, capped at 8,000 characters. It is read when a conversation starts, so edits apply after `/new`. Skills can bundle `references/`, `scripts/` and other text files; Garnet lists them when it opens a skill and reads them on request (text only, 64 KB max, never outside the skill folder).
 
 Run it again to change one part: it shows what is set and offers a menu. For scripts and CI, `garnet setup -y` takes every answer from flags (`garnet setup --help`), for example:
 
