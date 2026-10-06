@@ -44,7 +44,7 @@ function parseJsonLoosely(text: string): unknown {
   let t = text.trim();
   const fence = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/.exec(t);
   if (fence) t = fence[1]!.trim();
-  for (const candidate of [t, t.replace(/,\s*([}\]])/g, '$1')]) {
+  for (const candidate of [t, stripTrailingCommas(t)]) {
     try {
       return JSON.parse(candidate);
     } catch {
@@ -52,4 +52,34 @@ function parseJsonLoosely(text: string): unknown {
     }
   }
   return undefined;
+}
+
+/**
+ * Removes commas that directly precede `}` or `]` (ignoring whitespace), but
+ * only outside string literals, so string contents are never changed.
+ */
+function stripTrailingCommas(text: string): string {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inString) {
+      out += ch;
+      if (ch === '\\') {
+        if (i + 1 < text.length) out += text[++i];
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === ',') {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j]!)) j++;
+      if (text[j] === '}' || text[j] === ']') continue;
+    }
+    out += ch;
+  }
+  return out;
 }

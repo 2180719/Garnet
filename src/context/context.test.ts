@@ -26,3 +26,22 @@ test('the system prompt is deterministic', () => {
   assert.equal(a, systemPrompt({ workspace: '/w' }));
   assert.match(systemPrompt({ workspace: '/w', persona: 'Be terse.' }), /Be terse\./);
 });
+
+test('bound blocks are dropped only from turns that precede a checkpoint', () => {
+  const thinking = (id: string) => ({ type: 'provider' as const, provider: 'anthropic', data: { id }, bound: true });
+  const user = (seq: number, text: string) => ev(seq, { type: 'user_message', message: { role: 'user', content: [{ type: 'text', text }] }, source: 't' });
+  const msgs = messagesFromEvents([
+    user(1, 'old'),
+    ev(2, { type: 'assistant_message', message: { role: 'assistant', content: [thinking('folded'), { type: 'text', text: 'a' }] }, stopReason: 'end_turn', usage, model: 'm' }),
+    user(3, 'kept'),
+    ev(4, { type: 'assistant_message', message: { role: 'assistant', content: [thinking('retained'), { type: 'text', text: 'b' }] }, stopReason: 'end_turn', usage, model: 'm' }),
+    ev(5, { type: 'checkpoint', summary: 'S', throughSeq: 2, usage }),
+    user(6, 'new'),
+    ev(7, { type: 'assistant_message', message: { role: 'assistant', content: [thinking('after'), { type: 'tool_call', id: 'c1', name: 'x', input: {} }] }, stopReason: 'tool_use', usage, model: 'm' }),
+    ev(8, { type: 'tool_finished', callId: 'c1', operationId: 'o', result: { status: 'ok', content: 'r', truncated: false, durationMs: 0 } }),
+    ev(9, { type: 'assistant_message', message: { role: 'assistant', content: [thinking('after2'), { type: 'text', text: 'done' }] }, stopReason: 'end_turn', usage, model: 'm' }),
+  ]);
+  const provider = msgs.flatMap((m) => m.content).filter((b) => b.type === 'provider').map((b) => (b.data as { id: string }).id);
+  assert.deepEqual(provider, ['after', 'after2'], 'retained pre-checkpoint turns lose bound blocks; later turns keep them');
+  assert.ok(!JSON.stringify(msgs).includes('"old"'), 'folded turns are summarized');
+});

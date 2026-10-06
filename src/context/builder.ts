@@ -1,4 +1,4 @@
-import type { ChatMessage, ContentBlock, SessionEvent, ToolCallBlock } from '../contracts/index.ts';
+import type { ChatMessage, ContentBlock, SessionEvent, ToolCallBlock, ToolSchema } from '../contracts/index.ts';
 
 export type SystemPromptInput = {
   persona?: string | undefined;
@@ -26,13 +26,20 @@ export function systemPrompt(input: SystemPromptInput): string {
   return parts.join('\n');
 }
 
-/** The system prompt most recently frozen for this session, if any. */
-export function frozenSystem(events: SessionEvent[]): string | undefined {
+export type FrozenContext = { system: string; tools: ToolSchema[] | undefined };
+
+/** The system prompt and tool schemas most recently frozen for this session, if any. */
+export function frozenContext(events: SessionEvent[]): FrozenContext | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
-    if (e.type === 'context_frozen') return e.system;
+    if (e.type === 'context_frozen') return { system: e.system, tools: e.tools };
   }
   return undefined;
+}
+
+/** The system prompt most recently frozen for this session, if any. */
+export function frozenSystem(events: SessionEvent[]): string | undefined {
+  return frozenContext(events)?.system;
 }
 
 /**
@@ -40,7 +47,8 @@ export function frozenSystem(events: SessionEvent[]): string | undefined {
  * Guarantees provider validity: every tool call is followed by exactly one
  * result in the next user message, even if the task was interrupted. After a
  * checkpoint, history starts from its summary and prefix-bound provider
- * blocks are dropped from the retained turns.
+ * blocks are dropped from the retained turns recorded before it (turns after
+ * the checkpoint keep them).
  */
 export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
   let checkpoint: Extract<SessionEvent, { type: 'checkpoint' }> | undefined;
@@ -66,7 +74,11 @@ export function messagesFromEvents(events: SessionEvent[]): ChatMessage[] {
     if (e.type === 'user_message') {
       appendUser(messages, e.message.content);
     } else if (e.type === 'assistant_message') {
-      const content = checkpoint ? e.message.content.filter((b) => !(b.type === 'provider' && b.bound)) : e.message.content;
+      // Only turns recorded before the checkpoint lost their prefix; turns
+      // produced after it were generated against the summary and must replay
+      // their bound blocks (e.g. signed thinking on a tool_use turn) intact.
+      const content =
+        checkpoint && e.seq < checkpoint.seq ? e.message.content.filter((b) => !(b.type === 'provider' && b.bound)) : e.message.content;
       if (content.length === 0) continue;
       messages.push({ role: 'assistant', content });
       const calls = content.filter((b): b is ToolCallBlock => b.type === 'tool_call');

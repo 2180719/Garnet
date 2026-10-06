@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, symlinkSync } from 'node:fs';
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
@@ -16,6 +16,21 @@ test('paths cannot escape the workspace', () => {
   assert.throws(() => resolveInWorkspace(ws, '/etc/passwd'), /outside the workspace/);
   assert.throws(() => resolveInWorkspace(ws, 'link/escape.txt'), /outside the workspace/);
   assert.throws(() => resolveInWorkspace(ws, 'link/new/dir/file.txt'), /outside the workspace/);
+});
+
+test('dangling symlinks and unresolvable paths are not treated as missing', () => {
+  const root = tempDir();
+  const ws = join(root, 'ws');
+  mkdirSync(ws);
+  symlinkSync(join(root, 'outside', 'x.desktop'), join(ws, 'dangling'));
+  assert.throws(() => resolveInWorkspace(ws, 'dangling'), /symlink/);
+  assert.throws(() => resolveInWorkspace(ws, 'dangling/child.txt'), /symlink/);
+  symlinkSync(join(ws, 'loop-b'), join(ws, 'loop-a'));
+  symlinkSync(join(ws, 'loop-a'), join(ws, 'loop-b'));
+  assert.throws(() => resolveInWorkspace(ws, 'loop-a/file.txt'), /ELOOP/);
+  writeFileSync(join(ws, 'file'), 'x');
+  assert.throws(() => resolveInWorkspace(ws, 'file/child'), /ENOTDIR/);
+  assert.equal(resolveInWorkspace(ws, 'new/dir/file.txt'), join(realpathSync(ws), 'new/dir/file.txt'));
 });
 
 test('intersection grants the stricter permission', () => {
