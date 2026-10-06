@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve, isAbsolute } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { RubyError } from '../contracts/index.ts';
 import { SecretStore, type KdfParams, type Unlock } from './store.ts';
 
@@ -9,10 +9,11 @@ export const KEY_FILE_ENV = 'RUBY_SECRETS_KEY_FILE';
 /** `<home>/secrets`: the encrypted store. */
 export const secretsFile = (home: string): string => join(home, 'secrets');
 
-const inside = (dir: string, path: string) => {
+/** Whether `path` is `dir` or below it (a child named "..x" is below; "../x" is not). */
+export function isInside(dir: string, path: string): boolean {
   const rel = relative(resolve(dir), resolve(path));
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
-};
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
 
 /**
  * Reads the unlock source from the environment: `RUBY_SECRETS_KEY_FILE` (a
@@ -48,7 +49,7 @@ export function unlockWarnings(home: string, env: NodeJS.ProcessEnv, loadedFromE
     warnings.push(`${PASSPHRASE_ENV} is in ${join(home, 'env')}, next to the store it unlocks. Use ${KEY_FILE_ENV} with a key file outside ${home} instead.`);
   }
   const keyFile = env[KEY_FILE_ENV];
-  if (keyFile && inside(home, keyFile)) {
+  if (keyFile && isInside(home, keyFile)) {
     warnings.push(`The key file ${keyFile} is inside ${home}, next to the store it unlocks (and in reach of anyone with a copy of that directory). Keep it elsewhere.`);
   }
   return warnings;

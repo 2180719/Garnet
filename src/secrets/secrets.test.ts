@@ -120,6 +120,8 @@ test('a tampered file fails authentication: ciphertext, tag, nonce, salt and KDF
     [JSON.stringify({ ...JSON.parse(original), version: 99 }), /version 99.*Upgrade Ruby/],
     [JSON.stringify({ ...JSON.parse(original), kdf: { ...JSON.parse(original).kdf, N: 2 ** 30 } }), /out of range/],
     [JSON.stringify({ ...JSON.parse(original), kdf: { ...JSON.parse(original).kdf, N: 1000 } }), /out of range/],
+    // Each bound alone is fine, but together they would make scrypt allocate 2 GiB.
+    [JSON.stringify({ ...JSON.parse(original), kdf: { ...JSON.parse(original).kdf, N: 2 ** 20, r: 16 } }), /out of range/],
     [JSON.stringify({ ...JSON.parse(original), nonce: 'AAAA' }), /bad field length/],
   ] as const) {
     writeFileSync(file, text);
@@ -216,4 +218,17 @@ test('warnings when the unlock material sits next to the store', () => {
   assert.match(unlockWarnings(home, { [PASSPHRASE_ENV]: PASS }, [PASSPHRASE_ENV])[0]!, /RUBY_SECRETS_PASSPHRASE is in .*env/);
   assert.equal(unlockWarnings(home, { [PASSPHRASE_ENV]: PASS }).length, 0);
   assert.equal(unlockWarnings(home, { [KEY_FILE_ENV]: join(home, 'key') }).join('').includes(PASS), false);
+});
+
+test('a key file in a sibling directory whose name starts with ".." is not "inside" home', () => {
+  const home = tempDir();
+  assert.deepEqual(unlockWarnings(join(home, 'ruby'), { [KEY_FILE_ENV]: join(home, 'ruby', '..key', 'k') }).length, 1, 'a "..key" child is inside');
+  assert.deepEqual(unlockWarnings(join(home, 'ruby'), { [KEY_FILE_ENV]: join(home, 'k') }), []);
+});
+
+test('a secret named __proto__ is stored and read back like any other', () => {
+  const home = tempDir();
+  store(home).set('__proto__', VALUE);
+  assert.equal(store(home).get('__proto__'), VALUE);
+  assert.deepEqual(store(home).names(), ['__proto__']);
 });

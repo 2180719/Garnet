@@ -15,6 +15,19 @@ test('parses fields, names, ranges, steps and aliases', () => {
   assert.throws(() => parseCron('60 * * * *'), /out of range/);
 });
 
+test('rejects malformed fields instead of reading them as 0', () => {
+  for (const expr of ['1, * * * *', ',5 * * * *', '-5 * * * *', '1-5-9 * * * *', '0x1 * * * *', '1e1 * * * *', '5- * * * *', '* * * * mon-']) {
+    assert.throws(() => parseCron(expr), /Invalid cron/, expr);
+  }
+});
+
+test('a day field starting with * does not trigger the day-of-month OR day-of-week rule (as in Vixie cron)', () => {
+  // */2 in day-of-month is a filter combined with AND: odd days that are Mondays.
+  // 2026-10-05 is a Monday (day 5, odd); 2026-10-12 is a Monday on an even day.
+  assert.equal(next('0 12 */2 * mon', '2026-10-01T00:00:00Z'), '2026-10-05T12:00:00.000Z');
+  assert.equal(next('0 12 */2 * mon', '2026-10-06T00:00:00Z'), '2026-10-19T12:00:00.000Z');
+});
+
 test('computes next runs, strictly after the given time', () => {
   assert.equal(next('30 8 * * *', '2026-10-05T08:30:00Z'), '2026-10-06T08:30:00.000Z');
   assert.equal(next('0 9 * * mon', '2026-10-05T09:00:00Z'), '2026-10-12T09:00:00.000Z'); // 2026-10-05 is a Monday
