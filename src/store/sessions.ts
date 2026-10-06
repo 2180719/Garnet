@@ -55,6 +55,17 @@ export class SessionStore {
     return rows.map((r) => ({ ...(JSON.parse(r.payload) as SessionEventPayload), sessionId, seq: r.seq, at: r.at }));
   }
 
+  /** One page of a session's event log: up to `limit` events after `afterSeq`, plus the log's last sequence number. */
+  eventsPage(sessionId: string, afterSeq: number, limit: number): { events: SessionEvent[]; lastSeq: number } {
+    const rows = this.db
+      .prepare('SELECT seq, at, payload FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?')
+      .all(sessionId, afterSeq, limit) as { seq: number; at: string; payload: string }[];
+    return {
+      events: rows.map((r) => ({ ...(JSON.parse(r.payload) as SessionEventPayload), sessionId, seq: r.seq, at: r.at })),
+      lastSeq: this.lastSeq(sessionId),
+    };
+  }
+
   lastSeq(sessionId: string): number {
     const row = this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE session_id = ?').get(sessionId) as { seq: number };
     return row.seq;
