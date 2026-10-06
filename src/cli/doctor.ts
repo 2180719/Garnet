@@ -175,10 +175,12 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
 }
 
 function pathFinding(d: DoctorDeps, installDir: string): Finding {
+  // install.sh --name <other> sets RUBY_COMMAND_NAME in its shim.
+  const name = /^[A-Za-z0-9._-]+$/.test(d.env.RUBY_COMMAND_NAME ?? '') ? d.env.RUBY_COMMAND_NAME! : 'ruby';
   const dirs = (d.env.PATH ?? '').split(delimiter).filter(Boolean);
   const found: string[] = [];
   for (const dir of dirs) {
-    const p = join(dir, 'ruby');
+    const p = join(dir, name);
     try {
       accessSync(p, constants.X_OK);
       if (statSync(p).isFile()) found.push(p);
@@ -195,13 +197,13 @@ function pathFinding(d: DoctorDeps, installDir: string): Finding {
     }
   };
   const first = found[0];
-  if (!first) return { area: 'path', status: 'warn', message: '`ruby` is not on your PATH', fix: `Run install.sh, or \`npm link\` in ${installDir}; until then use \`npm run ruby --\`.` };
-  if (ours(first)) return { area: 'path', status: 'ok', message: `\`ruby\` on PATH is this install (${first})` };
+  if (!first) return { area: 'path', status: 'warn', message: `\`${name}\` is not on your PATH`, fix: `Run install.sh, or \`npm link\` in ${installDir}; until then use \`npm run ruby --\`.` };
+  if (ours(first)) return { area: 'path', status: 'ok', message: `\`${name}\` on PATH is this install (${first})` };
   const later = found.slice(1).find(ours);
   return {
     area: 'path',
     status: 'warn',
-    message: `\`ruby\` on your PATH is ${first}, not this install${later ? ` (which is at ${later}, later in PATH)` : ''}; it may be the Ruby programming language`,
+    message: `\`${name}\` on your PATH is ${first}, not this install${later ? ` (which is at ${later}, later in PATH)` : ''}; it may be the Ruby programming language`,
     fix: later ? `Put ${dirname(later)} earlier in PATH.` : 'Reinstall with `install.sh --name <other-name>`, or use `npm run ruby --`.',
   };
 }

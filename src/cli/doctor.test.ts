@@ -156,6 +156,17 @@ test('PATH: finds this install’s shim, and warns when another `ruby` (the lang
   assert.equal(f.fix, `Put ${ours} earlier in PATH.`);
 });
 
+test('PATH: an install under another command name (install.sh --name) is checked by that name', async () => {
+  const d = deps();
+  const ours = tempDir();
+  writeFileSync(join(ours, 'rubyagent'), `#!/bin/sh\nexec node ${d.entry} "$@"\n`, { mode: 0o755 });
+  d.env.PATH = ours;
+  d.env.RUBY_COMMAND_NAME = 'rubyagent';
+  const f = find(await diagnose(d), 'path')[0]!;
+  assert.equal(f.status, 'ok');
+  assert.match(f.message, /`rubyagent` on PATH is this install/);
+});
+
 test('formatting and exit code: symbols plus words, fixes indented, 1 when anything fails', async () => {
   const text = formatFindings(
     [
