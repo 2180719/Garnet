@@ -101,3 +101,13 @@ export const SHORTCUTS: readonly [string, string][] = [
   ['//text', 'send a message that starts with /'],
   [' text (leading space)', 'send without saving to history'],
 ];
+
+/** Fullscreen only (`garnet chat` without `--inline`): moving around the transcript. */
+export const SCROLL_SHORTCUTS: readonly [string, string][] = [
+  ['PgUp / PgDn', 'scroll the transcript a page'],
+  ['Shift+Up / Shift+Down', 'scroll half a page (also Ctrl+Up / Ctrl+Down)'],
+  ['Mouse wheel', 'scroll (while mouse reporting is on)'],
+  ['Ctrl+Home / Ctrl+End', 'jump to the top / back to the latest (Home / End when the input is empty)'],
+  ['Esc', 'back to the latest, when Garnet is not working'],
+  ['F2 or Alt+M', 'mouse reporting on or off. Off: the terminal selects text as usual. On: hold Shift (Option in iTerm2) while dragging to select'],
+];

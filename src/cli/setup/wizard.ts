@@ -10,15 +10,19 @@ import {
   DEFAULT_PROVIDER,
   PROVIDER_NAME_RE,
   activeProvider,
+  DEFAULT_NAME,
+  PERSONA_MAX,
   defaultConfig,
   keyEnvOf,
   parseConfig,
   parseEnv,
   pathsFor,
+  readPersona,
   removeFromEnvFile,
   setInEnvFile,
   withProvider,
   writeConfig,
+  writePersona,
   type GarnetConfig,
   type ModelConfig,
 } from '../../config/index.ts';
@@ -28,7 +32,8 @@ import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, u
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram, type CheckResult, type FetchFn } from './checks.ts';
-import { DEFAULT_NAME, PERSONA_MAX, readPersona, validBasic, writePersona } from './persona.ts';
+import { askBasics } from './persona.ts';
+import { sandboxStep } from './sandbox.ts';
 import type { Choice, Prompter, Style } from './prompt.ts';
 
 export type ImportSource = { source: 'openclaw' | 'hermes'; dir: string };
@@ -61,6 +66,11 @@ export type SetupDeps = {
    * to the owner.
    */
   runImport: (args: string[], draft: ImportDraft) => number | Promise<number>;
+  /**
+   * Starts the wake-up chat (`garnet chat --onboard`) after setup is saved; resolves with its exit code.
+   * Absent where there is nowhere to chat (scripts and tests that do not offer it).
+   */
+  wake?: (opts: { fake: boolean }) => Promise<number>;
   /** Pending pairing requests in Garnet's database (written by the running service). */
   pairing: () => { pending: () => Pairing[]; approve: (code: string) => Pairing | null; close: () => void };
 };
@@ -75,7 +85,7 @@ export type ImportDraft = {
 
 type Storage = 'encrypted' | 'env-file' | 'env';
 type ProviderChoice = 'anthropic' | 'gemini' | 'openrouter' | 'local' | 'openai-compatible' | 'fake';
-type Section = 'model' | 'persona' | 'channels' | 'import' | 'service' | 'done' | 'quit';
+type Section = 'model' | 'persona' | 'sandbox' | 'channels' | 'import' | 'service' | 'done' | 'quit';
 
 type State = {
   config: GarnetConfig;
@@ -90,6 +100,8 @@ type State = {
   bots: Record<string, string>;
   todo: string[];
   changed: boolean;
+  /** The owner chose to set up the persona by talking to the agent, after setup is saved. */
+  wake: boolean;
 };
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1';
@@ -163,10 +175,18 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
     if (!st.existing) await importStep(p, io, deps, st);
     await modelStep(p, io, deps, st);
     await personaStep(p, io, deps, st);
+    await sandboxSection(p, io, deps, st);
     await channelsStep(p, io, deps, st);
   }
 
+  if (p.review && !(await p.review({ id: 'review', message: 'Save these settings?', help: `Nothing has been written yet. Saving writes ${join(deps.home, 'config.json')} and stores any keys you entered.`, body: summary(st, deps) }))) {
+    io.out('Nothing was saved.\n');
+    return 0;
+  }
   save(io, deps, st);
+  // The wake-up chat writes persona and time zone to the saved config, and the service reads config once at start,
+  // so the chat runs before the service is installed or restarted. Pairing needs the running service, so it stays after.
+  if (st.wake) await wakeStep(io, deps, st);
   const service = await serviceStep(p, io, deps, st, wantService);
   await pairingStep(p, io, deps, st, service);
   io.out(nextSteps(st, deps, service));
@@ -175,7 +195,7 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
 
 function loadState(io: Io, deps: SetupDeps): State {
   const file = join(deps.home, 'config.json');
-  const base: State = { config: defaultConfig(), existing: false, resetFrom: null, secrets: new Map(), storage: null, keyFile: null, consent: null, bots: {}, todo: [], changed: true };
+  const base: State = { config: defaultConfig(), existing: false, resetFrom: null, secrets: new Map(), storage: null, keyFile: null, consent: null, bots: {}, todo: [], changed: true, wake: false };
   if (!existsSync(file)) return base;
   try {
     // Migrations are applied in memory; the file is only rewritten on save.
@@ -188,11 +208,12 @@ function loadState(io: Io, deps: SetupDeps): State {
 
 function menu(st: State, deps: SetupDeps): Choice<Section>[] {
   const c = st.config;
-  const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => c.channels[n].enabled);
+  const channels = enabledChannels(c);
   const persona = readPersona(c.persona);
   const items: Choice<Section>[] = [
     { value: 'model', label: 'Model and API key', hint: `${providerOf(activeProvider(c).model)} · ${activeProvider(c).model.name}` },
     { value: 'persona', label: 'Name and persona', hint: `${persona.name}${persona.owner ? `, for ${persona.owner}` : ''}` },
+    ...(c.permissions.exec === 'deny' ? [] : [{ value: 'sandbox' as const, label: 'Where commands run', hint: sandboxHint(c.sandbox) }]),
     { value: 'channels', label: 'Messaging channels', hint: channels.length ? channels.join(', ') : 'none' },
   ];
   if (deps.importSources().length) items.push({ value: 'import', label: 'Import from OpenClaw or Hermes' });
@@ -205,9 +226,10 @@ async function runSection(section: Exclude<Section, 'service' | 'done' | 'quit'>
   const before = JSON.stringify(st.config) + st.secrets.size;
   if (section === 'model') await modelStep(p, io, deps, st);
   if (section === 'persona') await personaStep(p, io, deps, st);
+  if (section === 'sandbox') await sandboxSection(p, io, deps, st);
   if (section === 'channels') await channelsStep(p, io, deps, st);
   if (section === 'import') await importStep(p, io, deps, st);
-  if (JSON.stringify(st.config) + st.secrets.size !== before) st.changed = true;
+  if (JSON.stringify(st.config) + st.secrets.size !== before || st.wake) st.changed = true;
 }
 
 const heading = (io: Io, s: Style, n: string) => io.out(`\n${s.accent('◆')} ${s.bold(n)}\n`);
@@ -469,16 +491,27 @@ async function checked(
 
 async function personaStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   heading(io, deps.style, 'Persona');
+  st.wake = false;
+  // Only a person at a terminal is offered the chat, and only when the model can answer. Scripts always get the form.
+  if (p.interactive && deps.wake && wakeReady(deps, st)) {
+    const how = await p.select<'form' | 'wake'>({
+      id: 'onboarding',
+      message: 'How would you like to set up your assistant?',
+      help: 'The quick form asks three short questions. "Wake it up" opens a first chat where your assistant introduces itself and asks the same things.',
+      choices: [
+        { value: 'form', label: 'Quick form', hint: 'name, what to call you, answer style' },
+        { value: 'wake', label: 'Wake it up', hint: 'a first conversation, right after setup is saved' },
+      ],
+      default: 'form',
+      auto: 'form',
+    });
+    if (how === 'wake') {
+      st.wake = true;
+      return;
+    }
+  }
   const cur = readPersona(st.config.persona);
-  const name = await p.text({ id: 'name', message: 'What should your assistant be called?', default: cur.name, validate: validBasic(40) });
-  const owner = await p.text({ id: 'owner', message: 'And what should it call you?', help: 'Optional. Press Enter to skip.', default: cur.owner, validate: validBasic(60) });
-  const notes = await p.text({
-    id: 'notes',
-    message: 'Anything about how you like answers?',
-    help: 'Optional, one line. For example: "Brief answers. I live in Lisbon and work in UTC."',
-    default: cur.notes,
-    validate: validBasic(500),
-  });
+  const { name, owner, notes } = await askBasics(p, cur);
   const persona = writePersona(st.config.persona, { name: name || DEFAULT_NAME, owner, notes });
   if ((persona ?? '').length > PERSONA_MAX) {
     io.out(`  ${deps.style.warn('!')} The persona would exceed ${PERSONA_MAX} characters, so these basics were not added. Shorten config.persona first.\n`);
@@ -488,67 +521,155 @@ async function personaStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Pro
   else st.config.persona = persona;
 }
 
+/** The wake-up chat needs a model that can answer (the offline demo, a local server, or a key that is already available) and permission to save (`memory.write`). */
+function wakeReady(deps: SetupDeps, st: State): boolean {
+  if (st.config.permissions['memory.write'] === 'deny') return false;
+  const provider = providerOf(activeProvider(st.config).model);
+  return provider === 'fake' || provider === 'local' || lookup(deps, st, keyEnvOf(activeProvider(st.config).model)).found;
+}
+
+/** Runs right after the config is saved, before the service starts. A failure never undoes setup: the form is one command away. */
+async function wakeStep(io: Io, deps: SetupDeps, st: State): Promise<void> {
+  const s = deps.style;
+  io.out(`\n${s.accent('◆')} ${s.bold('Waking your assistant up')}\n  ${s.muted('Say /exit when you are done. If the model cannot use its tools, you will get the short form instead.')}\n\n`);
+  try {
+    const code = await deps.wake!({ fake: providerOf(activeProvider(st.config).model) === 'fake' });
+    if (code !== 0) st.todo.push('The wake-up chat ended with an error. Run `garnet wake` to try again, or `garnet setup` for the form.');
+  } catch (e) {
+    st.todo.push(`The wake-up chat could not start (${errorMessage(e)}). Run \`garnet wake\` to try again, or \`garnet setup\` for the form.`);
+  }
+  // The chat saves through the same config file; show what it stored.
+  try {
+    st.config = parseConfig(JSON.parse(readFileSync(join(deps.home, 'config.json'), 'utf8')));
+  } catch {
+    // Keep the draft: the summary is informational.
+  }
+}
+
+// ---------- sandbox ----------
+
+const sandboxHint = (sb: GarnetConfig['sandbox']): string => (sb.backend === 'ssh' && sb.ssh.host ? `ssh ${sb.ssh.user ? `${sb.ssh.user}@` : ''}${sb.ssh.host}` : sb.backend);
+
+/** Where commands run. Skipped when commands are denied; a script that passes no flag keeps the current backend. */
+async function sandboxSection(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
+  if (st.config.permissions.exec === 'deny') return;
+  heading(io, deps.style, 'Commands');
+  st.config.sandbox = await sandboxStep(p, st.config.sandbox);
+}
+
 // ---------- channels ----------
 
+type ChannelName = keyof GarnetConfig['channels'];
+type ChannelSpec = {
+  name: ChannelName;
+  label: string;
+  hint: string;
+  /** Asks for this channel's details (token, number), runs its optional live check and sets `enabled`. */
+  setup: (p: Prompter, io: Io, deps: SetupDeps, st: State) => Promise<void>;
+};
+
+/** The channels the checklist offers. Adding a channel to the list is adding one entry here. */
+const CHANNELS: ChannelSpec[] = [
+  {
+    name: 'telegram',
+    label: 'Telegram',
+    hint: 'a bot from @BotFather',
+    setup: async (p, io, deps, st) => {
+      const tg = { ...st.config.channels.telegram, enabled: true };
+      io.out(`  1. Open https://t.me/BotFather and send /newbot\n  2. Pick a display name, then a username ending in "bot"\n  3. Copy the token it gives you\n`);
+      if (!p.interactive) tg.tokenEnv = await p.text({ id: 'telegram-token-env', message: 'Name of the variable or secret that holds the Telegram token', default: tg.tokenEnv, validate: validEnvName });
+      const r = await checked(p, io, deps, st, {
+        what: 'telegram',
+        consentHelp: 'For example Telegram getMe, which shows your bot’s name.',
+        enter: (fresh) => secretStep(p, io, deps, st, { id: 'telegram-token', name: tg.tokenEnv, label: 'Telegram bot token', help: 'It looks like 123456789:AA…', required: true }, fresh),
+        check: (token) => checkTelegram(token ?? '', deps.fetch),
+        canRetry: true,
+      });
+      if (r?.ok && 'username' in r) st.bots.telegram = `@${(r as { username: string }).username}`;
+      st.config.channels.telegram = tg;
+    },
+  },
+  {
+    name: 'discord',
+    label: 'Discord',
+    hint: 'a bot with a token',
+    setup: async (p, io, deps, st) => {
+      const dc = { ...st.config.channels.discord, enabled: true };
+      io.out(
+        `  1. https://discord.com/developers/applications → New Application → Bot → Reset Token, and copy it\n` +
+          `  2. On the same page, turn on Message Content Intent (Privileged Gateway Intents)\n` +
+          `  3. Garnet answers direct messages: share a server with the bot, then DM it\n`,
+      );
+      if (!p.interactive) dc.tokenEnv = await p.text({ id: 'discord-token-env', message: 'Name of the variable or secret that holds the Discord token', default: dc.tokenEnv, validate: validEnvName });
+      const r = await checked(p, io, deps, st, {
+        what: 'discord',
+        consentHelp: 'For example Discord /users/@me, which shows your bot’s name.',
+        enter: (fresh) => secretStep(p, io, deps, st, { id: 'discord-token', name: dc.tokenEnv, label: 'Discord bot token', help: 'From the Bot page of your application.', required: true }, fresh),
+        check: (token) => checkDiscord(token ?? '', deps.fetch),
+        canRetry: true,
+      });
+      if (r?.ok && 'username' in r) st.bots.discord = (r as { username: string }).username;
+      st.config.channels.discord = dc;
+    },
+  },
+  {
+    name: 'signal',
+    label: 'Signal',
+    hint: 'needs signal-cli and a phone number for the bot',
+    setup: async (p, io, deps, st) => {
+      const sg = { ...st.config.channels.signal, enabled: true };
+      sg.account = await p.text({ id: 'signal-number', message: "The bot's Signal number", help: 'International format, e.g. +15551234567', ...(sg.account ? { default: sg.account } : {}), validate: (v) => (E164.test(v) ? null : 'Use + and digits only, e.g. +15551234567.') });
+      sg.baseUrl = await p.text({ id: 'signal-url', message: 'signal-cli daemon address', default: sg.baseUrl, validate: validUrl });
+      io.out(`  Keep the daemon running: ${deps.style.bold(`signal-cli -a ${sg.account} daemon --http ${new URL(sg.baseUrl).host}`)}\n`);
+      const baseUrl = sg.baseUrl;
+      await checked(p, io, deps, st, {
+        what: 'signal',
+        consentHelp: 'For example a request to the local signal-cli daemon.',
+        enter: async () => undefined,
+        check: () => checkSignal(baseUrl, deps.fetch),
+        canRetry: false,
+        needsValue: false,
+      });
+      st.config.channels.signal = sg;
+    },
+  },
+];
+
+const CHANNEL_NAMES = CHANNELS.map((c) => c.name);
+const enabledChannels = (c: GarnetConfig): ChannelName[] => CHANNEL_NAMES.filter((n) => c.channels[n].enabled);
+
+/**
+ * One checklist for all channels (already enabled ones ticked), then each ticked channel is set up in turn.
+ * Unticking an enabled channel asks first; a script that passes --no-<channel> has already decided.
+ */
 async function channelsStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   const s = deps.style;
   heading(io, s, 'Channels');
   io.out(`  ${s.muted('Reach Garnet from your phone. Each channel is optional; you can add them later.')}\n`);
-  const ch = st.config.channels;
-
-  const tg = { ...ch.telegram };
-  tg.enabled = await p.confirm({ id: 'telegram', message: 'Connect Telegram?', default: tg.enabled });
-  if (tg.enabled) {
-    io.out(`  1. Open https://t.me/BotFather and send /newbot\n  2. Pick a display name, then a username ending in "bot"\n  3. Copy the token it gives you\n`);
-    if (!p.interactive) tg.tokenEnv = await p.text({ id: 'telegram-token-env', message: 'Name of the variable or secret that holds the Telegram token', default: tg.tokenEnv, validate: validEnvName });
-    const r = await checked(p, io, deps, st, {
-      what: 'telegram',
-      consentHelp: 'For example Telegram getMe, which shows your bot’s name.',
-      enter: (fresh) => secretStep(p, io, deps, st, { id: 'telegram-token', name: tg.tokenEnv, label: 'Telegram bot token', help: 'It looks like 123456789:AA…', required: true }, fresh),
-      check: (token) => checkTelegram(token ?? '', deps.fetch),
-      canRetry: true,
+  const before = enabledChannels(st.config);
+  const picked = await p.multiselect<ChannelName>({
+    id: 'channels',
+    message: 'Which channels do you want to connect?',
+    help: 'Pick as many as you like, or none. You set up each one in turn.',
+    choices: CHANNELS.map((c) => ({ value: c.name, label: c.label, hint: before.includes(c.name) ? `${c.hint} · set up now` : c.hint })),
+    default: before,
+  });
+  for (const spec of CHANNELS) {
+    if (picked.includes(spec.name) || !before.includes(spec.name)) continue;
+    const off = await p.confirm({
+      id: `disable-${spec.name}`,
+      message: `Turn off ${spec.label}? Garnet will stop answering there. Its token stays where it is.`,
+      default: false,
+      auto: true,
     });
-    if (r?.ok && 'username' in r) st.bots.telegram = `@${(r as { username: string }).username}`;
+    if (off) st.config.channels[spec.name].enabled = false;
   }
-  ch.telegram = tg;
-
-  const dc = { ...ch.discord };
-  dc.enabled = await p.confirm({ id: 'discord', message: 'Connect Discord?', default: dc.enabled });
-  if (dc.enabled) {
-    io.out(
-      `  1. https://discord.com/developers/applications → New Application → Bot → Reset Token, and copy it\n` +
-        `  2. On the same page, turn on Message Content Intent (Privileged Gateway Intents)\n` +
-        `  3. Garnet answers direct messages: share a server with the bot, then DM it\n`,
-    );
-    if (!p.interactive) dc.tokenEnv = await p.text({ id: 'discord-token-env', message: 'Name of the variable or secret that holds the Discord token', default: dc.tokenEnv, validate: validEnvName });
-    const r = await checked(p, io, deps, st, {
-      what: 'discord',
-      consentHelp: 'For example Discord /users/@me, which shows your bot’s name.',
-      enter: (fresh) => secretStep(p, io, deps, st, { id: 'discord-token', name: dc.tokenEnv, label: 'Discord bot token', help: 'From the Bot page of your application.', required: true }, fresh),
-      check: (token) => checkDiscord(token ?? '', deps.fetch),
-      canRetry: true,
-    });
-    if (r?.ok && 'username' in r) st.bots.discord = (r as { username: string }).username;
+  // Declining to turn a channel off keeps it as it is; only the ticked ones are set up.
+  const todo = CHANNELS.filter((c) => picked.includes(c.name));
+  for (const [i, spec] of todo.entries()) {
+    if (todo.length > 1) io.out(`\n${s.bold(`${spec.label} (${i + 1} of ${todo.length})`)}\n`);
+    await spec.setup(p, io, deps, st);
   }
-  ch.discord = dc;
-
-  const sg = { ...ch.signal };
-  sg.enabled = await p.confirm({ id: 'signal', message: 'Connect Signal?', help: 'Needs signal-cli and a phone number for the bot.', default: sg.enabled });
-  if (sg.enabled) {
-    sg.account = await p.text({ id: 'signal-number', message: "The bot's Signal number", help: 'International format, e.g. +15551234567', ...(sg.account ? { default: sg.account } : {}), validate: (v) => (E164.test(v) ? null : 'Use + and digits only, e.g. +15551234567.') });
-    sg.baseUrl = await p.text({ id: 'signal-url', message: 'signal-cli daemon address', default: sg.baseUrl, validate: validUrl });
-    io.out(`  Keep the daemon running: ${s.bold(`signal-cli -a ${sg.account} daemon --http ${new URL(sg.baseUrl).host}`)}\n`);
-    const baseUrl = sg.baseUrl;
-    await checked(p, io, deps, st, {
-      what: 'signal',
-      consentHelp: 'For example a request to the local signal-cli daemon.',
-      enter: async () => undefined,
-      check: () => checkSignal(baseUrl, deps.fetch),
-      canRetry: false,
-      needsValue: false,
-    });
-  }
-  ch.signal = sg;
 }
 
 // ---------- save ----------
@@ -606,7 +727,7 @@ async function serviceStep(p: Prompter, io: Io, deps: SetupDeps, st: State, aske
   const s = deps.style;
   const svc = deps.service;
   if (!svc) return 'unsupported';
-  const anyChannel = (['telegram', 'discord', 'signal'] as const).some((n) => st.config.channels[n].enabled);
+  const anyChannel = enabledChannels(st.config).length > 0;
   const installed = svc.installed();
   heading(io, s, 'Background service');
   if (installed && !asked) {
@@ -640,7 +761,7 @@ function report(io: Io, s: Style, r: ServiceResult, success: ServiceOutcome): Se
 
 async function pairingStep(p: Prompter, io: Io, deps: SetupDeps, st: State, service: ServiceOutcome): Promise<void> {
   const s = deps.style;
-  const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => st.config.channels[n].enabled);
+  const channels = enabledChannels(st.config);
   if (!p.interactive || !channels.length) return;
   const running = service === 'installed' || service === 'restarted';
   heading(io, s, 'Pairing');
@@ -688,13 +809,13 @@ function keyState(deps: SetupDeps, st: State, name: string): string {
   return f.found ? `${name} (${f.where})` : `${name} (not set yet)`;
 }
 
-function summary(st: State, deps: SetupDeps): string {
+function summary(st: State, deps: SetupDeps, service?: ServiceOutcome): string {
   const c = st.config;
   const s = deps.style;
   const active = activeProvider(c);
   const provider = providerOf(active.model);
   const persona = readPersona(c.persona);
-  const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => c.channels[n].enabled);
+  const channels = enabledChannels(c);
   const rows: [string, string][] = [
     ['Model', provider === 'fake' ? 'offline demo model (scripted replies)' : `${active.name === DEFAULT_PROVIDER ? '' : `${active.name}: `}${provider} · ${active.model.name}${active.model.baseUrl ? ` · ${active.model.baseUrl}` : ''}`],
   ];
@@ -708,15 +829,15 @@ function summary(st: State, deps: SetupDeps): string {
           .join('; ')
       : 'none',
   ]);
-  if (deps.service) rows.push(['Service', deps.service.installed() ? `${deps.service.label} installed` : 'not installed']);
+  if (deps.service) rows.push(['Service', deps.service.installed() ? `${deps.service.label} installed${service === 'failed' ? ', but not running' : ''}` : 'not installed']);
   return rows.map(([k, v]) => `  ${s.muted(k.padEnd(9))} ${v}\n`).join('');
 }
 
 function nextSteps(st: State, deps: SetupDeps, service: ServiceOutcome): string {
   const s = deps.style;
   const c = st.config;
-  const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => c.channels[n].enabled);
-  const lines: string[] = [`\n${s.accent('◆')} ${s.bold('Garnet is ready.')}\n`, summary(st, deps)];
+  const channels = enabledChannels(c);
+  const lines: string[] = [`\n${s.accent('◆')} ${s.bold('Garnet is ready.')}\n`, summary(st, deps, service)];
   if (st.todo.length) {
     lines.push(`\n${s.bold('Still to do')}\n`);
     for (const t of st.todo) lines.push(`  ${s.warn('!')} ${t}\n`);

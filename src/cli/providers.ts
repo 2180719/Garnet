@@ -1,4 +1,4 @@
-// `garnet providers list|add|use|rm` and `garnet config get|set|unset`: edits to config.json, validated by the schema.
+// `garnet providers list|add|use|rm`: edits to config.json, validated by the schema.
 import { parseArgs } from 'node:util';
 import {
   PROVIDER_KINDS,
@@ -106,72 +106,6 @@ export function providers(args: string[], io: Io, opts: Opts = {}): number {
     }
   } catch (e) {
     if (String((e as NodeJS.ErrnoException).code).startsWith('ERR_PARSE_ARGS')) throw e;
-    io.err(`${errorMessage(e)}\n`);
-    return e instanceof GarnetError && e.category === 'invalid_input' ? 2 : 1;
-  }
-}
-
-// ---------- config get | set | unset ----------
-
-const UNSAFE = new Set(['__proto__', 'constructor', 'prototype']);
-
-function segments(path: string): string[] {
-  const keys = path.split('.');
-  if (keys.some((k) => !k || UNSAFE.has(k))) throw new GarnetError('invalid_input', `Bad config path "${path}" (dot-separated keys, e.g. providers.work.name).`);
-  return keys;
-}
-
-function child(node: unknown, key: string): unknown {
-  if (Array.isArray(node)) return node[Number(key)];
-  if (node && typeof node === 'object' && Object.hasOwn(node, key)) return (node as Record<string, unknown>)[key];
-  return undefined;
-}
-
-/** A value from the command line: JSON when it parses (numbers, booleans, objects), else the text itself. */
-function parseValue(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-export function configEdit(sub: 'get' | 'set' | 'unset', args: string[], io: Io, opts: Opts = {}): number {
-  const [path, value, extra] = args;
-  const usage = sub === 'set' ? 'garnet config set <path> <value>' : `garnet config ${sub} <path>`;
-  if (!path || (sub === 'set' ? value === undefined : value !== undefined) || extra !== undefined) {
-    io.err(`Usage: ${usage}\n`);
-    return 2;
-  }
-  try {
-    const { config, paths } = loadConfig(opts.home);
-    const keys = segments(path);
-    const plain = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
-    if (sub === 'get') {
-      const v = keys.reduce<unknown>((node, k) => child(node, k), plain);
-      if (v === undefined) {
-        io.err(`${path} is not set.\n`);
-        return 1;
-      }
-      io.out(`${JSON.stringify(redact(v), null, typeof v === 'object' ? 2 : 0)}\n`);
-      return 0;
-    }
-    const parent = keys.slice(0, -1).reduce<unknown>((node, k) => child(node, k), plain);
-    const last = keys.at(-1)!;
-    if (!parent || typeof parent !== 'object') {
-      if (sub === 'unset') {
-        io.out(`${path} was not set.\n`);
-        return 0;
-      }
-      throw new GarnetError('invalid_input', `Cannot set ${path}: ${keys.slice(0, -1).join('.')} does not exist.`);
-    }
-    if (sub === 'set') (parent as Record<string, unknown>)[last] = parseValue(value!);
-    else if (Array.isArray(parent)) parent.splice(Number(last), 1);
-    else delete (parent as Record<string, unknown>)[last];
-    save(paths.home, plain as unknown as GarnetConfig);
-    io.out(sub === 'set' ? `Set ${path}.\n` : `Unset ${path} (back to its default).\n`);
-    return 0;
-  } catch (e) {
     io.err(`${errorMessage(e)}\n`);
     return e instanceof GarnetError && e.category === 'invalid_input' ? 2 : 1;
   }

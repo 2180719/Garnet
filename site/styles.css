@@ -1,20 +1,20 @@
 /* Garnet site. Plain CSS, system fonts, no remote requests. */
 :root {
-  --bg: #fbf7f6;
-  --bg2: #f3eaea;
+  --bg: #faf9f8;
+  --bg2: #f0eeec;
   --card: #ffffff;
-  --ink: #22141a;
-  --mute: #6a5459;
-  --line: #e3d3d5;
-  --accent: #a3152f;
+  --ink: #16141a;
+  --mute: #6b7070;
+  --line: #d9d4d0;
+  --accent: #8b1a1a;
   --accent-ink: #ffffff;
-  --accent-bg: #a3152f;
-  --tint: #f7e4e7;
-  --term-bg: #1d0d12;
-  --term-ink: #f4e7e9;
-  --term-mute: #b79ba1;
-  --term-accent: #ff8da1;
-  --ok: #1d7a46;
+  --accent-bg: #8b1a1a;
+  --tint: #f5e3e1;
+  --term-bg: #0d0810;
+  --term-ink: #f0e8ea;
+  --term-mute: #b4a8ac;
+  --term-accent: #e8596b;
+  --ok: #186a47;
   --warn: #9a5b00;
   --radius: 10px;
   --shadow: 0 1px 0 rgb(0 0 0 / .04), 0 12px 32px -16px rgb(120 20 40 / .35);
@@ -24,15 +24,15 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #150a0d; --bg2: #1d1014; --card: #1f1116; --ink: #f6eaec; --mute: #bba3a8; --line: #3a2229;
-    --accent: #ff8da1; --accent-bg: #c4223f; --tint: #301820; --term-bg: #0e0608; --ok: #5fd08e; --warn: #f0b45a;
+    --bg: #0d0810; --bg2: #1a0f18; --card: #14090e; --ink: #f0e8ea; --mute: #b4a8ac; --line: #3d2f35;
+    --accent: #e8596b; --accent-bg: #8d2e3d; --tint: #3a1f28; --term-bg: #0d0810; --ok: #5fd08e; --warn: #f0b45a;
     --shadow: 0 1px 0 rgb(255 255 255 / .03), 0 12px 32px -16px rgb(0 0 0 / .7);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #150a0d; --bg2: #1d1014; --card: #1f1116; --ink: #f6eaec; --mute: #bba3a8; --line: #3a2229;
-  --accent: #ff8da1; --accent-bg: #c4223f; --tint: #301820; --term-bg: #0e0608; --ok: #5fd08e; --warn: #f0b45a;
+  --bg: #0d0810; --bg2: #1a0f18; --card: #14090e; --ink: #f0e8ea; --mute: #b4a8ac; --line: #3d2f35;
+  --accent: #e8596b; --accent-bg: #8d2e3d; --tint: #3a1f28; --term-bg: #0d0810; --ok: #5fd08e; --warn: #f0b45a;
   --shadow: 0 1px 0 rgb(255 255 255 / .03), 0 12px 32px -16px rgb(0 0 0 / .7);
   color-scheme: dark;
 }
@@ -57,7 +57,7 @@ p { margin: 0 0 1em; }
 .top { display: flex; align-items: center; gap: 1rem; padding: 1rem 0; position: relative; z-index: 5; }
 .brand { display: inline-flex; align-items: center; gap: .55rem; font-weight: 700; font-size: 1.25rem; letter-spacing: -.02em; color: var(--ink); text-decoration: none; }
 .brand svg { width: 28px; height: 28px; }
-.g1 { fill: #d9304f; } .g2 { fill: #8c1228; } .g3 { fill: #ff8da1; opacity: .8; } .g4 { fill: #5e0b1b; }
+.g1 { fill: #d97a6f; } .g2 { fill: #6b1414; } .g3 { fill: #e8596b; opacity: .8; } .g4 { fill: #4a0a10; }
 .top nav { margin-left: auto; display: flex; gap: .25rem 1.25rem; flex-wrap: wrap; font-size: .95rem; }
 .top nav a { color: var(--mute); text-decoration: none; padding: .25rem 0; }
 .top nav a:hover { color: var(--ink); text-decoration: underline; }
@@ -84,11 +84,11 @@ h1 em { font-style: normal; color: var(--accent); }
 .term { background: var(--term-bg); color: var(--term-ink); border-radius: var(--radius); box-shadow: var(--shadow); margin: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / .06); }
 .term .bar { display: flex; align-items: center; gap: .6rem; padding: .55rem .9rem; font: .75rem var(--mono); color: var(--term-mute); border-bottom: 1px solid rgb(255 255 255 / .08); }
 .term .bar .dots { display: flex; gap: 5px; }
-.term .bar .dots i { width: 9px; height: 9px; border-radius: 50%; background: #5b3a42; }
+.term .bar .dots i { width: 9px; height: 9px; border-radius: 50%; background: #3a1f28; }
 .term .bar > span:nth-child(2) { margin-right: auto; }
 .copy, .tab { font: 600 .75rem var(--mono); border: 1px solid rgb(255 255 255 / .22); background: transparent; color: var(--term-ink); border-radius: 6px; padding: .3rem .6rem; cursor: pointer; }
 .copy:hover, .tab:hover { border-color: var(--term-accent); color: var(--term-accent); }
-.tab[aria-pressed="true"] { background: var(--term-accent); color: #2a0a12; border-color: var(--term-accent); }
+.tab[aria-pressed="true"] { background: var(--term-accent); color: #16141a; border-color: var(--term-accent); }
 .term pre { margin: 0; padding: 1rem 1.1rem; overflow-x: auto; font-size: .86rem; line-height: 1.6; white-space: pre; tab-size: 2; }
 .term pre.wrapit { white-space: pre-wrap; overflow-wrap: anywhere; }
 .term .tm { color: var(--term-mute); } .term .ta { color: var(--term-accent); } .term .tg { color: #7fdca3; } .term .ty { color: #f0c070; }

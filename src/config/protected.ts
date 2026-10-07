@@ -30,6 +30,9 @@ export const PROTECTED_CONFIG_PATHS: readonly string[] = [
   'web.allowHosts',
   'web.search.searxngUrl',
   'web.search.backend',
+  'connectors.github.apiUrl', // where the GitHub token is sent
+  'connectors.github.write',
+  'connectors.github.repos',
   '*Env', // any environment-variable / stored-secret name, at any depth
 ];
 

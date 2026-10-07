@@ -79,10 +79,11 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 1. Run the `curl … | sh` one-liner as a non-root user with Node 22.18+. Expect the shim in `~/.local/bin`, a PATH hint if that is not on PATH, and `garnet setup` to start on the terminal (stdin comes from `/dev/tty` even though the script was piped). Run it again: expect "Already up to date" and no prompts about an existing setup.
 2. Without Node.js, and with Node 20: expect a clear message with install options and exit 1.
 3. With another program called `garnet` on PATH: expect the installer to warn about shadowing and never to overwrite it; `--name garnet-agent` works; `garnet doctor` reports which `garnet` is on PATH.
-4. `garnet setup` on a real terminal: arrow-free numbered menus, hidden key input (dots only), Ctrl+C at any question saves nothing. Accept the live checks: a real Anthropic key (expect "key accepted"), a wrong key (expect "rejected", and the offer to re-enter), an OpenRouter key (uses `GET /api/v1/key`; confirm that endpoint still exists), a local Ollama (`/v1/models`), a Telegram token (expect the bot's @username), a Discord token. The key must not appear on screen, in `config.json` or in shell history.
+4. `garnet setup` on a real terminal: numbered menus, the channels checklist (arrows or numbers to tick, Enter to confirm, none ticked is fine, with and without `NO_COLOR`), hidden key input (dots only), Ctrl+C at any question saves nothing. Accept the live checks: a real Anthropic key (expect "key accepted"), a wrong key (expect "rejected", and the offer to re-enter), an OpenRouter key (uses `GET /api/v1/key`; confirm that endpoint still exists), a local Ollama (`/v1/models`), a Telegram token (expect the bot's @username), a Discord token. The key must not appear on screen, in `config.json` or in shell history.
 5. Let setup install the service, then pair through it: message the bot, press Enter at the prompt, approve the code. Expect the greeting in the chat. On macOS check that `launchctl kickstart -k` restarts the agent when setup offers a restart.
-6. Re-run `garnet setup`: the menu shows the current values; changing only the persona keeps everything else in `config.json` byte-for-byte apart from `persona`.
-7. `garnet doctor` on the finished host: expect no failures; stop Docker with `permissions.exec` at `ask` and expect a sandbox failure with a fix.
+6. Wake-up: in `garnet setup` choose "Wake it up" with a real key (and again with a weak or local model). Expect the agent to speak first, ask name, your name, answer style, time zone and what you want help with, call `set_profile` and `memory` (visible tool rows), and print "Tool check passed". Check `config.json` (`persona` between the `garnet setup` markers, `timezone`) and `memory/default/USER.md`. With a model that cannot call tools, expect the chat to stop with "Setup chat is stopping because ..." and the three form questions, never a loop. `garnet setup -y` must not open a chat. `garnet wake` re-runs it.
+7. Re-run `garnet setup`: the menu shows the current values; changing only the persona keeps everything else in `config.json` byte-for-byte apart from `persona`.
+8. `garnet doctor` on the finished host: expect no failures; stop Docker with `permissions.exec` at `ask` and expect a sandbox failure with a fix.
 
 ### 1. Anthropic model
 
@@ -179,6 +180,17 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 3. Run Garnet as root on a test host (not production). Expect the container user to be the workspace owner if that is not root, else 65534:65534; if that user cannot write the workspace, startup should refuse with a remedy. Set `sandbox.user` to a valid `uid:gid` and to `0:0` (expect a config error).
 4. Run `sleep 600` and cancel with `/stop`; expect the container to be killed. Check `docker ps` for leftovers.
 5. Docker not running: expect a clear failure, not a silent fallback to the local backend.
+
+### 11b. SSH sandbox
+
+Use a throwaway VM or a dedicated unprivileged account, never your own login.
+
+1. On the remote: `mkdir -p /srv/garnet/work`. Set `permissions.exec = "ask"`, `sandbox.backend = "ssh"` and `sandbox.ssh` (`host`, `user`, `workdir`, and `agent: true` or `identityFile`). Leave `hostKeyChecking` at `strict`.
+2. `garnet sandbox check` before the host is in `known_hosts`: expect a failure that says how to add the key. Add it (`ssh-keyscan`), check again: expect ok and the real workdir. `garnet doctor` shows the same under `sandbox`.
+3. Ask Garnet to run `hostname; id; pwd`. Expect the remote host, the remote account and the workdir. Run with `cwd: "sub"` after `mkdir sub` remotely; try `cwd: ".."` (expect a refusal) and a symlink out of `workdir` (expect a refusal).
+4. Run `sleep 600` and cancel with `/stop`; expect the local `ssh` client to exit. Check the remote with `ps` for leftovers (a command that ignores SIGHUP may keep running; the account's limits are the backstop).
+5. Wrong user or key: expect a clear failure, never a fallback to `local` or Docker. With a passphrase-protected key and `passphraseEnv` set, expect it to work without a prompt (OpenSSH 8.4+).
+6. Change the remote host key (or use a different `known_hosts`): expect refusal under `strict`.
 
 ### 12. Backup and restore
 

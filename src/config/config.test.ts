@@ -4,7 +4,16 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import { isGarnetError } from '../contracts/index.ts';
-import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, parseEnv, redact, setInEnvFile } from './index.ts';
+import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, parseEnv, redact, setInEnvFile, validBasic } from './index.ts';
+
+test('validBasic: one visible line only (it goes into every future system prompt)', () => {
+  const ok = validBasic(20);
+  assert.equal(ok('Sam'), null);
+  assert.equal(ok(''), null, 'empty means skip');
+  for (const bad of ['a\nb', 'a\rb', 'a b', 'a b', 'a\u0085b', 'a\u0000b', 'a\u001bb', 'a\tb', '   ', ' ', 'x --> y', 'x'.repeat(21)]) {
+    assert.notEqual(ok(bad), null, JSON.stringify(bad));
+  }
+});
 
 test('defaults are secure', () => {
   const c = defaultConfig();
@@ -25,6 +34,12 @@ test('invalid config lists every problem', () => {
     assert.ok(problems.some((p) => p.startsWith('api.port')));
     assert.ok(problems.some((p) => p.includes('bogus')));
   }
+});
+
+test('chat: fullscreen with mouse wheel by default; an existing config without it needs no migration', () => {
+  assert.deepEqual(defaultConfig().chat, { fullscreen: true, mouse: true });
+  assert.deepEqual(parseConfig({ version: CONFIG_VERSION, chat: { fullscreen: false } }).chat, { fullscreen: false, mouse: true });
+  assert.throws(() => parseConfig({ version: CONFIG_VERSION, chat: { fullScreen: false } }), (e) => isGarnetError(e, 'config'), 'a typo is an error');
 });
 
 test('timezone and api.corsOrigins are validated; CORS is off by default', () => {
@@ -171,5 +186,40 @@ test('model.pricing and budgets.dailyUsd are optional and validated', () => {
   assert.equal(p.budgets.dailyUsd, 5);
   for (const bad of [{ model: { pricing: { input: -1, output: 1 } } }, { model: { pricing: { input: 1 } } }, { budgets: { dailyUsd: 0 } }]) {
     assert.throws(() => parseConfig({ version: CONFIG_VERSION, ...bad }), (e) => isGarnetError(e, 'config'));
+  }
+});
+
+test('sandbox.ssh: documented non-secret options, safe defaults, required fields only for the ssh backend', async () => {
+  const { isProtectedConfigPath, secretNames, configSchema } = await import('./index.ts');
+  const d = defaultConfig();
+  assert.equal(d.sandbox.backend, 'docker');
+  assert.equal(d.sandbox.ssh.hostKeyChecking, 'strict');
+  assert.equal(d.sandbox.ssh.port, 22);
+  assert.equal(d.sandbox.ssh.agent, false);
+  assert.equal(d.sandbox.ssh.host, undefined);
+  const ok = { backend: 'ssh', ssh: { host: 'build.example.com', user: 'garnet', workdir: '/srv/garnet', agent: true } };
+  const c = parseConfig({ version: CONFIG_VERSION, sandbox: ok });
+  assert.equal(c.sandbox.ssh.hostKeyChecking, 'strict');
+  assert.equal(c.sandbox.ssh.connectTimeoutSeconds, 10);
+  const bad = (ssh: Record<string, unknown>) => () => parseConfig({ version: CONFIG_VERSION, sandbox: { backend: 'ssh', ssh: { ...ok.ssh, ...ssh } } });
+  assert.throws(bad({ host: undefined }), (e) => isGarnetError(e, 'config') && /needs sandbox\.ssh\.host/.test((e as Error).message));
+  assert.throws(bad({ workdir: undefined }), (e) => isGarnetError(e, 'config'));
+  assert.throws(bad({ agent: false }), /identityFile or sandbox\.ssh\.agent/);
+  assert.doesNotThrow(bad({ agent: false, identityFile: '/home/o/.ssh/id' }));
+  assert.throws(bad({ hostKeyChecking: 'ask' }), (e) => isGarnetError(e, 'config'));
+  assert.throws(bad({ port: 70000 }), (e) => isGarnetError(e, 'config'));
+  assert.throws(bad({ passphraseEnv: 'not a name' }), (e) => isGarnetError(e, 'config'));
+  assert.throws(bad({ passphrase: 'literal secret' }), (e) => isGarnetError(e, 'config'), 'no secret value fields');
+  // The docker backend needs none of it.
+  assert.doesNotThrow(() => parseConfig({ version: CONFIG_VERSION, sandbox: { backend: 'docker' } }));
+  // Protected from the admin API, named (never valued) in secretNames only when used.
+  assert.ok(isProtectedConfigPath('sandbox.ssh.host') && isProtectedConfigPath('sandbox.backend') && isProtectedConfigPath('sandbox.ssh.hostKeyChecking'));
+  const withPass = parseConfig({ version: CONFIG_VERSION, sandbox: { ...ok, ssh: { ...ok.ssh, agent: false, identityFile: '/k', passphraseEnv: 'GARNET_SSH_KEY_PASSPHRASE' } } });
+  assert.ok(secretNames(withPass).includes('GARNET_SSH_KEY_PASSPHRASE'));
+  assert.ok(!secretNames(parseConfig({ version: CONFIG_VERSION, sandbox: { backend: 'docker', ssh: { passphraseEnv: 'UNUSED' } } })).includes('UNUSED'));
+  // Every ssh field is documented (config explain renders these).
+  const ssh = (configSchema.toJSONSchema() as unknown as { properties: { sandbox: { properties: { ssh: { properties: Record<string, { description?: string }> } } } } }).properties.sandbox.properties.ssh.properties;
+  for (const key of ['host', 'port', 'user', 'workdir', 'identityFile', 'agent', 'passphraseEnv', 'hostKeyChecking', 'knownHostsFile', 'connectTimeoutSeconds', 'sshPath']) {
+    assert.ok(ssh[key]?.description && !ssh[key]!.description!.includes('—'), key);
   }
 });

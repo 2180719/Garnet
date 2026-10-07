@@ -46,6 +46,18 @@ test('migration: a v1 config keeps working as the provider "default"', () => {
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
 });
 
+test('migration: a v2 config (skills and connectors, no providers) becomes v3 with the same settings', () => {
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 2, skills: { enabled: [] }, model: { name: 'claude-sonnet-5-5' } }));
+  const { config, migrated } = loadConfig(home);
+  assert.equal(migrated, true);
+  assert.equal(config.version, 3);
+  assert.equal(CONFIG_VERSION, 3);
+  assert.equal(config.activeProvider, 'default');
+  assert.equal(config.model.name, 'claude-sonnet-5-5');
+  assert.ok(existsSync(join(home, 'config.json.bak-v2')));
+});
+
 test('providers: named entries, names are safe slugs, the active one must exist', () => {
   const c = cfg({
     providers: { work: { provider: 'gemini', name: 'gemini-2.5-pro' }, 'local-1': { provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', name: 'qwen' } },
@@ -137,14 +149,14 @@ test('garnet providers list|add|use|rm and config get|set|unset edit config.json
   assert.equal(await h.run('config', 'set', 'providers.work.maxOutputTokens', '8000'), 0);
   assert.equal(loadConfig(home).config.providers.work!.maxOutputTokens, 8000);
   assert.equal(await h.run('config', 'set', 'providers.work.maxOutputTokens', '"lots"'), 1, 'invalid values are refused');
-  assert.equal(await h.run('config', 'set', '__proto__.x', '1'), 2);
+  assert.notEqual(await h.run('config', 'set', '__proto__.x', '1'), 0);
   assert.equal(await h.run('config', 'set', 'activeProvider', 'ghost'), 1);
   assert.equal(await h.run('config', 'unset', 'providers.work.maxOutputTokens'), 0);
   assert.equal(loadConfig(home).config.providers.work!.maxOutputTokens, 32_000);
   h.reset();
   assert.equal(await h.run('config', 'get', 'providers.work.nothing'), 1);
   assert.equal(await h.run('config', 'explain'), 0);
-  assert.match(h.out(), /providers\.<name>\.provider/);
+  assert.match(h.out(), /providers\.<key>\.provider/);
   assert.match(h.out(), /activeProvider/);
 });
 

@@ -3,17 +3,55 @@
 Garnet feels like a personal instrument: precise, readable, and recognizably its own.
 The public site introduces that identity; the dashboard and terminal use it at working density.
 
-## Palette
+## Color palette
 
-| Role | Light | Dark |
-| --- | --- | --- |
-| Canvas | `#f5f5f2` | `#101113` |
-| Ink | `#17181b` | `#f5f5f2` |
-| Garnet accent | `#c51d3a` | `#ff6680` |
-| Secondary text | `#666970` | `#a3a6ad` |
-| Rule | `#d4d5d3` | `#303238` |
+Colors are derived from the deep wine and rose hues of garnet gemstones, with warm neutral greys and reserved status colors (green, amber, error red).
 
-Use garnet red for identity, selection, and primary action. Reserve green, amber, and error red for actual states. Terminal specimens use charcoal with the dark accent in both themes.
+### Light theme
+
+| Token | Hex | RGB | Usage |
+| --- | --- | --- | --- |
+| Canvas | `#faf9f8` | 250, 249, 248 | Page background |
+| Ink | `#16141a` | 22, 20, 26 | Body text |
+| Primary accent | `#8b1a1a` | 139, 26, 26 | Links, active states, primary action |
+| Secondary accent | `#d97a6f` | 217, 122, 111 | Hover states, lighter emphasis |
+| Secondary text | `#6b7070` | 107, 112, 112 | Labels, muted text |
+| Rule | `#d9d4d0` | 217, 212, 208 | Borders, dividers |
+| Code background | `#f0eeec` | 240, 238, 236 | Inline code, pre blocks |
+| Status OK | `#186a47` | 24, 106, 71 | Success states |
+| Status warn | `#9a5b00` | 154, 91, 0 | Warnings, cautions |
+| Status error | `#b81c3e` | 184, 28, 62 | Errors, denials |
+
+### Dark theme
+
+| Token | Hex | RGB | Usage |
+| --- | --- | --- | --- |
+| Canvas | `#0d0810` | 13, 8, 16 | Page background |
+| Ink | `#f0e8ea` | 240, 232, 234 | Body text |
+| Primary accent | `#e8596b` | 232, 89, 107 | Links, active states, primary action |
+| Secondary accent | `#8d2e3d` | 141, 46, 61 | Darker accent for contrast |
+| Secondary text | `#b4a8ac` | 180, 168, 172 | Labels, muted text |
+| Rule | `#3d2f35` | 61, 47, 53 | Borders, dividers |
+| Code background | `#1a0f18` | 26, 15, 24 | Inline code, pre blocks |
+| Status OK | `#5fd08e` | 95, 208, 142 | Success states |
+| Status warn | `#f0b45a` | 240, 180, 90 | Warnings, cautions |
+| Status error | `#ff8d9b` | 255, 141, 155 | Errors, denials |
+
+### Terminal (dark theme optimized)
+
+| Token | RGB | Hex | 256-color | Usage |
+| --- | --- | --- | --- | --- |
+| Canvas | 13, 8, 16 | `#0d0810` | 16 | Terminal background |
+| Ink | 240, 232, 234 | `#f0e8ea` | 253 | Terminal text |
+| Accent | 232, 89, 107 | `#e8596b` | 204 | Speaker marks, emphasis |
+| Secondary text | 180, 168, 172 | `#b4a8ac` | 248 | Muted text |
+| Rule | 61, 47, 53 | `#3d2f35` | 239 | Dividers |
+| Code/inline | 253, 179, 192 | `#fdafc0` | 217 | Inline code highlighting |
+| Status OK | 95, 208, 142 | `#5fd08e` | 114 | Success ✓ |
+| Status warn | 240, 180, 90 | `#f0b45a` | 179 | Warning ! |
+| Status error | 255, 141, 155 | `#ff8d9b` | 203 | Error ✗ |
+
+Use garnet red for identity, selection, and primary action. Reserve green, amber, and error red for actual states. Terminal specimens use the dark palette in both themes, with all status never conveyed by color alone—always include symbols (✓, !, ✗) and text labels.
 
 ## Form and typography
 
@@ -27,7 +65,7 @@ Use garnet red for identity, selection, and primary action. Reserve green, amber
 
 `garnet chat` adds its garnet signature, colored speaker marks (`›` for the owner, `◆` for Garnet) and thin rules only on an interactive terminal. Respect `NO_COLOR` and `TERM=dumb`; piped output stays plain. Never decorate machine-readable output.
 
-The chat is an inline TUI, not a full-screen one: finished output goes to the terminal's own scrollback, and only the bottom rows (streaming text, spinner, input, footer) are redrawn. It uses the dark palette (accent, secondary text, rule) with green, amber and red reserved for states, and spells out every status in words or distinct symbols. Color is never the only indicator.
+By default the chat is full-screen (the terminal's alternate screen): a status bar at the top with `◆` and the assistant's name in accent, then model, session, the state in words (`○ ready`, `● thinking 3s`, `? waiting for your approval` in amber) and a second muted row with context, tokens and cost, led by an amber `⚠ untrusted content read` when it applies; a thin rule; the scrollable transcript; and the input with a muted footer of keys at the bottom. When the owner scrolls up, the last transcript row says how much is below, in accent when new messages arrived. `garnet chat --inline` (or `chat.fullscreen = false`) keeps the older inline layout, where finished output goes to the terminal's own scrollback and only the bottom rows are redrawn. Both use the dark palette (accent, secondary text, rule) with green, amber and red reserved for states, and spell out every status in words or distinct symbols. Color is never the only indicator.
 
 ## Interaction
 

@@ -9,8 +9,11 @@ import { approvePairing } from '../../gateway/index.ts';
 import { createGarnet } from '../../main.ts';
 import { defaultSourceDir, runImport } from '../../migrate/index.ts';
 import { defaultEntry, installService, resolveService, restartService } from '../../service/index.ts';
+import { chat } from '../chat/index.ts';
 import { importDeps } from '../import.ts';
 import type { Io } from '../main.ts';
+import { themeFor } from '../chat/theme.ts';
+import { TuiPrompter, wantsFullscreen } from '../tui/index.ts';
 import { AnswerPrompter, TerminalPrompter, makeStyle, wantsColor, type Answer, type Prompter } from './prompt.ts';
 import { runSetup, type SetupDeps } from './wizard.ts';
 
@@ -32,9 +35,19 @@ from the options below, the current config, or safe defaults; nothing optional
   --name <name>             What the assistant is called (default Garnet)
   --owner <name>            What it calls you
   --notes <text>            One line about how you like answers
-  --telegram / --no-telegram, --telegram-token-env <NAME>
+  --channels <list>         Channels to connect, comma separated: telegram,discord,signal (none for none).
+                            On a re-run the enabled ones are kept unless you leave them out.
+  --telegram / --no-telegram, --telegram-token-env <NAME>   (adds or removes one channel)
   --discord / --no-discord, --discord-token-env <NAME>
   --signal / --no-signal, --signal-number <+E164>, --signal-url <url>
+  --sandbox <where>         docker | ssh | local: where commands run (default: keep the current one)
+  --ssh-host <host>         ssh: remote host name or IP address
+  --ssh-user <user>         ssh: remote account (use a dedicated, unprivileged one)
+  --ssh-workdir <dir>       ssh: absolute directory on the remote host
+  --ssh-auth <how>          ssh: agent | key
+  --ssh-key <path>          ssh: absolute path of the private key file (--ssh-auth key)
+  --ssh-passphrase-env <NAME>  ssh: name of the secret holding the key passphrase (store it with garnet secrets set)
+  --ssh-host-keys <policy>  ssh: strict (default) | accept-new
   --check                   Check keys and connections with live requests
   --service                 Install (or restart) the background service
   --import                  Import from OpenClaw/Hermes when found (applies it)
@@ -42,6 +55,7 @@ from the options below, the current config, or safe defaults; nothing optional
   --import-pairings         Pair the senders on the old assistant's allowlists
   --import-persona <mode>   keep | merge | replace, when you already have a persona
   --reset                   Replace an invalid config.json (a backup is kept)
+  --plain, --inline         Line-based questions instead of the fullscreen screens
   -y, --non-interactive     Do not prompt
 `;
 
@@ -57,6 +71,15 @@ const FLAGS = {
   name: { type: 'string' },
   owner: { type: 'string' },
   notes: { type: 'string' },
+  channels: { type: 'string' },
+  sandbox: { type: 'string' },
+  'ssh-host': { type: 'string' },
+  'ssh-user': { type: 'string' },
+  'ssh-workdir': { type: 'string' },
+  'ssh-auth': { type: 'string' },
+  'ssh-key': { type: 'string' },
+  'ssh-passphrase-env': { type: 'string' },
+  'ssh-host-keys': { type: 'string' },
   telegram: { type: 'boolean' },
   'telegram-token-env': { type: 'string' },
   discord: { type: 'boolean' },
@@ -71,6 +94,8 @@ const FLAGS = {
   'import-pairings': { type: 'boolean' },
   'import-persona': { type: 'string' },
   reset: { type: 'boolean' },
+  plain: { type: 'boolean' },
+  inline: { type: 'boolean' },
   'non-interactive': { type: 'boolean', short: 'y' },
   help: { type: 'boolean', short: 'h' },
 } as const;
@@ -111,7 +136,12 @@ export async function setup(args: string[], io: Io, opts: SetupCommandDeps = {})
     io.err('--key-stdin only works with --non-interactive.\n');
     return 2;
   }
-  const deps = { ...defaultDeps(io), ...opts.deps };
+  // Fullscreen on a real terminal; --plain/--inline, a dumb TERM, pipes and tests get the line prompts.
+  const fullscreen = !opts.prompter && !nonInteractive && wantsFullscreen({ stdin: process.stdin, stdout: process.stdout }, process.env, Boolean(values.plain || values.inline)) && (opts.tty ?? true);
+  const tui = fullscreen ? new TuiPrompter({ input: process.stdin, output: process.stdout, theme: themeFor(process.env, true) }) : null;
+  // While the alternate screen is up, nothing may write to the real terminal: the wizard's output is captured and replayed afterwards.
+  const wio: Io = tui ? { ...io, out: tui.capture('out'), err: tui.capture('err') } : io;
+  const deps = { ...defaultDeps(wio), ...opts.deps };
   let prompter = opts.prompter;
   if (!prompter) {
     if (nonInteractive) {
@@ -127,10 +157,16 @@ export async function setup(args: string[], io: Io, opts: SetupCommandDeps = {})
       }
       prompter = new AnswerPrompter(answers, { secrets });
     } else {
-      prompter = new TerminalPrompter({ style: deps.style });
+      prompter = tui ?? new TerminalPrompter({ style: deps.style });
     }
   }
-  return runSetup(prompter, io, deps);
+  if (!tui) return runSetup(prompter, io, deps);
+  try {
+    return await runSetup(prompter, wio, deps);
+  } finally {
+    // Always leave the alternate screen first, then print what the wizard said (next steps, results) where it stays in the scrollback.
+    for (const line of tui.close()) (line.stream === 'out' ? io.out : io.err)(line.text);
+  }
 }
 
 async function readAll(): Promise<string> {
@@ -173,6 +209,7 @@ function defaultDeps(io: Io): SetupDeps {
         garnet.close();
       }
     },
+    wake: ({ fake }) => chat(['--onboard', ...(fake ? ['--fake'] : [])], { ...io, stdin: process.stdin, stdout: process.stdout, env: process.env }),
     pairing: () => {
       const garnet = createGarnet({ noModel: true, home });
       return {
@@ -199,7 +236,8 @@ export async function init(args: string[], io: Io, opts: SetupCommandDeps = {}):
   if (tty && !args.includes('--defaults')) {
     const style = makeStyle(wantsColor(process.stdout));
     const p = opts.prompter ?? new TerminalPrompter({ style });
-    if (await p.confirm({ id: 'setup', message: 'Set up Garnet now? (model, key, persona, channels)', default: true })) return setup([], io, { ...opts, prompter: p });
+    // A prompter passed in (tests) keeps asking; otherwise setup picks the fullscreen or line prompter itself.
+    if (await p.confirm({ id: 'setup', message: 'Set up Garnet now? (model, key, persona, channels)', default: true })) return setup(args.filter((a) => a === '--plain' || a === '--inline'), io, { ...opts, ...(opts.prompter ? { prompter: p } : {}) });
   }
   writeConfig(home, defaultConfig());
   mkdirSync(join(home, 'workspace'), { recursive: true });

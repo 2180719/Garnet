@@ -434,6 +434,13 @@ export async function installService(plan: ServicePlan, deps: Partial<ServiceDep
   await runAll(plan.commands.prepare, d, result, true);
   await removeLegacy(plan, d, result);
   await runAll(plan.commands.install, d, result);
+  if (plan.platform === 'systemd' && result.commands.some((c) => c.code !== 0 && /Failed to connect to (user )?bus/i.test(c.stderr))) {
+    result.notes.push(
+      'systemd has no user session for this shell (common after `su`, `sudo -iu` or a console login). ' +
+        'The unit file is written. Log in over SSH (or run `loginctl enable-linger $USER`, then log in again), ' +
+        'then run `garnet service install`. Until then, `garnet start` runs Garnet in the foreground.',
+    );
+  }
   return result;
 }
 

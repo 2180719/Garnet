@@ -1,11 +1,11 @@
 /* Garnet dashboard. Tokens match the public site (site/styles.css). No external resources. */
 :root{
-  --bg:#f5f5f2; --bg-alt:#e9e9e5; --surface:#ffffff; --text:#17181b; --muted:#666970;
-  --line:#d4d5d3; --accent:#c51d3a; --accent-hover:#9e142d; --on-accent:#ffffff;
-  --accent-soft:#f8e3e8; --code-bg:#17181b; --code-text:#f5f5f2;
-  --ok:#1f7a4d; --ok-soft:#dff2e7; --warn:#8a5a00; --warn-soft:#fbefd2; --err:#b3202e; --err-soft:#fbe0e3;
-  --add:#e3f4e8; --del:#fbe3e6;
-  --c1:#c51d3a; --c2:#e08a96; --c3:#6f5f63;
+  --bg:#faf9f8; --bg-alt:#f0eeec; --surface:#ffffff; --text:#16141a; --muted:#6b7070;
+  --line:#d9d4d0; --accent:#8b1a1a; --accent-hover:#6b1414; --on-accent:#ffffff;
+  --accent-soft:#f5e3e1; --code-bg:#f0eeec; --code-text:#16141a;
+  --ok:#186a47; --ok-soft:#e1f0e8; --warn:#9a5b00; --warn-soft:#fef5e6; --err:#b81c3e; --err-soft:#fae4eb;
+  --add:#e1f0e8; --del:#fae4eb;
+  --c1:#8b1a1a; --c2:#d97a6f; --c3:#6b7070;
   --shadow:0 1px 2px rgba(60,20,25,.06),0 12px 32px -12px rgba(90,20,30,.18);
   --serif:ui-serif,"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
   --sans:system-ui,-apple-system,"Inter","Segoe UI",Roboto,sans-serif;
@@ -14,20 +14,20 @@
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --bg:#101113; --bg-alt:#17181b; --surface:#1c1e22; --text:#f5f5f2; --muted:#a3a6ad;
-    --line:#303238; --accent:#ff6680; --accent-hover:#ff94a5; --on-accent:#17181b;
-    --accent-soft:#34202a; --code-bg:#101113;
-    --ok:#6fd49c; --ok-soft:#173326; --warn:#f0c15a; --warn-soft:#3a2d10; --err:#ff8d9b; --err-soft:#43181f;
-    --add:#17301f; --del:#3d171d; --c1:#ff6680; --c2:#8f3a47; --c3:#a3a6ad;
+    --bg:#0d0810; --bg-alt:#1a0f18; --surface:#14090e; --text:#f0e8ea; --muted:#b4a8ac;
+    --line:#3d2f35; --accent:#e8596b; --accent-hover:#f5738a; --on-accent:#16141a;
+    --accent-soft:#3a1f28; --code-bg:#1a0f18;
+    --ok:#5fd08e; --ok-soft:#1a3d2f; --warn:#f0b45a; --warn-soft:#3a2d10; --err:#ff8d9b; --err-soft:#43181f;
+    --add:#1a3d2f; --del:#3a1a27; --c1:#e8596b; --c2:#8d2e3d; --c3:#b4a8ac;
     --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.6); color-scheme:dark;
   }
 }
 :root[data-theme="dark"]{
-  --bg:#101113; --bg-alt:#17181b; --surface:#1c1e22; --text:#f5f5f2; --muted:#a3a6ad;
-  --line:#303238; --accent:#ff6680; --accent-hover:#ff94a5; --on-accent:#17181b;
-  --accent-soft:#34202a; --code-bg:#101113;
-  --ok:#6fd49c; --ok-soft:#173326; --warn:#f0c15a; --warn-soft:#3a2d10; --err:#ff8d9b; --err-soft:#43181f;
-  --add:#17301f; --del:#3d171d; --c1:#ff6680; --c2:#8f3a47; --c3:#a3a6ad;
+  --bg:#0d0810; --bg-alt:#1a0f18; --surface:#14090e; --text:#f0e8ea; --muted:#b4a8ac;
+  --line:#3d2f35; --accent:#e8596b; --accent-hover:#f5738a; --on-accent:#16141a;
+  --accent-soft:#3a1f28; --code-bg:#1a0f18;
+  --ok:#5fd08e; --ok-soft:#1a3d2f; --warn:#f0b45a; --warn-soft:#3a2d10; --err:#ff8d9b; --err-soft:#43181f;
+  --add:#1a3d2f; --del:#3a1a27; --c1:#e8596b; --c2:#8d2e3d; --c3:#b4a8ac;
   --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.6); color-scheme:dark;
 }
 *,*::before,*::after{box-sizing:border-box}

@@ -6,10 +6,12 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
-import { CONFIG_VERSION, DEFAULT_PROVIDER, keyEnvOf, listProviders, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
+import { CONFIG_VERSION, DEFAULT_PROVIDER, enabledAnywhere, keyEnvOf, listProviders, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, secretNames, unknownGarnetEnv, type ConnectorName, type GarnetConfig } from '../config/index.ts';
+import { CONNECTOR_INFO } from '../connectors/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
-import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
+import { sandboxOptions } from '../main.ts';
+import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings, type SecretLookup } from '../secrets/index.ts';
 import { defaultEntry, installedServices, legacyServices, resolveService, serviceStatus, type CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
 import { makeStyle, wantsColor, type Style } from './setup/prompt.ts';
@@ -44,8 +46,11 @@ export type DoctorDeps = {
   version: string;
   run: (cmd: string[]) => Promise<CommandResult>;
   sqlite: () => { ok: boolean; detail: string };
-  /** Docker sandbox readiness (only called when commands are allowed). */
-  sandboxCheck: (config: GarnetConfig, workspace: string) => Promise<{ ok: boolean; detail: string }>;
+  /**
+   * Sandbox readiness (only called when commands are allowed and the backend is configured). Read-only; `secret`
+   * resolves a secret name for the backend (an ssh key passphrase) and is never printed.
+   */
+  sandboxCheck: (config: GarnetConfig, workspace: string, secret: SecretLookup) => Promise<{ ok: boolean; detail: string }>;
 };
 
 export const MIN_NODE = [22, 18] as const;
@@ -78,8 +83,15 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
 
   for (const s of legacyServices({ platform: d.platform, userHome: d.userHome })) add('service', 'warn', `A legacy service from before the rename is still installed (${s.path})`, `Run \`garnet service install\` to replace it, or remove ${s.path} by hand.`);
 
+  // Settings live in config.json: a GARNET_* variable nothing reads is ignored, so say so rather than let it look effective.
+  // A secret name the config points at (a connector or ssh passphrase may be called GARNET_*) is read, so it is not flagged.
+  const unread = (named: readonly string[]) => {
+    for (const name of unknownGarnetEnv(d.env, named)) add('env', 'warn', `${name} is set but Garnet does not read it (settings live in config.json, not the environment)`, `Remove it, and use \`garnet config set <path> <value>\` for the setting (\`garnet config explain\` lists them).`);
+  };
+
   // GARNET_HOME
   if (!existsSync(d.home)) {
+    unread([]);
     add('home', 'fail', `${d.home} does not exist yet`, 'Run `garnet setup`.');
     return out;
   }
@@ -105,6 +117,7 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       add('config', 'fail', `${file}: ${errorMessage(e)}`, 'Run `garnet setup` to fix it interactively, or edit the file (`garnet config explain` lists every setting).');
     }
   }
+  unread(config ? [...secretNames(config), ...(config.web.search.apiKeyEnv ? [config.web.search.apiKeyEnv] : [])] : []);
 
   // Env file and secret store
   const envFile = join(d.home, 'env');
@@ -195,13 +208,64 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
       add('web', 'warn', 'Untrusted-content containment is off: a web page could steer Garnet into actions you set to allow', 'Set containment.enabled = true in config.json.');
     }
 
+    // Optional built-ins: skills and connectors (all off by default)
+    const onIn = (kind: 'skills' | 'connectors', name: string): string => {
+      const t = config[kind];
+      const scopes = Object.entries(t.channels).filter(([, o]) => o.enable.includes(name)).map(([s]) => s);
+      return [...(t.enabled.includes(name) ? ['global'] : []), ...scopes].join(', ');
+    };
+    const skillsOn = enabledAnywhere(config.skills);
+    const connectorsOn = enabledAnywhere(config.connectors) as ConnectorName[];
+    if (!skillsOn.length && !connectorsOn.length) add('builtins', 'info', 'No built-in skills or connectors enabled (all optional)', 'See `garnet skills builtin` and `garnet connectors list`.');
+    for (const name of skillsOn) {
+      const local = existsSync(join(d.home, 'skills', name, 'SKILL.md'));
+      if (local) add('skills', 'warn', `built-in skill ${name} is on (${onIn('skills', name)}) but a skill of the same name in ${join(d.home, 'skills')} takes precedence`, `Rename your own skill folder ${join(d.home, 'skills', name)} to use the built-in, or disable the built-in (\`garnet skills disable ${name}\`).`);
+      else add('skills', 'ok', `built-in skill ${name} · on (${onIn('skills', name)})`);
+    }
+    for (const name of connectorsOn) {
+      const info = CONNECTOR_INFO[name];
+      const label = `${name} · on (${onIn('connectors', name)})`;
+      if (config.permissions['net.fetch'] === 'deny') {
+        add('connector', 'warn', `${label}, but permissions.net.fetch is deny, so it is not offered`, 'Set permissions.net.fetch to ask (or allow) in config.json, or disable the connector.');
+        continue;
+      }
+      const secrets = info.secrets(config.connectors).map((s) => ({ ...s, loc: where(s.name) }));
+      const missing = secrets.filter((s) => !s.loc);
+      const required = missing.find((s) => s.required);
+      if (required) add('connector', 'fail', `${label}, but ${required.name} (${required.why}) is not set`, missingFix(required.name));
+      else if (missing.length) add('connector', 'info', `${label} · ${missing.map((s) => `${s.name} not set (${s.why})`).join('; ')}`, missingFix(missing[0]!.name));
+      else add('connector', 'ok', `${label}${secrets.length ? ` · ${secrets.map((s) => `${s.name} (${s.loc})`).join(', ')}` : ''}`);
+      if (info.needs(config.connectors).includes('message.send') && config.permissions['message.send'] === 'deny') {
+        add('connector', 'warn', `connectors.${name}.write is on but permissions.message.send is deny, so posting is always refused`, 'Set permissions.message.send to ask, or turn write off.');
+      }
+    }
+    const channelOn = (scope: string): boolean => {
+      const head = scope.split(':')[0]!;
+      if (head === 'telegram' || head === 'discord' || head === 'signal') return config.channels[head].enabled;
+      if (head === 'api') return config.api.enabled;
+      if (head === 'route') return config.routes.some((r) => `route:${r.conversation}` === scope);
+      return true;
+    };
+    for (const scope of [...new Set([...Object.keys(config.skills.channels), ...Object.keys(config.connectors.channels)])].sort()) {
+      if (!channelOn(scope)) add('builtins', 'info', `The override for ${scope} has no effect: ${scope.startsWith('route:') ? 'no route uses that conversation' : `${scope.split(':')[0]} is not enabled`}`);
+    }
+
     // Sandbox
+    const sb = config.sandbox;
     if (config.permissions.exec === 'deny') add('sandbox', 'info', 'Shell commands are off (permissions.exec = deny), so no sandbox is needed');
-    else if (config.sandbox.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker.');
-    else {
-      const r = await d.sandboxCheck(config, workspace).catch((e: unknown) => ({ ok: false, detail: errorMessage(e) }));
+    else if (sb.backend === 'local') add('sandbox', 'warn', 'Commands run on the host (sandbox.backend = local), which is not a security boundary', 'Use sandbox.backend = docker (or ssh to a dedicated machine).');
+    else if (sb.backend === 'ssh' && (!sb.ssh.host || !sb.ssh.user || !sb.ssh.workdir)) {
+      add('sandbox', 'fail', 'sandbox.backend is ssh but sandbox.ssh.host, user or workdir is not set', 'Set them in config.json (`garnet config explain` lists sandbox.ssh.*), or use sandbox.backend = docker.');
+    } else if (sb.backend === 'ssh' && sb.ssh.passphraseEnv && !where(sb.ssh.passphraseEnv)) {
+      add('sandbox', 'fail', `ssh sandbox: the key passphrase ${sb.ssh.passphraseEnv} is not set`, missingFix(sb.ssh.passphraseEnv));
+    } else {
+      if (sb.backend === 'ssh' && sb.ssh.hostKeyChecking === 'off') {
+        add('sandbox', 'warn', 'ssh host key checking is off (sandbox.ssh.hostKeyChecking = off): anyone on the network path can impersonate the remote host', 'Set hostKeyChecking to strict (and add the host to known_hosts) or accept-new.');
+      }
+      const lookup: SecretLookup = (name) => d.env[name] || (storeNames?.has(name) ? store.get(name) : undefined);
+      const r = await d.sandboxCheck(config, workspace, lookup).catch((e: unknown) => ({ ok: false, detail: errorMessage(e) }));
       // The sandbox's own detail already says how to fix it.
-      add('sandbox', r.ok ? 'ok' : 'fail', `Docker sandbox: ${r.detail}`);
+      add('sandbox', r.ok ? 'ok' : 'fail', `${sb.backend === 'ssh' ? 'SSH' : 'Docker'} sandbox: ${r.detail}`);
     }
 
     // Media
@@ -338,11 +402,7 @@ export async function doctor(args: string[], io: Io, overrides: Partial<DoctorDe
     version: overrides.version ?? 'unknown',
     run,
     sqlite: realSqliteCheck,
-    sandboxCheck: async (config, workspace) => {
-      const sb = config.sandbox;
-      const sandbox = createSandbox(sb.backend, { workspace, image: sb.image, network: sb.network, memory: sb.memory, cpus: sb.cpus, pidsLimit: sb.pidsLimit, ...(sb.user ? { user: sb.user } : {}) });
-      return sandbox.check();
-    },
+    sandboxCheck: async (config, workspace, secret) => createSandbox(config.sandbox.backend, sandboxOptions(config, workspace, secret)).check(),
     ...overrides,
   };
   const findings = await diagnose(deps);

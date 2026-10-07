@@ -3,5 +3,26 @@ export { configSchema, jobSchema, NOTIFY_CHANNELS, CONFIG_VERSION, DEFAULT_PROVI
 export { parseCron, nextRun, zonedParts, validTimeZone, localToUtc, type Cron } from './cron.ts';
 export { loadConfig, writeConfig, parseConfig, defaultConfig, garnetHome, pathsFor, type Paths, type Loaded } from './load.ts';
 export { redact } from './redact.ts';
-export { envVar, deprecatedEnvVars, loadEnvFile, parseEnv, removeFromEnvFile, setInEnvFile, secretNames } from './env.ts';
+export { envVar, deprecatedEnvVars, unknownGarnetEnv, loadEnvFile, parseEnv, removeFromEnvFile, setInEnvFile, secretNames } from './env.ts';
+export { changeConfig, getConfigValue, parseConfigValue, showConfigValue, isSecretNamePath, type ConfigChange } from './edit.ts';
 export { PROTECTED_CONFIG_PATHS, isProtectedConfigPath, changedProtectedPaths } from './protected.ts';
+export { DEFAULT_NAME, PERSONA_MAX, readPersona, writePersona, validBasic, type PersonaBasics } from './persona.ts';
+export {
+  BUILTIN_SKILLS,
+  CONNECTORS,
+  SCOPE_RE,
+  SCOPE_HELP,
+  resolveToggles,
+  resolveScopes,
+  asScopes,
+  describeScopes,
+  activeNames,
+  enabledAnywhere,
+  setToggle,
+  type BuiltinSkillName,
+  type ConnectorName,
+  type ConversationScopes,
+  type Effective,
+  type Override,
+  type Toggles,
+} from './extensions.ts';

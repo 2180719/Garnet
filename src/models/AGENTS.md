@@ -2,7 +2,7 @@
 
 Provider adapters implementing `ModelAdapter` from contracts.
 
-- `FakeModel`: scripted and offline, for tests and `--fake`. Records every request.
+- `FakeModel`: scripted and offline, for tests and `--fake`. Records every request. `onboardingScript(mode)` (`fake-onboarding.ts`) is the scripted wake-up conversation: one question per owner reply, then real `set_profile` and `memory` calls, then a report read from the tool results. Modes `broken-tools` (every save has invalid input) and `no-tools` (never calls a tool) exercise the fallback. `garnet chat --onboard --fake` plays the `ok` script.
 - `AnthropicModel`: official SDK, streaming, with a cache breakpoint on the system prompt plus automatic conversation caching, `eager_input_streaming` tools, server-side refusal fallback (`fallbacks: "default"`) and configurable effort. SDK retries are off; the runtime retries. Mid-stream `error` events have no HTTP status and are classified by error type (`overloaded_error`, `api_error`, `rate_limit_error`, `timeout_error` are transient). Empty text blocks and other providers' blocks are never sent (the API rejects empty text).
 - Adapter rules: end every stream with exactly one `done` or `error` event; never throw for provider failures; map errors to `provider_transient`/`provider_fatal`/`cancelled`; keep unknown blocks as `provider` blocks in their original position so history replays byte-for-byte.
 - Tests use recorded SSE through an injected `fetch`; never call the network in `npm test`.

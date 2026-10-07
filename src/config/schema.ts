@@ -1,19 +1,20 @@
 import { z } from 'zod';
 import { parseCron, validTimeZone } from './cron.ts';
+import { BUILTIN_SKILLS, CONNECTORS, SCOPE_HELP, SCOPE_RE } from './extensions.ts';
 
-export const CONFIG_VERSION = 2;
+export const CONFIG_VERSION = 3;
 
 const permission = z.enum(['allow', 'ask', 'deny']);
 
 // Every field has a description: the dashboard and `garnet config explain` render them.
 const capabilityGrant = z.object({
-  'fs.read': permission.default('allow'),
-  'fs.write': permission.default('deny'),
-  'net.fetch': permission.default('deny'),
-  exec: permission.default('deny'),
-  'message.send': permission.default('deny'),
-  'memory.write': permission.default('deny'),
-  'schedule.edit': permission.default('deny'),
+  'fs.read': permission.default('allow').describe('Read files in the workspace.'),
+  'fs.write': permission.default('deny').describe('Create or change files in the workspace.'),
+  'net.fetch': permission.default('deny').describe('Fetch web pages and search the web.'),
+  exec: permission.default('deny').describe('Run shell commands (in the sandbox).'),
+  'message.send': permission.default('deny').describe('Send messages to paired chats.'),
+  'memory.write': permission.default('deny').describe('Edit MEMORY.md and USER.md.'),
+  'schedule.edit': permission.default('deny').describe('Create, change or delete scheduled jobs and reminders.'),
 });
 
 /** Channels a job or `send_message` can deliver to (paired chats only). */
@@ -51,10 +52,15 @@ export const jobSchema = z
         maxTokensPerRun: z.number().int().min(1000).default(100_000).describe('Token cap for one run.'),
         maxTokensPerDay: z.number().int().min(1000).default(500_000).describe('Token cap across all runs in 24 hours.'),
       })
-      .prefault({}),
+      .prefault({})
+      .describe('Token caps for this job.'),
     timeoutMinutes: z.number().int().min(1).max(240).default(10).describe('Runs are cancelled after this long.'),
     notify: z
-      .object({ channel: z.string(), chatId: z.string(), account: z.string().default('default') })
+      .object({
+        channel: z.string().describe('telegram, signal or discord.'),
+        chatId: z.string().describe('The paired chat to send to.'),
+        account: z.string().default('default').describe('Which configured account of that channel sends it.'),
+      })
       .optional()
       .describe('Where to send results. Without it, results are only kept in run history.'),
     notifyWhen: z.enum(['always', 'on_change']).default('on_change').describe('on_change: only when Garnet has something worth reporting (script jobs: when the output changed).'),
@@ -132,6 +138,42 @@ const modelSchema = z
   });
 
 export type ModelConfig = z.infer<typeof modelSchema>;
+/** An address a credential may be sent to: https, or plain http to this machine only. */
+function secureOrLoopback(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname));
+  } catch {
+    return false;
+  }
+}
+
+/** `skills` and `connectors` share this shape: a global list plus per-scope overrides. */
+function toggles(names: readonly [string, ...string[]], what: string) {
+  const name = z.enum(names);
+  const override = z
+    .object({
+      enable: z.array(name).default([]).describe(`${what} turned on in this scope, even when off globally.`),
+      disable: z.array(name).default([]).describe(`${what} turned off in this scope, even when on globally.`),
+    })
+    .strict()
+    .superRefine((o, ctx) => {
+      for (const n of o.enable) if (o.disable.includes(n)) ctx.addIssue({ code: 'custom', path: ['enable'], message: `"${n}" is both enabled and disabled in this scope` });
+    });
+  return {
+    enabled: z
+      .array(name)
+      .default([])
+      .refine((l) => new Set(l).size === l.length, 'list each name once')
+      .describe(`${what} on everywhere. Empty by default: everything is off until you enable it.`),
+    channels: z
+      .record(z.string().regex(SCOPE_RE, `a scope is ${SCOPE_HELP}`), override)
+      .default({})
+      .describe(
+        `Per-scope overrides, keyed by scope: ${SCOPE_HELP}. Each has "enable" and "disable" lists. A session uses the global list, then its channel's override, then its chat's (or API key's, job's): the narrowest wins. A shared conversation from routes is off where any chat or channel feeding it disables an item, else follows its route's override, else needs the item on for every chat feeding it. The set is chosen when a conversation starts and stays fixed for it; /new picks up changes.`,
+      ),
+  };
+}
 
 export const configSchema = z
   .object({
@@ -247,7 +289,10 @@ export const configSchema = z
       .describe('Photos, documents and voice notes in; files out (send_file).'),
     sandbox: z
       .object({
-        backend: z.enum(['docker', 'local']).default('docker').describe('docker: isolated container per command. local: runs on the host and is NOT a security boundary.'),
+        backend: z
+          .enum(['docker', 'local', 'ssh'])
+          .default('docker')
+          .describe('docker: isolated container per command. ssh: run on a remote host over the system ssh client (a boundary only as strong as the remote account; see sandbox.ssh). local: runs on the host and is NOT a security boundary.'),
         image: z.string().default('debian:stable-slim').describe('Container image with sh. Pull it yourself first: docker pull <image>.'),
         network: z.enum(['none', 'bridge']).default('none').describe('Container network. none blocks all network access.'),
         memory: z.string().regex(/^[0-9]+[bkmg]?$/i).default('512m').describe('Memory limit per command (swap disabled).'),
@@ -259,18 +304,45 @@ export const configSchema = z
           .refine((u) => Number(u.split(':')[0]) !== 0, 'the sandbox never runs as root (uid 0)')
           .optional()
           .describe('Container user as uid:gid (docker). Unset: your uid:gid, or the workspace owner when Garnet runs as root, else 65534:65534. Never root.'),
+        ssh: z
+          .strictObject({
+            host: z.string().max(253).optional().describe('ssh backend: remote host name or IP address (required for the ssh backend). Never a URL or an ssh alias with options.'),
+            port: z.number().int().min(1).max(65535).default(22).describe('ssh backend: remote port.'),
+            user: z.string().max(64).optional().describe('ssh backend: remote account (required). Use a dedicated, unprivileged account: the ssh backend is only as strong a boundary as this account.'),
+            workdir: z.string().max(1024).optional().describe('ssh backend: absolute directory on the remote host that plays the role of the workspace (required). A command with cwd "a/b" runs in <workdir>/a/b; paths that leave workdir (including through symlinks) are refused. It is not synced with the local workspace.'),
+            identityFile: z.string().max(1024).optional().describe('ssh backend: absolute path of a private key file on this machine. With no identityFile, set agent to true.'),
+            agent: z.boolean().default(false).describe('ssh backend: also (or instead) authenticate through the running ssh-agent (SSH_AUTH_SOCK). Garnet never forwards the agent to the remote host.'),
+            passphraseEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).optional().describe('ssh backend: NAME of the environment variable or stored secret holding the passphrase of identityFile (never the passphrase itself). Unset for an unencrypted key or an agent. Needs OpenSSH 8.4 or newer.'),
+            hostKeyChecking: z
+              .enum(['strict', 'accept-new', 'off'])
+              .default('strict')
+              .describe('ssh backend: strict (default) refuses a host that is not already in known_hosts or whose key changed. accept-new trusts a first-seen host and refuses a changed key. off disables the check and is unsafe: anyone on the network path can impersonate the host.'),
+            knownHostsFile: z.string().max(1024).optional().describe('ssh backend: absolute path of the known_hosts file to use. Unset: the ssh default (~/.ssh/known_hosts).'),
+            connectTimeoutSeconds: z.number().int().min(1).max(120).default(10).describe('ssh backend: give up connecting after this long.'),
+            sshPath: z.string().max(1024).optional().describe('ssh backend: the ssh client to run. Unset: ssh from PATH.'),
+          })
+          .prefault({})
+          .describe('Options for the ssh backend. Non-secret; the key passphrase is named by passphraseEnv. Only used when backend is ssh.'),
+      })
+      .refine((s) => s.backend !== 'ssh' || (s.ssh.host && s.ssh.user && s.ssh.workdir), {
+        message: 'the ssh backend needs sandbox.ssh.host, sandbox.ssh.user and sandbox.ssh.workdir',
+        path: ['ssh'],
+      })
+      .refine((s) => s.backend !== 'ssh' || s.ssh.identityFile || s.ssh.agent, {
+        message: 'the ssh backend needs sandbox.ssh.identityFile or sandbox.ssh.agent = true (ssh never asks for a password)',
+        path: ['ssh'],
       })
       .prefault({})
       .describe('Where run_command executes. Only used when the exec permission is allow or ask.'),
     permissions: z
       .object({
-        'fs.read': permission.default('allow'),
-        'fs.write': permission.default('ask'),
-        'net.fetch': permission.default('ask'),
-        exec: permission.default('deny'),
-        'message.send': permission.default('ask'),
-        'memory.write': permission.default('allow'),
-        'schedule.edit': permission.default('ask'),
+        'fs.read': permission.default('allow').describe('Read files in the workspace.'),
+        'fs.write': permission.default('ask').describe('Create or change files in the workspace.'),
+        'net.fetch': permission.default('ask').describe('Fetch web pages and search the web.'),
+        exec: permission.default('deny').describe('Run shell commands (in the sandbox).'),
+        'message.send': permission.default('ask').describe('Send messages to paired chats.'),
+        'memory.write': permission.default('allow').describe('Edit MEMORY.md and USER.md.'),
+        'schedule.edit': permission.default('ask').describe('Create, change or delete scheduled jobs and reminders.'),
       })
       .prefault({})
       .describe('Default permission for each capability: allow, ask (owner approval) or deny.'),
@@ -397,10 +469,12 @@ export const configSchema = z
       .array(
         z
           .object({
-            match: z.object({
-              channel: z.string().describe('Channel name, e.g. telegram.'),
-              chatId: z.string().optional().describe('Specific chat; omit to match every chat on the channel.'),
-            }),
+            match: z
+              .object({
+                channel: z.string().describe('Channel name, e.g. telegram.'),
+                chatId: z.string().optional().describe('Specific chat; omit to match every chat on the channel.'),
+              })
+              .describe('Which chats this rule applies to.'),
             conversation: z
               .string()
               .regex(/^[a-z0-9-]{1,40}$/)
@@ -446,6 +520,66 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Opt-in web dashboard.'),
+    skills: z
+      .object(toggles(BUILTIN_SKILLS, 'Built-in skills'))
+      .prefault({})
+      .describe('Optional built-in skills (instructions shipped with Garnet; see `garnet skills list`). Off by default. Skills you or Garnet create in <home>/skills are always available and are not listed here.'),
+    connectors: z
+      .object({
+        ...toggles(CONNECTORS, 'Connectors'),
+        github: z
+          .object({
+            tokenEnv: z.string().default('GITHUB_TOKEN').describe('Environment variable (or encrypted secret) holding a GitHub token (a fine-grained token with read access to issues and pull requests; add write access for comments). Optional for public repositories, needed for notifications and comments.'),
+            apiUrl: z
+              .string()
+              .url()
+              .refine(secureOrLoopback, 'must use https (the GitHub token is sent there); plain http is allowed only for localhost, 127.0.0.1 or [::1]')
+              .default('https://api.github.com')
+              .describe('GitHub REST API base. For GitHub Enterprise Server use https://<host>/api/v3 (https is required; http only for localhost). The token is only ever sent here.'),
+            repos: z
+              .array(
+                z
+                  .string()
+                  .regex(/^[A-Za-z0-9_.-]+\/(?:[A-Za-z0-9_.-]+|\*)$/, 'owner/name, or owner/* for every repository of an owner')
+                  .refine((r) => !r.split('/').some((p) => p === '.' || p === '..'), 'owner/name, or owner/* for every repository of an owner'),
+              )
+              .default([])
+              .describe('Repositories the connector may read or comment on (owner/name, or owner/*). Empty: any repository the token can reach. Search results and notifications from other repositories are hidden.'),
+            write: z.boolean().default(false).describe('Offer the comment action (post a comment on an issue or pull request). A comment needs message.send as well as net.fetch, so it asks by default and shows the full text.'),
+          })
+          .prefault({})
+          .describe('GitHub connector: search, list and read issues and pull requests, read notifications, optionally comment.'),
+        calendar: z
+          .object({
+            urlEnv: z.string().default('GARNET_CALENDAR_URL').describe('Environment variable (or encrypted secret) holding your calendar\'s ICS feed address (Google "Secret address in iCal format", iCloud public calendar link, Fastmail or Outlook published calendar; webcal:// works). Private feed addresses carry a password, so the address is a secret, never config.'),
+            maxDays: z.number().int().min(1).max(366).default(31).describe('Longest range one lookup may cover, in days.'),
+          })
+          .prefault({})
+          .describe('Calendar connector: read-only events from an ICS feed, shown in your time zone.'),
+        weather: z
+          .object({
+            units: z.enum(['metric', 'imperial']).default('metric').describe('metric: °C, km/h, mm. imperial: °F, mph, inch.'),
+            location: z.string().min(1).max(100).optional().describe('Default place for forecasts when none is asked for, e.g. "Lisbon". It is sent to Open-Meteo\'s geocoding API.'),
+          })
+          .prefault({})
+          .describe('Weather connector: forecasts from Open-Meteo (keyless; free for non-commercial use).'),
+      })
+      .prefault({})
+      .describe('Optional built-in connectors to outside services. Off by default. Each one is a tool that needs net.fetch (host scopes in web.allowHosts apply, and untrusted-content containment escalates it), and its output is treated as untrusted. Credentials are secret names, never values.'),
+    chat: z
+      .object({
+        fullscreen: z
+          .boolean()
+          .default(true)
+          .describe('`garnet chat` on a terminal uses the full screen: a status bar at the top, a scrollable transcript and the input at the bottom. false keeps the conversation inline in the terminal scrollback (same as `garnet chat --inline`). Pipes and --plain are line-based either way.'),
+        mouse: z
+          .boolean()
+          .default(true)
+          .describe('In the fullscreen chat, start with mouse reporting on so the wheel scrolls the transcript (F2 or Alt+M toggles it in the chat). While it is on, most terminals select text only with Shift held (Option in iTerm2); false keeps normal selection.'),
+      })
+      .strict()
+      .prefault({})
+      .describe('The terminal chat (`garnet chat`).'),
   })
   .strict()
   .superRefine((c, ctx) => {

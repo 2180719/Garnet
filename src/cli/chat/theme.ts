@@ -25,13 +25,13 @@ export type Theme = {
 type Rgb = readonly [number, number, number];
 
 const PALETTE = {
-  accent: { rgb: [255, 102, 128], x256: 204 },
-  muted: { rgb: [163, 166, 173], x256: 248 },
-  rule: { rgb: [72, 75, 82], x256: 239 },
-  ok: { rgb: [120, 200, 140], x256: 114 },
-  warn: { rgb: [230, 180, 90], x256: 179 },
-  error: { rgb: [255, 95, 95], x256: 203 },
-  code: { rgb: [255, 179, 192], x256: 217 },
+  accent: { rgb: [232, 89, 107], x256: 204 },
+  muted: { rgb: [180, 168, 172], x256: 248 },
+  rule: { rgb: [61, 47, 53], x256: 239 },
+  ok: { rgb: [95, 208, 142], x256: 114 },
+  warn: { rgb: [240, 180, 90], x256: 179 },
+  error: { rgb: [255, 141, 155], x256: 203 },
+  code: { rgb: [253, 179, 192], x256: 217 },
 } as const satisfies Record<string, { rgb: Rgb; x256: number }>;
 
 const sgr = (open: string, close: string): Style => (text) => (text ? `\x1b[${open}m${text}\x1b[${close}m` : text);
