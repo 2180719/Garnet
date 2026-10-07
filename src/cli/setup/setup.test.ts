@@ -816,7 +816,6 @@ test('`garnet setup --help` lists the channel and sandbox flags', async () => {
   assert.equal(await setup(['--help'], { out: (t) => (out += t), err: (t) => (out += t) }), 0);
   for (const f of ['--channels', '--sandbox', '--ssh-host', '--ssh-user', '--ssh-workdir', '--ssh-auth', '--ssh-key', '--ssh-passphrase-env', '--ssh-host-keys']) assert.ok(out.includes(f), f);
   assert.equal(out.includes('—'), false);
-
 class ReviewPrompter extends AnswerPrompter {
   bodies: string[] = [];
   private readonly save: boolean;
