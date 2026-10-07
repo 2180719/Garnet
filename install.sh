@@ -121,6 +121,7 @@ main() {
   else
     printf '  Next: %s setup\n' "$name"
   fi
+  printf '  Update later with: %s update   (%s update --check only looks)\n' "$name" "$name"
   printf '%s  Uninstall: rm -rf %s %s/%s (your data in %s is separate).%s\n\n' "$muted" "$dir" "$bin_dir" "$name" "$home" "$reset"
 }
 

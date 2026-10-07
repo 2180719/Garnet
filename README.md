@@ -14,7 +14,7 @@ Requires Node.js 22.18 or newer and git. No sudo; nothing outside your home dire
 curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh
 ```
 
-The installer checks Node.js (and says how to get it if it is missing or too old), clones Garnet into `~/.local/share/garnet`, installs its two dependencies, and puts a `garnet` command in `~/.local/bin`. Then it starts `garnet setup`. Run it again any time to update; it leaves local changes alone. `sh install.sh --help` lists the options (`--dir`, `--bin-dir`, `--name`, `--ref`, `--no-setup`).
+The installer checks Node.js (and says how to get it if it is missing or too old), clones Garnet into `~/.local/share/garnet`, installs its two dependencies, and puts a `garnet` command in `~/.local/bin`. Then it starts `garnet setup`. Running it again also updates and leaves local changes alone, but the usual way is `garnet update` (`--check` only looks; it fast-forwards, reinstalls dependencies only when they changed, smoke-checks the new code, rolls back if anything fails, and offers to restart the service; see [docs/UPDATING.md](docs/UPDATING.md)). `sh install.sh --help` lists the options (`--dir`, `--bin-dir`, `--name`, `--ref`, `--no-setup`).
 
 > **Something else already called `garnet`?** The installer never overwrites a command it did not write and warns when another one shadows it; install with `--name garnet-agent` to keep both.
 

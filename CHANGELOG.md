@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### garnet update
+- `garnet update` updates an install made by `install.sh` in place: fast-forward only (never `reset --hard`, `clean` or force), `npm ci --omit=dev` only when the dependency files changed (or `--reinstall`), a smoke check that the new code loads, and an automatic rollback to the previous commit when the checkout moved and anything then failed. It refuses a checkout that is not git, has uncommitted changes or has local commits, and refuses to run twice at once. `garnet update --check` only looks and exits 10 when an update is available (0 when up to date). `-y` skips questions and restarts (or, when the unit file changed, reinstalls) the background service for this `GARNET_HOME`; `--ref <branch|tag>` picks another target. The config is checked with the new code afterwards. See [docs/UPDATING.md](docs/UPDATING.md).
+- New `garnet --version`. The installer's last message mentions `garnet update`. Not included: an update hint in `garnet doctor`.
+
 ### Fullscreen terminal chat
 - `garnet chat` on a terminal now opens full screen: a status bar from the start (assistant name, model, session, what it is doing in words, context, tokens and cost or `?`, and `⚠ untrusted content read` when it applies), a scrollable transcript, and the input at the bottom. Scroll with PgUp/PgDn, Shift+Up/Down (half a page), Ctrl+Home/Ctrl+End or the mouse wheel; scrolled up, new output stays below with a "new messages below" line. F2 turns mouse reporting off so the terminal selects text as usual. Resizing re-wraps the whole transcript.
 - `garnet chat --inline` or `chat.fullscreen = false` keeps the inline chat; `chat.mouse = false` starts with mouse reporting off. Pipes and `--plain` are unchanged. On exit (also SIGTERM, SIGHUP and crashes) the terminal is put back: normal screen, mouse reporting off, cursor shown, raw mode off.
