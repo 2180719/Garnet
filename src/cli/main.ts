@@ -14,6 +14,7 @@ import { secrets } from './secrets.ts';
 import { doctor } from './doctor.ts';
 import { init, setup } from './setup/command.ts';
 import { chat } from './chat/index.ts';
+import { configWantsTui, runConfigBrowser } from './tui/index.ts';
 
 const HELP = `garnet — a persistent personal agent you can actually read
 
@@ -25,6 +26,7 @@ Usage:
   garnet chat [--fake] [--session <id>] [--plain]
                             Chat in the terminal (--fake uses an offline model;
                             /help inside lists commands and keys)
+  garnet config               Browse and edit settings (fullscreen on a terminal; --plain to just check)
   garnet config check         Validate the config file
   garnet config show          Print the effective config (secrets redacted)
   garnet config explain       Describe every setting
@@ -99,7 +101,7 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         // The full terminal UI only when writing to the real terminal; otherwise plain lines through io.
         return await chat(rest, { ...io, stdin: process.stdin, stdout: io === stdio ? process.stdout : null, env: process.env });
       case 'config':
-        return configCommand(rest, io);
+        return await configCommand(rest, io, io === stdio);
       case 'sessions':
         return sessions(io);
       case 'start':
@@ -168,7 +170,13 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
   }
 }
 
-function configCommand(args: string[], io: Io): number {
+async function configCommand(allArgs: string[], io: Io, realTerminal: boolean): Promise<number> {
+  const plain = allArgs.includes('--plain') || allArgs.includes('--inline');
+  const args = allArgs.filter((a) => a !== '--plain' && a !== '--inline');
+  // On a terminal, bare `garnet config` opens the fullscreen browser; pipes, --plain and a dumb TERM keep the check.
+  if (args.length === 0 && realTerminal && configWantsTui({ stdin: process.stdin, stdout: process.stdout, env: process.env }, plain)) {
+    return runConfigBrowser({ stdin: process.stdin, stdout: process.stdout, env: process.env });
+  }
   const sub = args[0] ?? 'check';
   const { config, paths, migrated } = loadConfig();
   if (sub === 'check') {

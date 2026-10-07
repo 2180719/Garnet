@@ -158,6 +158,10 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
     await channelsStep(p, io, deps, st);
   }
 
+  if (p.review && !(await p.review({ id: 'review', message: 'Save these settings?', help: `Nothing has been written yet. Saving writes ${join(deps.home, 'config.json')} and stores any keys you entered.`, body: summary(st, deps) }))) {
+    io.out('Nothing was saved.\n');
+    return 0;
+  }
   save(io, deps, st);
   const service = await serviceStep(p, io, deps, st, wantService);
   await pairingStep(p, io, deps, st, service);

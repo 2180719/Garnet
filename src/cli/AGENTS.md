@@ -1,6 +1,6 @@
 # cli
 
-The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lists config, chat-made and CLI-added jobs with their schedule and next run in words; `add`/`edit` take natural schedules (`parseWhen`); `delete`/`edit` refuse config.json jobs. Commands: `setup`, `doctor`, `init`, `chat [--fake] [--session <id>] [--plain]`, `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `garnet help` lists them all).
+The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lists config, chat-made and CLI-added jobs with their schedule and next run in words; `add`/`edit` take natural schedules (`parseWhen`); `delete`/`edit` refuse config.json jobs. Commands: `setup`, `doctor`, `init`, `chat [--fake] [--session <id>] [--plain]`, `config [--plain]` (no subcommand: the fullscreen browser/editor on a terminal, else `check`), `config check|show|explain`, `sessions`, `secrets list|set|rm|import-env|keygen`, `help` (and the admin commands in `admin.ts`, `knowledge.ts`, `backup.ts`; `garnet help` lists them all).
 
 - `main(argv, io)` returns an exit code and writes through `io`, so it is testable.
 - The CLI is a surface, not logic: it calls `createGarnet()` from `src/main.ts` and renders runtime events.
@@ -12,6 +12,7 @@ The `garnet` command (`bin.ts` → `main.ts`). `garnet jobs` (in `admin.ts`) lis
 ## setup and doctor
 
 - `setup/` holds `garnet setup` (and `garnet init`, which offers it on a terminal). `wizard.ts` is the flow; every question goes through the `Prompter` interface in `prompt.ts` and every side effect through `SetupDeps`, so tests script it fully. `command.ts` parses flags and wires real dependencies (the composition root, the service module, the importer).
+- On a terminal (stdin and stdout TTYs, `TERM` not `dumb`, no `--plain`/`--inline`) `setup` uses the fullscreen `TuiPrompter` (`tui/`); `TerminalPrompter` (line prompts) and `AnswerPrompter` (`-y`, flags, tests) remain the fallbacks and `-y` behaviour is unchanged. While the alternate screen is up the wizard's `io` is captured (`TuiPrompter.capture`): notes appear above the next question, and everything is replayed to the real `io` after the screen is closed, so next steps stay in the scrollback. `Prompter.review?` (implemented only by the TUI) shows the summary before the save step; declining writes nothing.
 - Each prompt has a stable `id` that doubles as its `--flag` in non-interactive mode (`AnswerPrompter`). Adding a question: give it an id, a `default`, and an `auto` (what a script gets without the flag; optional steps must default to off), and add the flag to `FLAGS` and `SETUP_USAGE`.
 - Nothing is written before the save step, except an import the owner applies (memory and skills go straight to their stores). Secrets go to the encrypted store or `<home>/env`, never config, and never into output. A new key file for the store must be outside `<home>`.
 - Live checks (`checks.ts`) run only after the owner agrees, cost no tokens, and scrub the secret from every message. Tests inject `fetch`.
@@ -50,3 +51,20 @@ Behavior to preserve:
 - Exit always restores the terminal (raw mode off, bracketed paste and the kitty keyboard flag popped, cursor shown), including on SIGTERM/SIGHUP.
 
 Testing: the pure modules have unit tests; `chat/chat.test.ts` drives the whole chat through a fake TTY and `test/vt.ts` (a minimal virtual terminal), and checks the plain mode. To look at it by hand: `npm run garnet -- chat --fake`.
+
+## Fullscreen setup and config (`tui/`)
+
+| File | Owns |
+| --- | --- |
+| `fullscreen.ts` | `FullscreenSession`: alternate screen on/off (`FULLSCREEN_ON`/`FULLSCREEN_OFF`), raw keys through the chat `KeyParser`, resize redraw, the `Screen` contract (`state`, `update(state, key)`, `view(state, w, h)`), `wantsFullscreen`. `close()` is idempotent and also runs on process exit, SIGTERM and SIGHUP. |
+| `layout.ts` | `renderPage`: header with `Step n of m`, text progress bar, body, rule and key hints; degrades with height (full, one-row header, body and hints only; the question is never dropped, notes go first). `inputWindow`, `listWindow`. Pure. |
+| `prompts.ts` | Text, confirm, select, hidden secret and review screens: state, key handling (`updatePrompt`) and frames (`viewPrompt`). Pure. |
+| `prompter.ts` | `TuiPrompter implements Prompter`; maps prompt ids to the progress stages (`stageOf`). |
+| `config-browser.ts` | `garnet config`: sections and fields generated from `configSchema.toJSONSchema({ io: 'input' })` (`fieldsFromSchema`), so new settings appear without edits here; descriptions come from `.describe()`. Booleans toggle, enums pick, strings and numbers edit; every change is checked with `configSchema.safeParse` before it is kept, and save writes through `writeConfig`. Lists and tables are read-only (edit config.json). |
+
+Behavior to preserve:
+
+- Esc or Ctrl+C cancels (setup rejects with a `cancelled` error, config asks before discarding changes); the terminal is always restored. Marks are text (`(•) Yes`, `[x] on`, `›`, `(changed)`), never colour alone; `NO_COLOR` keeps bold/dim only. Paste is accepted (newlines become spaces); unknown sequences, including mouse reports, are ignored; the wheel works through alternate-scroll (arrows).
+- Secrets: the hidden input shows dots and a count, never the value. The config browser shows secret NAMES (`apiKeyEnv`, `tokenEnv`) only, hides and refuses to edit credential-looking string fields, and redacts displayed values.
+- Adding a setting needs no change here. A wizard prompt needs an id (the stage map in `prompter.ts` falls back to the current stage for unknown ids).
+- Tests drive `updatePrompt`/`viewPrompt` and the config `Screen` with scripted keys, and `TuiPrompter` with a fake TTY and `test/vt.ts`. No real terminal.
