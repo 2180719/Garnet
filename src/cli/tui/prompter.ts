@@ -5,10 +5,10 @@
 import { GarnetError } from '../../contracts/index.ts';
 import type { Theme } from '../chat/theme.ts';
 import { sanitize, stripAnsi, wrapText } from '../chat/text.ts';
-import type { ConfirmAsk, Prompter, SecretAsk, SelectAsk, TextAsk } from '../setup/prompt.ts';
+import type { ConfirmAsk, MultiSelectAsk, Prompter, SecretAsk, SelectAsk, TextAsk } from '../setup/prompt.ts';
 import { FullscreenSession, type FsInput, type FsOutput } from './fullscreen.ts';
 import type { Stage } from './layout.ts';
-import { initConfirm, initReview, initSecret, initSelect, initText, updatePrompt, viewPrompt, type PromptState, type PromptValue, type ReviewAsk } from './prompts.ts';
+import { initConfirm, initMultiSelect, initReview, initSecret, initSelect, initText, updatePrompt, viewPrompt, type PromptState, type PromptValue, type ReviewAsk } from './prompts.ts';
 
 /** Setup stages in order; a prompt id belongs to one of them (unknown ids stay in the current stage). */
 export const SETUP_STAGES = ['Import & model', 'Persona', 'Channels', 'Save', 'Finish'] as const;
@@ -101,6 +101,9 @@ export class TuiPrompter implements Prompter {
     const value = (await this.ask(initSelect(q as SelectAsk<string>), q.id)) as T;
     if (!q.choices.some((c) => c.value === value)) throw new GarnetError('invalid_input', `Unknown choice "${value}" for ${q.id}.`);
     return value;
+  }
+  async multiselect<T extends string>(q: MultiSelectAsk<T>): Promise<T[]> {
+    return (await this.ask(initMultiSelect(q as MultiSelectAsk<string>), q.id)) as T[];
   }
   async secret(q: SecretAsk): Promise<string> {
     return (await this.ask(initSecret(q), q.id)) as string;

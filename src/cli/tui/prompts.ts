@@ -4,7 +4,7 @@
 import type { Key } from '../chat/keys.ts';
 import type { Theme } from '../chat/theme.ts';
 import { sanitize, wrapText } from '../chat/text.ts';
-import type { Ask, ConfirmAsk, SecretAsk, SelectAsk, TextAsk } from '../setup/prompt.ts';
+import type { Ask, ConfirmAsk, MultiSelectAsk, SecretAsk, SelectAsk, TextAsk } from '../setup/prompt.ts';
 import type { Frame, Step } from './fullscreen.ts';
 import { cleanInput, inputWindow, renderPage, type Stage } from './layout.ts';
 
@@ -14,14 +14,16 @@ export type PromptState =
   | { kind: 'text'; ask: TextAsk; chars: string[]; cursor: number; error: string | null }
   | { kind: 'confirm'; ask: ConfirmAsk; value: boolean }
   | { kind: 'select'; ask: SelectAsk<string>; index: number }
+  | { kind: 'multiselect'; ask: MultiSelectAsk<string>; index: number; picked: string[] }
   | { kind: 'secret'; ask: SecretAsk; chars: string[]; cursor: number }
   | { kind: 'review'; ask: ReviewAsk; scroll: number };
 
-export type PromptValue = string | boolean;
+export type PromptValue = string | boolean | string[];
 
 export const initText = (ask: TextAsk): PromptState => ({ kind: 'text', ask, chars: [], cursor: 0, error: null });
 export const initConfirm = (ask: ConfirmAsk): PromptState => ({ kind: 'confirm', ask, value: ask.default });
 export const initSelect = (ask: SelectAsk<string>): PromptState => ({ kind: 'select', ask, index: Math.max(0, ask.choices.findIndex((c) => c.value === ask.default)) });
+export const initMultiSelect = (ask: MultiSelectAsk<string>): PromptState => ({ kind: 'multiselect', ask, index: 0, picked: [...(ask.default ?? [])] });
 export const initSecret = (ask: SecretAsk): PromptState => ({ kind: 'secret', ask, chars: [], cursor: 0 });
 export const initReview = (ask: ReviewAsk): PromptState => ({ kind: 'review', ask, scroll: 0 });
 
@@ -103,6 +105,26 @@ export function updatePrompt(state: PromptState, k: Key): Step<PromptState, Prom
       if (k.name === 'text' && /^[1-9]$/.test(k.text ?? '')) return go(Number(k.text) - 1);
       return { state };
     }
+    case 'multiselect': {
+      const n = state.ask.choices.length;
+      const go = (i: number) => ({ state: { ...state, index: Math.max(0, Math.min(n - 1, i)) } });
+      const toggle = (i: number) => {
+        const v = state.ask.choices[i]!.value;
+        return { state: { ...state, index: i, picked: state.picked.includes(v) ? state.picked.filter((x) => x !== v) : [...state.picked, v] } };
+      };
+      if (isEnter(k)) return { state, done: { value: state.ask.choices.filter((c) => state.picked.includes(c.value)).map((c) => c.value) } };
+      if (k.name === 'up' || (k.name === 'text' && k.text === 'k')) return go(state.index - 1);
+      if (k.name === 'down' || k.name === 'tab' || (k.name === 'text' && k.text === 'j')) return go(state.index + 1);
+      if (k.name === 'home') return go(0);
+      if (k.name === 'end') return go(n - 1);
+      if (k.name === 'space' || (k.name === 'text' && k.text === ' ')) return toggle(state.index);
+      if (k.name === 'text' && k.text === 'a') {
+        const all = state.picked.length < n;
+        return { state: { ...state, picked: all ? state.ask.choices.map((c) => c.value) : [] } };
+      }
+      if (k.name === 'text' && /^[1-9]$/.test(k.text ?? '') && Number(k.text) <= n) return toggle(Number(k.text) - 1);
+      return { state };
+    }
     case 'review': {
       if (isEnter(k) || (k.name === 'text' && k.text?.toLowerCase() === 'y')) return { state, done: { value: true } };
       if (k.name === 'text' && k.text?.toLowerCase() === 'n') return { state, done: { value: false } };
@@ -165,6 +187,19 @@ export function viewPrompt(state: PromptState, width: number, height: number, v:
         core.push(`${on ? t.accent('›') : ' '} ${on ? t.bold(label) : label}${cur}${hint}`);
       });
       return renderPage({ ...base, core, focus: first + state.index, hints: `↑/↓ move${digits ? ' · 1-9 jump' : ''} · Enter choose · Esc cancel · ${state.index + 1}/${state.ask.choices.length}` });
+    }
+    case 'multiselect': {
+      const core = [...head(state.ask, t, width)];
+      const first = core.length;
+      const digits = state.ask.choices.length <= 9;
+      state.ask.choices.forEach((c, i) => {
+        const on = i === state.index;
+        const mark = state.picked.includes(c.value) ? t.ok('[x]') : '[ ]';
+        const label = `${digits ? `${i + 1}) ` : ''}${sanitize(c.label)}`;
+        const hint = c.hint ? `  ${t.muted(sanitize(c.hint))}` : '';
+        core.push(`${on ? t.accent('›') : ' '} ${mark} ${on ? t.bold(label) : label}${hint}`);
+      });
+      return renderPage({ ...base, core, focus: first + state.index, hints: `↑/↓ move · Space toggle${digits ? ' · 1-9 toggle row' : ''} · a all/none · Enter confirm · Esc cancel` });
     }
     case 'review': {
       const title = head(state.ask, t, width);

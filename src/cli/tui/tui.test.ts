@@ -9,7 +9,7 @@ import { makeTheme } from '../chat/theme.ts';
 import { configScreen, displayValue, fieldsFromSchema, getAt, setAt, type ConfigState } from './config-browser.ts';
 import { FULLSCREEN_OFF, FULLSCREEN_ON, FullscreenSession, wantsFullscreen, type Screen } from './fullscreen.ts';
 import { TuiPrompter, stageOf } from './prompter.ts';
-import { initConfirm, initSecret, initSelect, initText, updatePrompt, viewPrompt, type PromptState, type PromptValue } from './prompts.ts';
+import { initConfirm, initMultiSelect, initSecret, initSelect, initText, updatePrompt, viewPrompt, type PromptState, type PromptValue } from './prompts.ts';
 
 const plain = makeTheme({ styled: false, color: false, truecolor: false });
 const noColor = makeTheme({ styled: true, color: false, truecolor: false });
@@ -30,6 +30,18 @@ function drive(state: PromptState, input: string): { state: PromptState; done?: 
   }
   return { state: cur };
 }
+
+test('multiselect prompt: Space and digits toggle, a flips all/none, Enter returns choices in order, marks are text', () => {
+  const ask = { id: 'channels', message: 'Channels?', choices: [{ value: 'telegram', label: 'Telegram' }, { value: 'discord', label: 'Discord' }, { value: 'signal', label: 'Signal' }], default: ['signal'] };
+  assert.deepEqual(drive(initMultiSelect(ask), '\r').done, { value: ['signal'] });
+  assert.deepEqual(drive(initMultiSelect(ask), ' \x1b[B\x1b[B \r').done, { value: ['telegram'] });
+  assert.deepEqual(drive(initMultiSelect(ask), '2\r').done, { value: ['discord', 'signal'] });
+  assert.deepEqual(drive(initMultiSelect(ask), 'a\r').done, { value: ['telegram', 'discord', 'signal'] });
+  assert.deepEqual(drive(initMultiSelect(ask), 'aa\r').done, { value: [] });
+  assert.deepEqual(drive(initMultiSelect(ask), '\x1b').done, { cancel: true });
+  const rows = view(drive(initMultiSelect(ask), ''));
+  assert.ok(rows.some((r) => r.includes('[x] 3) Signal')) && rows.some((r) => r.includes('[ ] 1) Telegram')));
+});
 
 test('text prompt: typing, paste with newlines, cursor editing, default, validation keeps the screen open', () => {
   const ask = { id: 'name', message: 'Name?', help: 'Shown in chat.', default: 'Garnet', validate: (v: string) => (v.length > 6 ? 'Too long.' : null) };
