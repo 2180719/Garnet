@@ -52,10 +52,10 @@ export function applyProfile(home: string, update: ProfileUpdate): PersonaBasics
 }
 
 const input = z.object({
-  assistant_name: z.string().min(1).max(40).optional().describe('What the owner wants to call you. One line.'),
-  owner_name: z.string().min(1).max(60).optional().describe('What you should call the owner. One line.'),
-  style_notes: z.string().min(1).max(500).optional().describe('How the owner likes answers (length, tone, formatting, dislikes). One line.'),
-  timezone: z.string().min(1).max(64).optional().describe('IANA time zone of the owner, e.g. Europe/Lisbon.'),
+  assistant_name: z.string().min(1).max(40).optional().describe('What the owner wants to call you, exactly as they said it. One line. Omit until they have told you.'),
+  owner_name: z.string().min(1).max(60).optional().describe('What you should call the owner, exactly as they said it. One line. Omit until they have told you.'),
+  style_notes: z.string().min(1).max(500).optional().describe('How the owner likes answers (length, tone, formatting, dislikes), in their words. One line. Omit if they skipped the question or gave a non-answer such as "whatever".'),
+  timezone: z.string().min(1).max(64).optional().describe('IANA time zone of the owner, e.g. Europe/Lisbon. Only after they told you where they are; never a guess or a default such as UTC.'),
 });
 
 export type ProfileToolInput = z.infer<typeof input>;
