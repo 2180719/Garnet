@@ -49,9 +49,61 @@ export function resolveToggles(names: readonly string[], toggles: Toggles, scope
   });
 }
 
+/**
+ * The scopes a conversation resolves through. A chat, API key, job or the
+ * terminal has one chain, broadest first (`scopes`). A shared conversation
+ * from `routes` has its own scope (`scopes: ['route:<name>']`) and `feeds`:
+ * the chain of every chat or channel linked into it (`['telegram',
+ * 'telegram:42']`, or just `['telegram']` for a channel-wide route).
+ */
+export type ConversationScopes = { scopes: readonly string[]; feeds?: readonly (readonly string[])[] };
+
+/**
+ * Effective state of every name for a conversation: the one resolver the
+ * runtime and the CLI share. One chain resolves like `resolveToggles` (the
+ * narrowest scope wins). A shared conversation (`feeds` set) is safe by
+ * default, because several chats read and drive it:
+ * 1. a `disable` in any scope that feeds it (a channel or chat linked into the
+ *    route) or in the route's own scope turns the name off;
+ * 2. otherwise the route's own `enable` turns it on;
+ * 3. otherwise it is on only when it is on for every feeding chain (global
+ *    list, then that chain's channel and chat enables).
+ */
+export function resolveScopes(names: readonly string[], toggles: Toggles, scopes: ConversationScopes | readonly string[]): Effective[] {
+  const cs = asScopes(scopes);
+  if (!cs.feeds) return resolveToggles(names, toggles, cs.scopes);
+  const feeds = cs.feeds.length ? cs.feeds : [[]];
+  const all = [...feeds.flat(), ...cs.scopes];
+  const perFeed = feeds.map((chain) => resolveToggles(names, toggles, chain));
+  return names.map((name, i) => {
+    const disabledBy = all.find((s) => toggles.channels[s]?.disable.includes(name));
+    if (disabledBy) return { name, on: false, from: disabledBy };
+    const enabledBy = cs.scopes.find((s) => toggles.channels[s]?.enable.includes(name));
+    if (enabledBy) return { name, on: true, from: enabledBy };
+    const states = perFeed.map((r) => r[i]!);
+    return states.find((e) => !e.on) ?? states[0]!;
+  });
+}
+
+/** A plain chain (broadest first) as `ConversationScopes`. */
+export function asScopes(scopes: ConversationScopes | readonly string[]): ConversationScopes {
+  return isChain(scopes) ? { scopes } : scopes;
+}
+
+function isChain(scopes: ConversationScopes | readonly string[]): scopes is readonly string[] {
+  return Array.isArray(scopes);
+}
+
+/** How a conversation's scopes read in CLI output: `telegram > telegram:42`, or for a route its own scope and what feeds it. */
+export function describeScopes(cs: ConversationScopes): string {
+  const own = cs.scopes.join(' > ');
+  if (!cs.feeds) return own;
+  return `${own}, fed by ${cs.feeds.length ? cs.feeds.map((f) => f.join(' > ')).join('; ') : 'no chat'}`;
+}
+
 /** The names that are on for these scopes, sorted. */
-export function activeNames(names: readonly string[], toggles: Toggles, scopes: readonly string[]): string[] {
-  return resolveToggles(names, toggles, scopes)
+export function activeNames(names: readonly string[], toggles: Toggles, scopes: ConversationScopes | readonly string[]): string[] {
+  return resolveScopes(names, toggles, scopes)
     .filter((e) => e.on)
     .map((e) => e.name)
     .sort();

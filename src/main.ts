@@ -2,7 +2,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
-import { activeNames, BUILTIN_SKILLS, CONNECTORS, enabledAnywhere, loadConfig, redact, garnetHome, type ConnectorName, type Paths, type GarnetConfig } from './config/index.ts';
+import { activeNames, BUILTIN_SKILLS, CONNECTORS, enabledAnywhere, loadConfig, redact, garnetHome, type ConnectorName, type ConversationScopes, type Paths, type GarnetConfig } from './config/index.ts';
 import { connectorTools } from './connectors/index.ts';
 import { assistantName, frozenContext, projectInstructionsSection } from './context/index.ts';
 import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type ActiveExtras, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
@@ -158,7 +158,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   // A session's optional built-ins: chosen from config by its conversation's scopes when its context is first
   // frozen (see Agent.selectExtras), then read back from that record, so they never change mid-session.
   const connectorOf = new Map<string, ConnectorName>();
-  const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(sessionId) ?? null, config.routes), [...connectorOf.values()]);
+  const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(sessionId) ?? null, config.routes, [config.skills, config.connectors]), [...connectorOf.values()]);
   const extrasFor = (sessionId: string): ActiveExtras => frozenContext(store.events(sessionId))?.extras ?? selectExtras(sessionId);
   const builtinSkillFor = (name: string, sessionId: string) => (extrasFor(sessionId).skills.includes(name) ? builtinSkills.get(name) : undefined);
   for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills, { builtin: builtinSkillFor }), readArtifactTool(artifacts)]) registry.register(tool);
@@ -342,12 +342,12 @@ function registerWebTools(registry: ToolRegistry, config: GarnetConfig, secret: 
 }
 
 /**
- * The optional built-ins on for a conversation with these scopes (broadest
- * first; see `scopesForConversation`): config `skills` and `connectors`,
- * global list then per-scope overrides. Connectors are limited to those
- * `available` (registered in this process).
+ * The optional built-ins on for a conversation with these scopes (see
+ * `scopesForConversation`, resolved by `resolveScopes`): config `skills` and
+ * `connectors`, global list then per-scope overrides. Connectors are limited
+ * to those `available` (registered in this process).
  */
-export function extrasForScopes(config: GarnetConfig, scopes: readonly string[], available: readonly string[]): ActiveExtras {
+export function extrasForScopes(config: GarnetConfig, scopes: ConversationScopes | readonly string[], available: readonly string[]): ActiveExtras {
   return {
     skills: activeNames(BUILTIN_SKILLS, config.skills, scopes),
     connectors: activeNames(CONNECTORS, config.connectors, scopes).filter((c) => available.includes(c)),

@@ -10,15 +10,17 @@ import {
   SCOPE_RE,
   loadConfig,
   parseConfig,
-  resolveToggles,
+  describeScopes,
+  resolveScopes,
   setToggle,
   writeConfig,
+  type ConversationScopes,
   type Effective,
   type GarnetConfig,
   type Toggles,
 } from '../config/index.ts';
 import { CONNECTOR_INFO } from '../connectors/index.ts';
-import { scopesForConversation } from '../gateway/index.ts';
+import { conversationKeyFor, scopesForConversation } from '../gateway/index.ts';
 import { openSecretStore } from '../secrets/index.ts';
 import { BuiltinSkills } from '../skills/index.ts';
 import type { Io } from './main.ts';
@@ -46,26 +48,43 @@ const USAGE: Record<Kind, string> = {
 
 const NAMES: Record<Kind, readonly string[]> = { skills: BUILTIN_SKILLS, connectors: CONNECTORS };
 
+/** What a scope given on the command line resolves through, and the shared conversation it belongs to (if routed). */
+export type ScopeView = { scopes: ConversationScopes; route: string | null };
+
 /**
- * The scopes a conversation in `scope` resolves through, broadest first: the
- * same chain the runtime uses (`scopesForConversation`).
+ * The scopes a new conversation in `scope` resolves through: the runtime's own
+ * `scopesForConversation`, given the conversation key such a chat really gets
+ * (a chat linked into a shared conversation by `routes` resolves as that
+ * route, so the output says what runs, not what one chat's overrides say).
  */
-export function scopeChain(scope: string | undefined, config: GarnetConfig): string[] {
-  if (scope === undefined) return [];
-  if (scope === 'cli') return ['cli'];
+export function scopeChain(scope: string | undefined, config: GarnetConfig): ScopeView {
+  const resolve = (key: string | null): ConversationScopes => scopesForConversation(key, config.routes, [config.skills, config.connectors]);
+  const routed = (key: string): ScopeView => ({ scopes: resolve(key), route: key.startsWith('route:') ? key : null });
+  if (scope === undefined) return { scopes: { scopes: [] }, route: null };
+  if (scope === 'cli') return { scopes: resolve(null), route: null };
   const [head, ...rest] = scope.split(':');
   const id = rest.join(':');
-  if (!id) return [head!];
+  if (!id) {
+    // A whole channel: its chats go to a channel-wide route when there is one.
+    const wide = config.routes.find((r) => r.match.channel === head && r.match.chatId === undefined);
+    return wide ? routed(`route:${wide.conversation}`) : { scopes: { scopes: [head!] }, route: null };
+  }
   switch (head) {
     case 'route':
     case 'job':
-      return scopesForConversation(scope, config.routes);
+      return { scopes: resolve(scope), route: null };
     case 'api':
-      return scopesForConversation(`api:${id}:x`, config.routes);
+      return { scopes: resolve(`api:${id}:x`), route: null };
     default:
-      // telegram:<chatId> → the conversation of that chat (the account does not change the scopes).
-      return scopesForConversation(`${head}:default:${id}`, config.routes);
+      // telegram:<chatId> → the conversation that chat's messages go to (the account does not change the scopes).
+      return routed(conversationKeyFor(config.routes, { channel: head!, account: 'default', chatId: id }));
   }
+}
+
+/** One line saying that `scope` is part of a shared conversation, or nothing. */
+function routedNote(scope: string | undefined, view: ScopeView): string {
+  if (!view.route) return '';
+  return `${scope} is routed into the shared conversation ${view.route} (routes in config.json), so it resolves as ${describeScopes(view.scopes)}. A disable in any scope that feeds the route applies to the whole conversation.\n`;
 }
 
 function describe(e: Effective): string {
@@ -89,8 +108,9 @@ function secretStatus(name: string, home: string, env: NodeJS.ProcessEnv): strin
 /** The built-in skills table (also printed under `garnet skills list`). */
 export function builtinSkillsReport(config: GarnetConfig, scope?: string, shadowed: (name: string) => boolean = () => false): string {
   const skills = new BuiltinSkills();
-  const states = resolveToggles(BUILTIN_SKILLS, config.skills, scopeChain(scope, config));
-  const lines = [`Built-in skills${scope ? ` for ${scope}` : ''} (off unless enabled; \`garnet skills enable <name> [--channel <scope>]\`):`];
+  const view = scopeChain(scope, config);
+  const states = resolveScopes(BUILTIN_SKILLS, config.skills, view.scopes);
+  const lines = [`${routedNote(scope, view)}Built-in skills${scope ? ` for ${scope}` : ''} (off unless enabled; \`garnet skills enable <name> [--channel <scope>]\`):`];
   for (const e of states) {
     const s = skills.get(e.name);
     lines.push(`  ${e.name.padEnd(18)} ${describe(e).padEnd(30)} ${s?.description ?? ''}`);
@@ -100,8 +120,9 @@ export function builtinSkillsReport(config: GarnetConfig, scope?: string, shadow
 }
 
 function connectorsReport(config: GarnetConfig, home: string, env: NodeJS.ProcessEnv, scope?: string): string {
-  const states = resolveToggles(CONNECTORS, config.connectors, scopeChain(scope, config));
-  const lines = [`Connectors${scope ? ` for ${scope}` : ''} (off unless enabled; \`garnet connectors enable <name> [--channel <scope>]\`):`];
+  const view = scopeChain(scope, config);
+  const states = resolveScopes(CONNECTORS, config.connectors, view.scopes);
+  const lines = [`${routedNote(scope, view)}Connectors${scope ? ` for ${scope}` : ''} (off unless enabled; \`garnet connectors enable <name> [--channel <scope>]\`):`];
   for (const e of states) {
     const info = CONNECTOR_INFO[e.name as keyof typeof CONNECTOR_INFO];
     lines.push(`  ${e.name.padEnd(12)} ${describe(e).padEnd(30)} ${info.summary}`);
@@ -113,16 +134,23 @@ function connectorsReport(config: GarnetConfig, home: string, env: NodeJS.Proces
 }
 
 function effectiveReport(config: GarnetConfig, scope?: string): string {
-  const show = (label: string, scopes: string[]): string[] => {
-    const skills = resolveToggles(BUILTIN_SKILLS, config.skills, scopes).filter((e) => e.on).map((e) => e.name);
-    const connectors = resolveToggles(CONNECTORS, config.connectors, scopes).filter((e) => e.on).map((e) => e.name);
+  const show = (label: string, view: ScopeView): string[] => {
+    const skills = resolveScopes(BUILTIN_SKILLS, config.skills, view.scopes).filter((e) => e.on).map((e) => e.name);
+    const connectors = resolveScopes(CONNECTORS, config.connectors, view.scopes).filter((e) => e.on).map((e) => e.name);
     const off = config.permissions['net.fetch'] === 'deny' && connectors.length ? ' (unavailable: net.fetch is deny)' : '';
-    return [`${label}${scopes.length ? ` [${scopes.join(' > ')}]` : ''}:`, `  skills:     ${skills.join(', ') || 'none'}`, `  connectors: ${connectors.join(', ') || 'none'}${off}`];
+    const chain = describeScopes(view.scopes);
+    return [`${label}${chain ? ` [${chain}]` : ''}:`, `  skills:     ${skills.join(', ') || 'none'}`, `  connectors: ${connectors.join(', ') || 'none'}${off}`];
   };
-  if (scope !== undefined) return `${show(`A new conversation in ${scope} gets`, scopeChain(scope, config)).join('\n')}\n`;
+  if (scope !== undefined) {
+    const view = scopeChain(scope, config);
+    return `${routedNote(scope, view)}${show(`A new conversation in ${scope} gets`, view).join('\n')}\n`;
+  }
   const scopes = [...new Set([...Object.keys(config.skills.channels), ...Object.keys(config.connectors.channels)])].sort();
-  const lines = show('Everywhere without an override', []);
-  for (const s of scopes) lines.push(...show(s, scopeChain(s, config)));
+  const lines = show('Everywhere without an override', { scopes: { scopes: [] }, route: null });
+  for (const s of scopes) {
+    const view = scopeChain(s, config);
+    lines.push(...show(view.route ? `${s} (routed into ${view.route})` : s, view));
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -190,10 +218,12 @@ export async function extensionsCommand(kind: Kind, args: string[], io: Io, env:
       // Validated like any config before it is written: nothing invalid ever reaches config.json.
       const next = parseConfig(JSON.parse(JSON.stringify({ ...config, [kind]: { ...config[kind], ...after } })));
       writeConfig(paths.home, next);
-      const state = resolveToggles(NAMES[kind], next[kind], scopeChain(scope, next)).find((e) => e.name === name)!;
+      const view = scopeChain(scope, next);
+      const state = resolveScopes(NAMES[kind], next[kind], view.scopes).find((e) => e.name === name)!;
       const where = scope ? `for ${scope}` : 'globally';
       const verb = sub === 'reset' ? `Removed the ${scope} override for ${name}` : `${sub === 'enable' ? 'Enabled' : 'Disabled'} ${name} ${where}`;
       io.out(`${verb}. ${scope ? `In ${scope} it is now ${describe(state)}.` : `It is now ${describe(state)} where no override says otherwise.`}\n`);
+      io.out(routedNote(scope, view));
       if (sub === 'enable') for (const n of notes(kind, name, next, paths.home, env, scope)) io.out(`${n}\n`);
       io.out('Running Garnet picks this up after a restart (`garnet service restart`); each conversation keeps the set it started with until /new.\n');
       return 0;

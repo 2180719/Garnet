@@ -8,6 +8,7 @@ import { CONFIG_VERSION } from '../src/config/index.ts';
 import { FakeModel } from '../src/models/index.ts';
 import { KICKOFF_MESSAGE, ONBOARDING_TITLE, bootstrapPrompt } from '../src/onboarding/index.ts';
 import { createGarnet, extrasForScopes } from '../src/main.ts';
+import { main } from '../src/cli/main.ts';
 
 function homeWith(config: Record<string, unknown>): string {
   const home = join(tempDir(), 'garnet-home');
@@ -222,4 +223,101 @@ test('a session keeps its connector after the last scope that enabled it is turn
   } finally {
     third.close();
   }
+});
+
+// ---------- routed chats: the runtime and `garnet connectors effective` agree ----------
+
+async function cli(home: string, ...argv: string[]): Promise<string> {
+  const saved = process.env.GARNET_HOME;
+  process.env.GARNET_HOME = home;
+  let out = '';
+  try {
+    const code = await main(argv, { out: (t) => (out += t), err: (t) => (out += t) });
+    assert.equal(code, 0, out);
+  } finally {
+    if (saved === undefined) delete process.env.GARNET_HOME;
+    else process.env.GARNET_HOME = saved;
+  }
+  return out;
+}
+
+/** What a new session bound to `key` is offered by the runtime. */
+function runtimeConnectors(home: string, key: string): string[] {
+  const garnet = createGarnet({ home, memoryDb: true, noModel: true });
+  try {
+    const s = garnet.store.createSession();
+    garnet.gatewayStore.bindConversation(key, s.id);
+    return garnet.extrasFor(s.id).connectors;
+  } finally {
+    garnet.close();
+  }
+}
+
+const connectorsLine = (out: string) => /connectors: (.*)/.exec(out)?.[1];
+
+test('a routed chat: a disable on its chat or channel scope applies to the shared conversation, and the CLI reports what runs', async () => {
+  const home = homeWith({
+    routes: [
+      { match: { channel: 'telegram', chatId: '42' }, conversation: 'family' },
+      { match: { channel: 'discord', chatId: '7' }, conversation: 'family' },
+    ],
+    connectors: { enabled: ['github'], channels: { telegram: { disable: ['github'] }, 'telegram:42': { disable: ['github'] } } },
+  });
+  assert.deepEqual(runtimeConnectors(home, 'route:family'), [], 'the runtime honors the disable of a chat that feeds the route');
+  const out = await cli(home, 'connectors', 'effective', '--channel', 'telegram:42');
+  assert.equal(connectorsLine(out), 'none', out);
+  assert.match(out, /telegram:42 is routed into the shared conversation route:family/);
+  const list = await cli(home, 'connectors', 'list', '--channel', 'discord:7');
+  assert.match(list, /github\s+off \(telegram override\)/, 'discord:7 shares the conversation, so it is off there too');
+  assert.match(list, /route:family/);
+});
+
+test('a single-channel route inherits its channel and every chat in it', async () => {
+  const home = homeWith({
+    routes: [
+      { match: { channel: 'telegram', chatId: '5' }, conversation: 'family' },
+      { match: { channel: 'telegram', chatId: '6' }, conversation: 'family' },
+    ],
+    connectors: { enabled: ['github', 'weather'], channels: { telegram: { disable: ['weather'] }, 'telegram:6': { disable: ['github'] } } },
+  });
+  assert.deepEqual(runtimeConnectors(home, 'route:family'), []);
+  assert.equal(connectorsLine(await cli(home, 'connectors', 'effective', '--channel', 'telegram:5')), 'none');
+  assert.equal(connectorsLine(await cli(home, 'connectors', 'effective', '--channel', 'route:family')), 'none');
+});
+
+test('a channel-wide route takes in the chats on that channel that have their own override', async () => {
+  const home = homeWith({
+    routes: [{ match: { channel: 'signal' }, conversation: 'fam' }],
+    connectors: { enabled: ['github'], channels: { 'signal:group:abc': { disable: ['github'] } } },
+  });
+  assert.deepEqual(runtimeConnectors(home, 'route:fam'), []);
+  const out = await cli(home, 'connectors', 'effective', '--channel', 'signal:group:abc');
+  assert.equal(connectorsLine(out), 'none');
+  assert.match(out, /routed into the shared conversation route:fam/);
+});
+
+test('an unrouted chat resolves as before: channel, then chat, the narrowest wins', async () => {
+  const home = homeWith({
+    routes: [{ match: { channel: 'telegram', chatId: '42' }, conversation: 'family' }],
+    connectors: { enabled: ['github'], channels: { telegram: { disable: ['github'] }, 'telegram:9': { enable: ['github'] } } },
+  });
+  assert.deepEqual(runtimeConnectors(home, 'telegram:default:9'), ['github']);
+  assert.deepEqual(runtimeConnectors(home, 'telegram:default:8'), []);
+  const out = await cli(home, 'connectors', 'effective', '--channel', 'telegram:9');
+  assert.equal(connectorsLine(out), 'github');
+  assert.doesNotMatch(out, /routed/);
+});
+
+test('an enable on a route works where nothing that feeds it disables it', async () => {
+  const routes = [
+    { match: { channel: 'telegram', chatId: '42' }, conversation: 'family' },
+    { match: { channel: 'discord', chatId: '7' }, conversation: 'family' },
+  ];
+  const home = homeWith({ routes, connectors: { channels: { 'route:family': { enable: ['github'] } } } });
+  assert.deepEqual(runtimeConnectors(home, 'route:family'), ['github']);
+  assert.equal(connectorsLine(await cli(home, 'connectors', 'effective', '--channel', 'telegram:42')), 'github');
+  // A disable on a chat that feeds the route still wins over the route's enable.
+  const blocked = homeWith({ routes, connectors: { channels: { 'route:family': { enable: ['github'] }, 'discord:7': { disable: ['github'] } } } });
+  assert.deepEqual(runtimeConnectors(blocked, 'route:family'), []);
+  assert.equal(connectorsLine(await cli(blocked, 'connectors', 'effective', '--channel', 'route:family')), 'none');
 });

@@ -110,7 +110,7 @@ function toggles(names: readonly [string, ...string[]], what: string) {
       .record(z.string().regex(SCOPE_RE, `a scope is ${SCOPE_HELP}`), override)
       .default({})
       .describe(
-        `Per-scope overrides, keyed by scope: ${SCOPE_HELP}. Each has "enable" and "disable" lists. A session uses the global list, then its channel's override, then its chat's (or route's, API key's, job's): the narrowest wins. The set is chosen when a conversation starts and stays fixed for it; /new picks up changes.`,
+        `Per-scope overrides, keyed by scope: ${SCOPE_HELP}. Each has "enable" and "disable" lists. A session uses the global list, then its channel's override, then its chat's (or API key's, job's): the narrowest wins. A shared conversation from routes is off where any chat or channel feeding it disables an item, else follows its route's override, else needs the item on for every chat feeding it. The set is chosen when a conversation starts and stays fixed for it; /new picks up changes.`,
       ),
   };
 }

@@ -1,6 +1,7 @@
 // Delivery targets for messages Garnet sends on its own (send_message, job
 // results): which chat a session belongs to, which chats belong to paired
 // identities, and recording a sent message in the target chat's conversation.
+import type { ConversationScopes, Toggles } from '../config/index.ts';
 import { GarnetError } from '../contracts/index.ts';
 import type { GatewayStore, SessionStore } from '../store/index.ts';
 import type { Route } from './gateway.ts';
@@ -36,32 +37,59 @@ export function conversationKeyFor(routes: Route[], chat: { channel: string; acc
   return route ? `route:${route.conversation}` : `${chat.channel}:${chat.account}:${chat.chatId}`;
 }
 
+const CHAT_CHANNELS = new Set(['telegram', 'discord', 'signal']);
+
 /**
- * The config scopes a conversation belongs to, broadest first, for optional
- * built-ins (`skills.channels`, `connectors.channels`):
+ * The config scopes a conversation belongs to, for optional built-ins
+ * (`skills.channels`, `connectors.channels`); resolve them with
+ * `resolveScopes`. The runtime and `garnet skills|connectors` both use this.
  * - a chat `telegram:<account>:<chatId>` → `telegram`, `telegram:<chatId>`;
- * - a shared conversation `route:<name>` → its channel (when every route to it
- *   is on one channel), then `route:<name>`;
+ * - a shared conversation `route:<name>` → its own scope `route:<name>`, fed
+ *   by every chat or channel linked into it: `telegram`, `telegram:<chatId>`
+ *   for a route that names a chat, `telegram` for a channel-wide route, plus
+ *   each chat with an override in `toggles` that the channel-wide route takes
+ *   in (a disable in any of them applies to the shared conversation);
  * - an API conversation `api:<keyId>:<name>` → `api`, `api:<keyId>`;
  * - a scheduled job `job:<id>` → `job`, `job:<id>`;
  * - no conversation (the terminal chat) → `cli`.
  */
-export function scopesForConversation(key: string | null, routes: Route[]): string[] {
-  if (!key) return ['cli'];
+export function scopesForConversation(key: string | null, routes: Route[], toggles: readonly Toggles[] = []): ConversationScopes {
+  if (!key) return { scopes: ['cli'] };
   if (key.startsWith('route:')) {
     const name = key.slice('route:'.length);
-    const channels = [...new Set(routes.filter((r) => r.conversation === name).map((r) => r.match.channel))];
-    return [...(channels.length === 1 ? [channels[0]!] : []), key];
+    const feeds: string[][] = [];
+    const seen = new Set<string>();
+    const add = (chain: string[]) => {
+      if (seen.has(chain.join('\n'))) return;
+      seen.add(chain.join('\n'));
+      feeds.push(chain);
+    };
+    for (const r of routes.filter((r) => r.conversation === name)) {
+      const { channel, chatId } = r.match;
+      if (chatId !== undefined) {
+        add([channel, `${channel}:${chatId}`]);
+        continue;
+      }
+      add([channel]);
+      // Chats with their own override that this channel-wide route takes in (a chat-specific route elsewhere wins).
+      for (const scope of new Set(toggles.flatMap((t) => Object.keys(t.channels)))) {
+        const [ch, ...rest] = scope.split(':');
+        const id = rest.join(':');
+        if (ch !== channel || !id || !CHAT_CHANNELS.has(ch)) continue;
+        if (conversationKeyFor(routes, { channel, account: 'default', chatId: id }) === key) add([channel, scope]);
+      }
+    }
+    return { scopes: [key], feeds };
   }
-  if (key.startsWith('job:')) return ['job', key];
+  if (key.startsWith('job:')) return { scopes: ['job', key] };
   if (key.startsWith('api:')) {
     const keyId = key.split(':')[1];
-    return keyId ? ['api', `api:${keyId}`] : ['api'];
+    return { scopes: keyId ? ['api', `api:${keyId}`] : ['api'] };
   }
   const chat = chatOfKey(key);
-  if (chat) return [chat.channel, `${chat.channel}:${chat.chatId}`];
+  if (chat) return { scopes: [chat.channel, `${chat.channel}:${chat.chatId}`] };
   // Other surfaces (dashboard, demo, a bare `cli` key) are their own scope.
-  return [key.split(':')[0]!];
+  return { scopes: [key.split(':')[0]!] };
 }
 
 export class ChatDirectory {

@@ -44,12 +44,24 @@ The same settings in `config.json`:
 | --- | --- |
 | `telegram`, `discord`, `signal` | Every chat on that channel |
 | `telegram:<chatId>` (`signal:group:<id>` for Signal groups) | One chat |
-| `route:<name>` | A shared conversation from `routes` (it also inherits its channel's override when all its routes are on one channel) |
+| `route:<name>` | A shared conversation from `routes` (see below: every chat and channel linked into it also counts) |
 | `api`, `api:<keyId>` | The HTTP API and dashboard, or one API key |
 | `job`, `job:<id>` | Scheduled runs, or one job |
 | `cli` | The terminal chat (`garnet chat`) |
 
-A conversation starts from the global `enabled` list, then applies its channel's override, then its chat's (or route's, key's, job's). The narrowest scope wins.
+A conversation starts from the global `enabled` list, then applies its channel's override, then its chat's (or key's, job's). The narrowest scope wins.
+
+#### Shared conversations (routes)
+
+A chat linked into a shared conversation by `routes` has no conversation of its own: its messages go to `route:<name>`, which several chats read and drive. So its set is decided with every chat and channel that feeds the route, and the safe direction wins:
+
+1. A `disable` in any scope that feeds the route (the channel or chat of any route entry pointing at it, and for a channel-wide route also each chat on that channel with its own override) or in `route:<name>` itself turns the item off for the whole conversation.
+2. Otherwise an `enable` on `route:<name>` turns it on.
+3. Otherwise it is on only when it is on for every chat that feeds the route (the global list, then that chat's channel and chat enables). One chat enabling it is not enough; enable it on `route:<name>` instead.
+
+For example, with `telegram:42` and `discord:7` both routed to `family`, `github` on globally and a disable for `telegram` or `telegram:42`, the `family` conversation does not get `github`, on Discord either. `garnet connectors effective --channel telegram:42` (and `list`) resolve a routed chat the same way the running service does and say which route it belongs to.
+
+Like any change, this applies to conversations that start after it: a shared conversation that already started keeps the set it froze until `/new`.
 
 ### When changes apply
 

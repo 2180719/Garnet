@@ -54,7 +54,7 @@ test('enable, disable and reset built-ins globally or per scope; config.json is 
   assert.equal(r.out, 'A new conversation in telegram:42 gets [telegram > telegram:42]:\n  skills:     daily-briefing\n  connectors: calendar, weather\n');
   r = await run('skills', 'effective');
   assert.match(r.out, /^Everywhere without an override:\n  skills:     none\n  connectors: weather\n/);
-  assert.match(r.out, /route:family \[telegram > route:family\]:\n  skills:     daily-briefing\n  connectors: none/);
+  assert.match(r.out, /route:family \[route:family, fed by telegram > telegram:5\]:\n  skills:     daily-briefing\n  connectors: none/);
 
   r = await run('connectors', 'list', '--channel', 'route:family');
   assert.match(r.out, /weather +off \(route:family override\)/);
@@ -107,15 +107,18 @@ test('help and config explain cover the new commands and fields', async () => {
   assert.match(show.out, /"connectors": \{/);
 });
 
-test('scopeChain follows the runtime: channel, then chat, route, API key or job', () => {
+test('scopeChain follows the runtime: channel, then chat, route, API key or job; a routed chat resolves as its route', () => {
   const c = { ...defaultConfig(), routes: [{ match: { channel: 'signal' }, conversation: 'fam' }] };
-  assert.deepEqual(scopeChain(undefined, c), []);
-  assert.deepEqual(scopeChain('cli', c), ['cli']);
-  assert.deepEqual(scopeChain('telegram', c), ['telegram']);
-  assert.deepEqual(scopeChain('signal:group:abc', c), ['signal', 'signal:group:abc']);
-  assert.deepEqual(scopeChain('route:fam', c), ['signal', 'route:fam']);
-  assert.deepEqual(scopeChain('api:k1', c), ['api', 'api:k1']);
-  assert.deepEqual(scopeChain('job:morning', c), ['job', 'job:morning']);
+  const fam = { scopes: { scopes: ['route:fam'], feeds: [['signal']] }, route: 'route:fam' };
+  assert.deepEqual(scopeChain(undefined, c), { scopes: { scopes: [] }, route: null });
+  assert.deepEqual(scopeChain('cli', c), { scopes: { scopes: ['cli'] }, route: null });
+  assert.deepEqual(scopeChain('telegram', c), { scopes: { scopes: ['telegram'] }, route: null });
+  assert.deepEqual(scopeChain('telegram:9', c), { scopes: { scopes: ['telegram', 'telegram:9'] }, route: null });
+  assert.deepEqual(scopeChain('signal', c), fam, 'every signal chat goes to the channel-wide route');
+  assert.deepEqual(scopeChain('signal:group:abc', c), fam);
+  assert.deepEqual(scopeChain('route:fam', c), { ...fam, route: null });
+  assert.deepEqual(scopeChain('api:k1', c), { scopes: { scopes: ['api', 'api:k1'] }, route: null });
+  assert.deepEqual(scopeChain('job:morning', c), { scopes: { scopes: ['job', 'job:morning'] }, route: null });
 });
 
 // ---------- doctor ----------

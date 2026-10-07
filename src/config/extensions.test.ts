@@ -16,6 +16,7 @@ import {
   loadConfig,
   parseConfig,
   redact,
+  resolveScopes,
   resolveToggles,
   secretNames,
   setToggle,
@@ -114,6 +115,20 @@ test('resolution: global list, then the channel, then the chat (narrowest wins)'
   );
   assert.deepEqual(resolveToggles(['calendar'], { enabled: [], channels: {} }, ['cli']), [{ name: 'calendar', on: false, from: 'default' }]);
   assert.deepEqual(enabledAnywhere(t), ['calendar', 'github', 'weather']);
+});
+
+test('a shared conversation: a disable anywhere that feeds it wins, then the route enable, then every feeding chain must be on', () => {
+  const names = ['calendar', 'github', 'weather'];
+  const fed = (channels: Toggles['channels'], enabled: string[] = []) =>
+    resolveScopes(names, { enabled, channels }, { scopes: ['route:family'], feeds: [['telegram', 'telegram:42'], ['discord', 'discord:7']] });
+  // The review's repro: github global, disabled for telegram and telegram:42.
+  assert.deepEqual(fed({ telegram: { enable: [], disable: ['github'] }, 'telegram:42': { enable: [], disable: ['github'] } }, ['github'])[1], { name: 'github', on: false, from: 'telegram' });
+  assert.deepEqual(fed({ 'route:family': { enable: ['github'], disable: [] } })[1], { name: 'github', on: true, from: 'route:family' });
+  assert.deepEqual(fed({ 'route:family': { enable: ['github'], disable: [] }, discord: { enable: [], disable: ['github'] } })[1], { name: 'github', on: false, from: 'discord' }, 'a feeding disable beats the route enable');
+  assert.deepEqual(fed({ 'discord:7': { enable: ['github'], disable: [] } })[1], { name: 'github', on: false, from: 'default' }, 'one chat enabling it is not enough');
+  assert.deepEqual(fed({ telegram: { enable: ['github'], disable: [] }, discord: { enable: ['github'], disable: [] } })[1], { name: 'github', on: true, from: 'telegram' });
+  assert.deepEqual(activeNames(names, { enabled: ['weather'], channels: {} }, { scopes: ['route:gone'], feeds: [] }), ['weather'], 'a route nothing feeds gets the global list');
+  assert.deepEqual(resolveScopes(names, { enabled: [], channels: { telegram: { enable: [], disable: ['github'] } } }, ['telegram']), resolveToggles(names, { enabled: [], channels: { telegram: { enable: [], disable: ['github'] } } }, ['telegram']));
 });
 
 test('setToggle switches names globally or per scope, resets overrides and never mutates', () => {
