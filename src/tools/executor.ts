@@ -84,8 +84,11 @@ export class ToolExecutor {
       return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));
     }
 
-    // Every capability this call needs is checked (with the session's taint); the strictest verdict wins.
+    // Every capability this call needs is checked (with the session's taint); the strictest verdict wins. On a tie the
+    // more consequential capability labels the approval (exec, then anything but a read like net.fetch), so the owner
+    // sees the write, and an "always" given for a read (keyed on the capability) can never cover it.
     const rank = { allow: 0, ask: 1, deny: 2 } as const;
+    const weight = (c: string) => (c === 'exec' ? 2 : c === 'net.fetch' || c === 'fs.read' ? 0 : 1);
     let capability = tool.capability;
     let decision: Decision = { verdict: 'allow', reason: 'no permission needed' };
     let taint: readonly string[] | undefined;
@@ -93,7 +96,7 @@ export class ToolExecutor {
       for (const cap of tool.capabilitiesFor ? tool.capabilitiesFor(input) : [tool.capability]) {
         const d = this.deps.policy.check(cap, { targets, taint: ctx.taint });
         if (d.taint) taint = d.taint;
-        if (rank[d.verdict] > rank[decision.verdict] || (d.verdict === decision.verdict && cap === 'exec')) [decision, capability] = [d, cap];
+        if (rank[d.verdict] > rank[decision.verdict] || (d.verdict === decision.verdict && weight(cap) > weight(capability))) [decision, capability] = [d, cap];
       }
     } catch (e) {
       return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));

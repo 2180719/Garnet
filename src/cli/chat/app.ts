@@ -823,7 +823,7 @@ export class InteractiveChat {
 }
 
 /** "Always" covers a tool for the rest of the chat, except commands, which must match exactly. */
-function alwaysKey(req: ApprovalRequest): string {
+export function alwaysKey(req: ApprovalRequest): string {
   return req.capability === 'exec'
     ? `${req.sessionId}|${req.tool}|${JSON.stringify(req.input)}`
     : `${req.sessionId}|${req.tool}|${req.capability}`;

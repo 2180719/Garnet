@@ -74,7 +74,7 @@ Turning a connector off does not take it away from conversations that already ha
 
 ## Policy and safety
 
-- **Permissions.** Every connector call needs `net.fetch`; with `net.fetch: deny` no connector is offered at all. With `ask` (the default) each call asks for your approval and shows the exact URLs. Add a connector's hosts to `web.allowHosts` to let it run without asking. A GitHub comment also needs `message.send` (ask by default) and the approval shows the full text.
+- **Permissions.** Every connector call needs `net.fetch`; with `net.fetch: deny` no connector is offered at all. With `ask` (the default) each call asks for your approval and shows the exact URLs. Add a connector's hosts to `web.allowHosts` to let it run without asking. A GitHub comment also needs `message.send` (ask by default); its approval is labelled `message.send` and shows the full text, and in the terminal chat an "always" for a read never covers a comment.
 - **Containment.** Connector output (issue comments, calendar invitations, even place names) is written by other people, so it is treated as untrusted: once a conversation has read it, consequential actions ask first, and connector calls themselves ask again even for allowed hosts, because the model writes the query.
 - **Secrets.** Config holds only the *name* of an environment variable or stored secret (`tokenEnv`, `urlEnv`). Store values with `garnet secrets set NAME`. They are read when a call runs, never put in prompts, output, approvals, logs or errors. `garnet doctor` reports whether each one is set, never its value.
 - **Admin API.** Where a credential is sent (`connectors.github.apiUrl`, `repos`, `write`, every `*Env`) cannot be changed through the dashboard or admin API, only by editing `config.json`.

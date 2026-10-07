@@ -188,6 +188,11 @@ test('github through the executor: host scopes, containment and message.send all
   // With net.fetch denied, nothing runs.
   const off = await run({ 'net.fetch': 'deny' }, read);
   assert.equal(off.status === 'error' && off.category, 'denied');
+  // Both ask (the defaults): the comment's approval is labelled with the write, never as a read.
+  await run({ 'net.fetch': 'ask', 'message.send': 'ask' }, { action: 'comment', repo: 'org/app', number: 1, body: 'hi' });
+  assert.equal(asked[0]?.capability, 'message.send');
+  await run({ 'net.fetch': 'ask', 'message.send': 'ask' }, read);
+  assert.equal(asked[0]?.capability, 'net.fetch');
 });
 
 // ---------- ICS ----------

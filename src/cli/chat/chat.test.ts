@@ -10,7 +10,13 @@ import { VirtualTerminal } from '../../../test/vt.ts';
 import type { ModelAdapter, ModelEvent, ModelRequest } from '../../contracts/index.ts';
 import { createGarnet } from '../../main.ts';
 import { FakeModel, type FakeScript } from '../../models/index.ts';
-import { loadConfig, readPersona } from '../../config/index.ts';
+import { CONFIG_VERSION, loadConfig, parseConfig, readPersona } from '../../config/index.ts';
+import { githubTool } from '../../connectors/index.ts';
+import { Policy, type ApprovalRequest } from '../../policy/index.ts';
+import { ToolExecutor, ToolRegistry, type WebFetcher } from '../../tools/index.ts';
+import { alwaysKey } from './app.ts';
+import { approvalRows } from './render.ts';
+import { makeTheme } from './theme.ts';
 import { onboardingScript } from '../../models/index.ts';
 import { AnswerPrompter, type Prompter } from '../setup/prompt.ts';
 import { chat } from './index.ts';
@@ -557,6 +563,20 @@ test('fullscreen: approvals are answered from the dock, even after scrolling; es
   await c.until((t) => t.includes('F2 or Alt+M'), 'the scrolling keys in /help');
   await c.type('\x04');
   assert.equal(await c.done, 0);
+});
+
+test('"always" on a GitHub read never covers a GitHub comment (both ask): the comment asks as message.send', async () => {
+  const config = parseConfig({ version: CONFIG_VERSION, permissions: { 'net.fetch': 'ask', 'message.send': 'ask' }, connectors: { github: { write: true } } });
+  const tool = githubTool(config.connectors.github, { fetcher: {} as WebFetcher, secret: () => 'ghp_x', timeZone: 'UTC' });
+  const asked: ApprovalRequest[] = [];
+  const executor = new ToolExecutor({ registry: new ToolRegistry().register(tool), policy: new Policy(config.permissions), approver: async (r) => (asked.push(r), 'denied') });
+  const call = (input: object) => executor.execute({ type: 'tool_call', id: 'c', name: 'github', input }, { sessionId: 's', workspace: '/w', memoryNamespace: 'default', signal: new AbortController().signal });
+  await call({ action: 'issues', repo: 'org/app' });
+  await call({ action: 'comment', repo: 'org/app', number: 1, body: 'hi' });
+  const [read, comment] = asked;
+  assert.equal(comment!.capability, 'message.send', 'the approval header names the write');
+  assert.notEqual(alwaysKey(read!), alwaysKey(comment!));
+  assert.match(approvalRows(comment!, makeTheme({ styled: false, color: false, truecolor: false }), 80).join('\n'), /github needs approval \(message\.send\)/);
 });
 
 test('fullscreen: a mouse report split across slow reads puts nothing in the input, and Ctrl+D still exits', async () => {
