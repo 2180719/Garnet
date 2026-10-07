@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { keyEnvOf, listProviders } from './providers.ts';
 import type { GarnetConfig } from './schema.ts';
 import { enabledAnywhere } from './extensions.ts';
 
@@ -149,7 +150,7 @@ export function secretNames(config: GarnetConfig): string[] {
   const connectors = [...(on.has('github') ? [config.connectors.github.tokenEnv] : []), ...(on.has('calendar') ? [config.connectors.calendar.urlEnv] : [])];
   return [
     ...new Set([
-      config.model.apiKeyEnv,
+      ...listProviders(config).filter((p) => p.model.provider !== 'fake').map((p) => keyEnvOf(p.model)),
       config.channels.telegram.tokenEnv,
       config.channels.discord.tokenEnv,
       ...(transcription ? [transcription] : []),

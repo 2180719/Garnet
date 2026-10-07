@@ -14,6 +14,7 @@ export const COMMANDS: readonly SlashCommand[] = [
   { name: 'sessions', description: 'List recent sessions' },
   { name: 'resume', args: '<session-id>', description: 'Switch to an earlier session' },
   { name: 'model', description: 'Show the model and its context window' },
+  { name: 'provider', args: '[name]', description: 'List providers, or swap: /provider <name> [model]' },
   { name: 'usage', aliases: ['cost'], description: 'Token usage for this session and the budget per task' },
   { name: 'attach', args: '<path>', description: 'Attach a local file (image, PDF, audio, text) to your next message' },
   { name: 'compact', description: 'Summarize older turns now to free context' },

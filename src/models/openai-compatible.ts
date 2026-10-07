@@ -33,6 +33,8 @@ export type OpenAICompatibleOptions = {
   vision?: boolean | undefined;
   /** The server accepts `file` parts with a PDF (OpenAI, OpenRouter). Off unless configured. */
   pdf?: boolean | undefined;
+  /** Provider label in the model id (`<label>:<model>`). Defaults to `openai-compatible`; presets such as Gemini set their own. */
+  label?: string | undefined;
 };
 
 const MAX_INLINE_BYTES = 20 * 1024 * 1024;
@@ -65,7 +67,7 @@ export class OpenAICompatibleModel implements ModelAdapter {
 
   constructor(options: OpenAICompatibleOptions) {
     this.options = options;
-    this.id = `${PROVIDER}:${options.model}`;
+    this.id = `${options.label ?? PROVIDER}:${options.model}`;
     this.capabilities = {
       streaming: true,
       promptCaching: false,

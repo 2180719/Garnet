@@ -42,6 +42,11 @@ export interface Prompter {
   multiselect<T extends string>(q: MultiSelectAsk<T>): Promise<T[]>;
   /** A hidden value (API keys, tokens). Returns '' when none was given. Never echoed. */
   secret(q: SecretAsk): Promise<string>;
+  /**
+   * A read-only summary shown before anything is saved; resolves false when the
+   * owner declines. Only the fullscreen prompter implements it (the wizard skips it otherwise).
+   */
+  review?(q: Ask & { body: string }): Promise<boolean>;
 }
 
 export type Answer = string | boolean;

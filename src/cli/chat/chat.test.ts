@@ -71,7 +71,7 @@ type Started = {
   type: (keys: string) => Promise<void>;
 };
 
-type StartOptions = { home?: string; args?: string[]; env?: NodeJS.ProcessEnv; columns?: number; rows?: number; formPrompter?: Prompter; fullscreen?: boolean; processHooks?: boolean };
+type StartOptions = { home?: string; args?: string[]; env?: NodeJS.ProcessEnv; columns?: number; rows?: number; formPrompter?: Prompter; fullscreen?: boolean; processHooks?: boolean; /** Build the model from config with this environment instead of injecting `model` (provider swapping needs a configured one). */ configured?: NodeJS.ProcessEnv };
 
 /** Starts the chat on a fake terminal: inline (`--inline`) unless `fullscreen` is set, then with the default mode. */
 function start(model: ModelAdapter, options: StartOptions = {}): Started {
@@ -82,7 +82,7 @@ function start(model: ModelAdapter, options: StartOptions = {}): Started {
   const done = chat(
     [...(options.fullscreen ? [] : ['--inline']), ...(options.args ?? [])],
     { out: () => {}, err: (t) => err.push(t), stdin, stdout, env: { TERM: 'xterm-256color', COLORTERM: 'truecolor', ...options.env } },
-    { createGarnet: (o) => createGarnet({ ...o, home, env: {}, model }), processHooks: options.processHooks ?? false, ...(options.formPrompter ? { formPrompter: options.formPrompter } : {}) },
+    { createGarnet: (o) => createGarnet({ ...o, home, env: options.configured ?? {}, ...(options.configured ? {} : { model }) }), processHooks: options.processHooks ?? false, ...(options.formPrompter ? { formPrompter: options.formPrompter } : {}) },
   );
   const text = () => stdout.vt.text();
   const until = async (check: (t: string) => boolean, what: string) => {
@@ -676,3 +676,22 @@ test('fullscreen wake-up: when tools fail, the chat leaves the alternate screen,
   assert.deepEqual(readPersona(loadConfig(c.home).config.persona), { name: 'Opal', owner: 'Alex', notes: 'Be brief' });
   assert.equal(c.stdin.raw, false);
 });
+
+for (const fullscreen of [true, false]) {
+  test(`/provider in the ${fullscreen ? 'fullscreen' : 'inline'} chat lists, swaps from the next message and shows the provider in the status line`, async () => {
+    const home = tempDir();
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ version: CONFIG_VERSION, providers: { work: { provider: 'gemini', name: 'gemini-2.5-pro' } } }));
+    const c = start(new FakeModel(), { home, fullscreen, rows: 24, configured: { ANTHROPIC_API_KEY: 'sk-ant-test', GEMINI_API_KEY: 'AIza-test' } });
+    await c.until((t) => t.includes('anthropic:claude-opus-5-5'), 'the banner or status line with the default model');
+    await c.type('/provider\r');
+    await c.until((t) => t.includes('Providers') && t.includes('gemini · gemini-2.5-pro'), 'the provider list');
+    await c.type('/provider work\r');
+    await c.until((t) => t.includes('Now using work (gemini:gemini-2.5-pro)'), 'the swap confirmation');
+    await c.until((t) => t.includes('work · gemini:gemini-2.5-pro'), 'the provider name beside the model');
+    await c.type('/provider nope\r');
+    await c.until((t) => t.includes('No provider named "nope"'), 'the refusal');
+    await c.type('/exit\r');
+    assert.equal(await c.done, 0);
+    assert.equal(loadConfig(home).config.activeProvider, 'default', 'a swap in chat is not saved');
+  });
+}

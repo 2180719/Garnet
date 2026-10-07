@@ -8,7 +8,7 @@ import type { Garnet } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
 import type { Prompter, TextAsk } from '../setup/prompt.ts';
-import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
+import { executeCommand, modelLabel, prepareTurn, type PendingFile } from './actions.ts';
 import type { OnboardFlow } from './flow.ts';
 import { messageText, parseSlash } from './commands.ts';
 import { describeCall } from './render.ts';
@@ -85,7 +85,7 @@ export class PlainChat {
     };
     process.on('SIGINT', onSigint);
     try {
-      this.o.err(`Garnet (${garnet.model.id}) · session ${this.sessionId}\nType a message. /help for commands, /exit to quit, Ctrl+C to interrupt.\n\n`);
+      this.o.err(`Garnet (${modelLabel(garnet)}) · session ${this.sessionId}\nType a message. /help for commands, /exit to quit, Ctrl+C to interrupt.\n\n`);
       if (this.o.onboard) {
         const status = await this.turn(this.o.onboard.kickoff);
         if (await this.checkOnboarding(status)) return 0;

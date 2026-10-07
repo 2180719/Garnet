@@ -211,6 +211,31 @@ test('formatting and exit code: symbols plus words, fixes indented, 1 when anyth
   assert.ok(Array.isArray(JSON.parse(out)));
 });
 
+test('named providers: the active one is checked strictly, the others only inform', async () => {
+  const d = deps({ env: { PATH: '', GEMINI_API_KEY: 'AIza-test' } });
+  mkdirSync(d.home, { recursive: true, mode: 0o700 });
+  configure(d.home, (c) => {
+    c.providers = { work: { provider: 'gemini', name: 'gemini-2.5-pro', effort: 'high', fallbacks: true, maxOutputTokens: 32_000 } };
+    c.activeProvider = 'work';
+  });
+  let models = find(await diagnose(d), 'model');
+  const work = models.find((f) => /\[work, active\]/.test(f.message))!;
+  assert.equal(work.status, 'ok');
+  assert.match(work.message, /gemini · gemini-2\.5-pro · key GEMINI_API_KEY \(environment\)/);
+  const other = models.find((f) => /\[default\]/.test(f.message))!;
+  assert.equal(other.status, 'info', 'the unused default has no key, which is not a failure');
+
+  configure(d.home, (c) => {
+    c.providers = { work: { provider: 'gemini', name: 'gemini-2.5-pro', effort: 'high', fallbacks: true, maxOutputTokens: 32_000 } };
+    c.activeProvider = 'work';
+  });
+  models = find(await diagnose({ ...d, env: { PATH: '' } }), 'model');
+  const missing = models.find((f) => /\[work, active\]/.test(f.message))!;
+  assert.equal(missing.status, 'fail');
+  assert.match(missing.message, /GEMINI_API_KEY is not set/);
+  assert.match(missing.fix ?? '', /GEMINI_API_KEY/);
+});
+
 test('a workspace containing home fails; an API bound beyond loopback is a warning', async () => {
   const d = deps();
   mkdirSync(d.home, { recursive: true, mode: 0o700 });

@@ -12,6 +12,8 @@ const migrations: Record<number, Migration> = {
   0: (raw) => ({ ...raw, version: 1 }),
   // 2 added optional built-in skills and connectors (`skills`, `connectors`), both off by default.
   1: (raw) => ({ ...raw, version: 2 }),
+  // 3 added named providers: the single `model` block stays as the provider called "default".
+  2: (raw) => ({ ...raw, version: 3, providers: raw.providers ?? {}, activeProvider: raw.activeProvider ?? 'default' }),
 };
 
 export function migrate(raw: unknown): unknown {

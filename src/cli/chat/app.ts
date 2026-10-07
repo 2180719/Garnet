@@ -9,7 +9,7 @@ import { errorMessage } from '../../contracts/index.ts';
 import type { Garnet } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
-import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
+import { executeCommand, modelLabel, prepareTurn, type PendingFile } from './actions.ts';
 import type { OnboardFlow } from './flow.ts';
 import { complete, matchingCommands, messageText, parseSlash } from './commands.ts';
 import { applyKey, emptyEditor, layoutEditor, type EditorState } from './editor.ts';
@@ -177,7 +177,7 @@ export class InteractiveChat {
     const events = this.o.resumed ? garnet.store.events(this.sessionId) : [];
     const sessionId = this.sessionId;
     this.drawnColumns = this.columns;
-    this.commit((w) => [...banner(this.theme, w, garnet.model.id, sessionId, this.o.resumed), ...transcriptRows(events, this.theme, w)]);
+    this.commit((w) => [...banner(this.theme, w, modelLabel(garnet), sessionId, this.o.resumed), ...transcriptRows(events, this.theme, w)]);
     if (this.o.onboard) void this.kick(this.o.onboard);
     return done;
   }
@@ -289,7 +289,7 @@ export class InteractiveChat {
     }
     if (k.ctrl && k.name === 'z' && this.o.processHooks && process.platform !== 'win32') return this.suspend();
     if (k.name === 'tab' && !k.shift) {
-      const c = complete(this.editor.text, (cmd) => (cmd === 'resume' ? this.o.garnet.store.listSessions(50).map((s) => s.id) : []));
+      const c = complete(this.editor.text, (cmd) => (cmd === 'resume' ? this.o.garnet.store.listSessions(50).map((s) => s.id) : cmd === 'provider' ? this.o.garnet.providers.list().map((p) => p.name) : []));
       if (c.text !== this.editor.text) this.editor = { ...this.editor, text: c.text, cursor: c.text.length };
       return this.render();
     }
@@ -696,7 +696,7 @@ export class InteractiveChat {
       if (matches.length) rows.push(...suggestionRows(matches.slice(0, 10), t, w));
     }
     const notice = this.notice && this.notice.until > Date.now() ? this.notice.text : undefined;
-    rows.push(footer({ model: this.o.garnet.model.id, sessionId: this.sessionId, totals: this.totals, contextWindow: this.o.garnet.model.capabilities.contextWindow, notice }, t, w));
+    rows.push(footer({ model: modelLabel(this.o.garnet), sessionId: this.sessionId, totals: this.totals, contextWindow: this.o.garnet.model.capabilities.contextWindow, notice }, t, w));
     const committed = this.pendingCommit;
     this.pendingCommit = [];
     this.screen!.setLive(rows, cursor, committed);
@@ -765,7 +765,7 @@ export class InteractiveChat {
 
     const header = statusBar({
       name: this.o.fullscreen!.assistantName,
-      model: this.o.garnet.model.id,
+      model: modelLabel(this.o.garnet),
       sessionId: this.sessionId,
       totals: this.totals,
       contextWindow: this.o.garnet.model.capabilities.contextWindow,
