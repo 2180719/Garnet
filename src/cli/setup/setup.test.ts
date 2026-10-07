@@ -3,6 +3,9 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
+import { VirtualTerminal } from '../../../test/vt.ts';
+import { makeTheme } from '../chat/theme.ts';
+import { FULLSCREEN_OFF, TuiPrompter } from '../tui/index.ts';
 import { tempDir } from '../../../test/helpers.ts';
 import { parseConfig, parseEnv, writeConfig, defaultConfig, readPersona, writePersona } from '../../config/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore } from '../../secrets/index.ts';
@@ -813,4 +816,76 @@ test('`garnet setup --help` lists the channel and sandbox flags', async () => {
   assert.equal(await setup(['--help'], { out: (t) => (out += t), err: (t) => (out += t) }), 0);
   for (const f of ['--channels', '--sandbox', '--ssh-host', '--ssh-user', '--ssh-workdir', '--ssh-auth', '--ssh-key', '--ssh-passphrase-env', '--ssh-host-keys']) assert.ok(out.includes(f), f);
   assert.equal(out.includes('—'), false);
+
+class ReviewPrompter extends AnswerPrompter {
+  bodies: string[] = [];
+  private readonly save: boolean;
+  constructor(save: boolean, answers: Record<string, Answer | Answer[]>) {
+    super(answers, { interactive: true });
+    this.save = save;
+  }
+  async review(q: { id: string; body: string }): Promise<boolean> {
+    this.asked.push(q.id);
+    this.bodies.push(q.body);
+    return this.save;
+  }
+}
+
+test('review step: shown before anything is written; declining saves nothing, accepting saves', async () => {
+  const answers = { provider: 'fake', name: 'Juno', telegram: false, discord: false, signal: false, service: false };
+  const no = harness();
+  const declined = new ReviewPrompter(false, answers);
+  assert.equal(await runSetup(declined, no.io, no.deps), 0);
+  assert.equal(existsSync(join(no.home, 'config.json')), false);
+  assert.match(no.out(), /Nothing was saved/);
+  assert.equal(declined.asked.at(-1), 'review');
+  assert.match(declined.bodies[0]!, /Model/);
+  const yes = harness();
+  assert.equal(await runSetup(new ReviewPrompter(true, answers), yes.io, yes.deps), 0);
+  assert.equal(yes.config().model.provider, 'fake');
+  // Prompters without a review (line prompts, scripts) skip the step.
+  const quiet = harness();
+  const p = new AnswerPrompter(answers, { interactive: true });
+  assert.equal(await runSetup(p, quiet.io, quiet.deps), 0);
+  assert.equal(p.asked.includes('review'), false);
+});
+
+test('fullscreen wizard: a scripted run through the TUI saves the config, restores the terminal and replays the notes', async () => {
+  const h = harness();
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {} });
+  const screen = new VirtualTerminal(72, 20);
+  const writes: string[] = [];
+  const output = { columns: 72, rows: 20, write: (t: string) => { writes.push(t); screen.write(t); } };
+  const tui = new TuiPrompter({ input, output, theme: makeTheme({ styled: false, color: false, truecolor: false }), processHooks: false });
+  const wio: Io = { out: tui.capture('out'), err: tui.capture('err') };
+  const script: Record<string, string | boolean> = { provider: 'fake', name: 'Juno', owner: 'Sam', service: false };
+  const seen: string[] = [];
+  const done = runSetup(tui, wio, h.deps);
+  let finished = false;
+  void done.finally(() => { finished = true; });
+  let n = 0;
+  while (!finished) {
+    await new Promise((r) => setTimeout(r, 2));
+    if (tui.asked.length === n || !tui.current) continue;
+    n = tui.asked.length;
+    const state = tui.current;
+    const id = state.ask.id;
+    seen.push(screen.screen().join('\n'));
+    const want = script[id];
+    if (state.kind === 'select') input.write(`\x1b[H${'\x1b[B'.repeat(Math.max(0, state.ask.choices.findIndex((c) => c.value === want)))}\r`);
+    else if (state.kind === 'text') input.write(`${typeof want === 'string' ? want : ''}\r`);
+    else if (state.kind === 'confirm') input.write(want === true ? 'y' : 'n');
+    else input.write('\r');
+  }
+  assert.equal(await done, 0);
+  const log = tui.close();
+  assert.equal(writes.at(-1), FULLSCREEN_OFF);
+  assert.equal(h.config().model.provider, 'fake');
+  assert.deepEqual(readPersona(h.config().persona), { name: 'Juno', owner: 'Sam', notes: '' });
+  assert.ok(tui.asked.includes('review'));
+  // The review screen listed the model before saving.
+  assert.ok(seen.some((s) => s.includes('Save these settings?') && s.includes('Model')));
+  assert.ok(seen.some((s) => /Step \d of 5/.test(s)));
+  // What the wizard printed is replayed for the normal screen, including the next steps.
+  assert.match(log.map((l) => l.text).join(''), /Garnet is ready\./);
 });

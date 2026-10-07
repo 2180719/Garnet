@@ -171,6 +171,10 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
     await channelsStep(p, io, deps, st);
   }
 
+  if (p.review && !(await p.review({ id: 'review', message: 'Save these settings?', help: `Nothing has been written yet. Saving writes ${join(deps.home, 'config.json')} and stores any keys you entered.`, body: summary(st, deps) }))) {
+    io.out('Nothing was saved.\n');
+    return 0;
+  }
   save(io, deps, st);
   // The wake-up chat writes persona and time zone to the saved config, and the service reads config once at start,
   // so the chat runs before the service is installed or restarted. Pairing needs the running service, so it stays after.
