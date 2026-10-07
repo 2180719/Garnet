@@ -37,7 +37,7 @@ test('multiselect prompt: Space and digits toggle, a flips all/none, Enter retur
   assert.deepEqual(drive(initMultiSelect(ask), ' \x1b[B\x1b[B \r').done, { value: ['telegram'] });
   assert.deepEqual(drive(initMultiSelect(ask), '2\r').done, { value: ['discord', 'signal'] });
   assert.deepEqual(drive(initMultiSelect(ask), 'a\r').done, { value: ['telegram', 'discord', 'signal'] });
-  assert.deepEqual(drive(initMultiSelect(ask), 'aa\r').done, { value: [] });
+  assert.deepEqual(drive(initMultiSelect(ask), 'a\x1b[Ba\r').done, { value: [] });
   assert.deepEqual(drive(initMultiSelect(ask), '\x1b').done, { cancel: true });
   const rows = view(drive(initMultiSelect(ask), ''));
   assert.ok(rows.some((r) => r.includes('[x] 3) Signal')) && rows.some((r) => r.includes('[ ] 1) Telegram')));
