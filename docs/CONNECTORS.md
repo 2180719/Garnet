@@ -73,7 +73,7 @@ The tool set and system prompt are fixed for a conversation (prompt caching and 
 Your events for a day or a range, in your time zone (`timezone` in config).
 
 1. Get your calendar's private ICS address: Google Calendar "Settings > your calendar > Secret address in iCal format"; iCloud "Public Calendar" link; Fastmail "Calendars > Export/Share"; Outlook "Publish calendar > ICS"; Nextcloud "Copy subscription link" (`https://user:app-password@host/...?export` works).
-2. `garnet secrets set GARNET_CALENDAR_URL` and paste it. It is a secret because the address itself is the password.
+2. `garnet secrets set GARNET_CALENDAR_URL` and paste it. It is a secret because the address itself is the password. Errors name only the feed's host, never its path or query.
 3. `garnet connectors enable calendar` (optionally add the feed host to `web.allowHosts`).
 
 It understands time zones, all-day events, durations, cancelled events, moved and excluded occurrences, and daily, weekly, monthly and yearly repeats (with intervals, counts, end dates, weekdays like "last Friday", days of the month and months). Anything else (for example `BYSETPOS`, hourly repeats, Windows time-zone names) is shown with a note instead of guessed. Settings: `connectors.calendar.urlEnv`, `maxDays`.

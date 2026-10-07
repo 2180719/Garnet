@@ -3,6 +3,9 @@ import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import { parseConfig, CONFIG_VERSION, type GarnetConfig } from '../config/index.ts';
+import { FakeModel } from '../models/index.ts';
+import { Agent } from '../runtime/index.ts';
+import { openDb, SessionStore } from '../store/index.ts';
 import { isGarnetError, type SessionTaint, type ToolCallBlock, type ToolContext, type ToolDefinition } from '../contracts/index.ts';
 import { Policy, type ApprovalRequest } from '../policy/index.ts';
 import { ToolExecutor, ToolRegistry, WebFetcher, type FetchRequest, type FetchResponse } from '../tools/index.ts';
@@ -400,6 +403,49 @@ test('connectors use the SSRF-guarded fetcher: an owner-configured GitHub Enterp
     const weather = weatherTool(settings().weather, deps(fetcher));
     await assert.rejects(weather.run(parse(weather, { location: 'x' }), ctx()), (e) => isGarnetError(e, 'denied') && /private, local or reserved/.test(e.message));
     assert.equal(requests.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+test('calendar: a fetch failure never forwards the feed path or query (a redirect loop through the executor and the event log)', async () => {
+  const secretPath = '/private-calendar/SAMPLE_SECRET_TOKEN/basic.ics';
+  const secretQuery = 'key=QUERYSECRET42';
+  let hits = 0;
+  // A feed server that redirects back to the same private address forever.
+  const server = createServer((_req, res) => {
+    hits++;
+    res.statusCode = 302;
+    res.setHeader('location', `${secretPath}?${secretQuery}`);
+    res.end();
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const port = (server.address() as AddressInfo).port;
+    const fetcher = new WebFetcher({ maxBytes: 100_000, timeoutMs: 5000, maxRedirects: 1, resolve: async () => [{ address: '127.0.0.1', family: 4 }] });
+    const tool = calendarTool(settings().calendar, deps(fetcher, { GARNET_CALENDAR_URL: `http://cal.internal:${port}${secretPath}?${secretQuery}` }));
+    const registry = new ToolRegistry().register(tool);
+    const store = new SessionStore(openDb(':memory:'));
+    const model = new FakeModel([{ toolCalls: [{ name: 'calendar', input: {} }] }, { text: 'done' }]);
+    const config = parseConfig({ version: CONFIG_VERSION });
+    const agent = new Agent({
+      store, model, registry, workspace: '/w', maxOutputTokens: 1000, budget: config.budgets, sleep: async () => {},
+      executor: new ToolExecutor({ registry, policy: new Policy(config.permissions), approver: async () => 'approved' }),
+    });
+    const session = store.createSession();
+    await agent.run(session.id, 'what is on today?');
+    assert.equal(hits, 2, 'the feed was fetched and the redirect followed once');
+    const finished = store.events(session.id).find((e) => e.type === 'tool_finished');
+    assert.ok(finished?.type === 'tool_finished' && finished.result.status === 'error');
+    assert.equal(finished.result.status === 'error' && finished.result.category, 'tool_failed', 'the original category is kept');
+    assert.match(finished.result.content, new RegExp(`calendar feed at cal\\.internal:${port}`));
+    assert.match(finished.result.content, /GARNET_CALENDAR_URL/);
+    const recorded = JSON.stringify(store.events(session.id));
+    const sentToModel = JSON.stringify(model.requests);
+    for (const leak of ['SAMPLE_SECRET_TOKEN', 'QUERYSECRET42', 'private-calendar']) {
+      assert.ok(!recorded.includes(leak), `the event log must not contain ${leak}`);
+      assert.ok(!sentToModel.includes(leak), `the model must not see ${leak}`);
+    }
   } finally {
     server.close();
   }

@@ -1,7 +1,7 @@
 // Calendar connector: read-only events from an ICS feed whose address is a secret.
 import { z } from 'zod';
 import { localToUtc, zonedParts, type GarnetConfig } from '../config/index.ts';
-import { GarnetError, type ToolDefinition } from '../contracts/index.ts';
+import { GarnetError, isGarnetError, type ToolDefinition } from '../contracts/index.ts';
 import { clean, clip, type ConnectorDeps } from './http.ts';
 import { occurrences, parseIcs, type Occurrence } from './ics.ts';
 
@@ -75,7 +75,14 @@ export function calendarTool(settings: CalendarSettings, deps: ConnectorDeps): T
         url.password = '';
       }
       // The owner chose this address (it is their secret), so a server on their own network is allowed.
-      const res = await deps.fetcher.fetch(url.href, { signal: ctx.signal, headers, trustedOrigin: url.origin });
+      let res: Awaited<ReturnType<typeof deps.fetcher.fetch>>;
+      try {
+        res = await deps.fetcher.fetch(url.href, { signal: ctx.signal, headers, trustedOrigin: url.origin });
+      } catch (e) {
+        // The fetcher's messages can quote an address (a redirect's target, an invalid URL), and the path and
+        // query of this one are the feed's password: keep the category, never the original message.
+        throw new GarnetError(isGarnetError(e) ? e.category : 'tool_failed', `Could not read the calendar feed at ${url.host}. Check the feed address in ${settings.urlEnv} and the server's connectivity and redirects.`);
+      }
       // Errors name the host only: the rest of the address is a secret.
       if (res.status < 200 || res.status >= 300) throw new GarnetError(res.status >= 500 ? 'provider_transient' : 'tool_failed', `The calendar feed at ${url.host} answered ${res.status}. ${res.status === 401 || res.status === 403 || res.status === 404 ? `The address in ${settings.urlEnv} may be wrong or revoked; tell the owner.` : 'Try again later.'}`);
       const text = res.body.toString('utf8');
