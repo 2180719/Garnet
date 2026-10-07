@@ -477,7 +477,7 @@ test('connectors use the SSRF-guarded fetcher: an owner-configured GitHub Enterp
   try {
     const port = (server.address() as AddressInfo).port;
     const fetcher = new WebFetcher({ maxBytes: 100_000, timeoutMs: 5000, maxRedirects: 2, resolve: async () => [{ address: '127.0.0.1', family: 4 }] });
-    const ghe = githubTool(settings({ github: { apiUrl: `http://ghe.internal:${port}/api/v3` } }).github, deps(fetcher, { GITHUB_TOKEN: TOKEN }));
+    const ghe = githubTool(settings({ github: { apiUrl: `http://localhost:${port}/api/v3` } }).github, deps(fetcher, { GITHUB_TOKEN: TOKEN }));
     const out = await ghe.run(parse(ghe, { action: 'issues', repo: 'o/r' }), ctx());
     assert.match(out.content, /From GHE/);
     assert.equal(requests[0]!.url, '/api/v3/repos/o/r/issues?state=open&per_page=20&sort=updated');

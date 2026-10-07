@@ -98,7 +98,7 @@ Search issues and pull requests, list a repository's, read one with its comments
 
 1. Create a fine-grained token (read access to issues, pull requests and notifications; add write access to issues for comments). `garnet secrets set GITHUB_TOKEN`. Public repositories work without a token, at GitHub's low anonymous rate limit.
 2. `garnet connectors enable github`. Add `api.github.com` to `web.allowHosts` to read without asking.
-3. Optional: `connectors.github.repos` limits it to `owner/name` or `owner/*`; `connectors.github.write: true` adds commenting (each comment is approved with its full text); `apiUrl` points at GitHub Enterprise Server (`https://<host>/api/v3`).
+3. Optional: `connectors.github.repos` limits it to `owner/name` or `owner/*`; `connectors.github.write: true` adds commenting (each comment is approved with its full text); `apiUrl` points at GitHub Enterprise Server (`https://<host>/api/v3`). It must use https, because the token is sent there; plain http is accepted only for `localhost`, `127.0.0.1` or `[::1]`.
 
 ### weather
 

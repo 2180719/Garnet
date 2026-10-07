@@ -90,6 +90,16 @@ test('names, scopes and overrides are validated', () => {
   for (const scope of ['cli:x', 'route:', 'web', 'telegram:', 'TELEGRAM', 'telegram:a b']) assert.ok(!SCOPE_RE.test(scope), scope);
 });
 
+test('connectors.github.apiUrl must be https (the token goes there); plain http only on this machine', () => {
+  const gh = (apiUrl: string) => () => parseConfig({ version: CONFIG_VERSION, connectors: { github: { apiUrl } } });
+  for (const url of ['http://ghe.example.com/api/v3', 'http://10.0.0.5/api/v3', 'ftp://ghe.example.com/', 'http://localhost.evil.example/api/v3']) {
+    assert.throws(gh(url), (e) => isGarnetError(e, 'config') && /connectors\.github\.apiUrl/.test(e.message) && /must use https/.test(e.message), url);
+  }
+  for (const url of ['https://ghe.example.com/api/v3', 'http://localhost:8080/api/v3', 'http://127.0.0.1:9/api/v3', 'http://[::1]:9/api/v3']) {
+    assert.equal(parseConfig({ version: CONFIG_VERSION, connectors: { github: { apiUrl: url } } }).connectors.github.apiUrl, url);
+  }
+});
+
 test('resolution: global list, then the channel, then the chat (narrowest wins)', () => {
   const t: Toggles = {
     enabled: ['github', 'weather'],

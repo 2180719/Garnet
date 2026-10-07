@@ -88,6 +88,16 @@ export const jobSchema = z
 
 export type JobConfig = z.infer<typeof jobSchema>;
 
+/** An address a credential may be sent to: https, or plain http to this machine only. */
+function secureOrLoopback(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname));
+  } catch {
+    return false;
+  }
+}
+
 /** `skills` and `connectors` share this shape: a global list plus per-scope overrides. */
 function toggles(names: readonly [string, ...string[]], what: string) {
   const name = z.enum(names);
@@ -501,7 +511,12 @@ export const configSchema = z
         github: z
           .object({
             tokenEnv: z.string().default('GITHUB_TOKEN').describe('Environment variable (or encrypted secret) holding a GitHub token (a fine-grained token with read access to issues and pull requests; add write access for comments). Optional for public repositories, needed for notifications and comments.'),
-            apiUrl: z.string().url().default('https://api.github.com').describe('GitHub REST API base. For GitHub Enterprise Server use https://<host>/api/v3. The token is only ever sent here.'),
+            apiUrl: z
+              .string()
+              .url()
+              .refine(secureOrLoopback, 'must use https (the GitHub token is sent there); plain http is allowed only for localhost, 127.0.0.1 or [::1]')
+              .default('https://api.github.com')
+              .describe('GitHub REST API base. For GitHub Enterprise Server use https://<host>/api/v3 (https is required; http only for localhost). The token is only ever sent here.'),
             repos: z
               .array(
                 z
