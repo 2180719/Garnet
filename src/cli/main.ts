@@ -12,6 +12,7 @@ import { importDeps } from './import.ts';
 import { unlockWarnings } from '../secrets/index.ts';
 import { secrets } from './secrets.ts';
 import { doctor } from './doctor.ts';
+import { configEdit, providers } from './providers.ts';
 import { init, setup } from './setup/command.ts';
 import { chat } from './chat/index.ts';
 
@@ -28,6 +29,12 @@ Usage:
   garnet config check         Validate the config file
   garnet config show          Print the effective config (secrets redacted)
   garnet config explain       Describe every setting
+  garnet config get <path>    Print one setting (secrets redacted), e.g. providers.work.name
+  garnet config set <path> <value>
+  garnet config unset <path>  Change or reset one setting (validated before it is saved)
+  garnet providers list|add|use|rm
+                            Named model providers (Anthropic, Gemini, OpenAI-compatible);
+                            /provider in chat swaps for that chat (\`garnet providers help\`)
   garnet sessions             List recent sessions
   garnet start                Run the service (channels, gateway, API) in the foreground
   garnet pair list|approve <code>|revoke <channel> <id>
@@ -62,6 +69,7 @@ Usage:
 Environment:
   GARNET_HOME                 Data directory (default ~/.garnet)
   ANTHROPIC_API_KEY         Provider key (name configurable via model.apiKeyEnv)
+  GEMINI_API_KEY            Gemini key (provider gemini; name configurable the same way)
   TELEGRAM_BOT_TOKEN        Telegram bot token (when channels.telegram.enabled)
   GARNET_SECRETS_KEY_FILE     Key file (mode 0600, outside GARNET_HOME) that unlocks the secret store
   GARNET_SECRETS_PASSPHRASE   Or a passphrase that unlocks it
@@ -100,6 +108,8 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return await chat(rest, { ...io, stdin: process.stdin, stdout: io === stdio ? process.stdout : null, env: process.env });
       case 'config':
         return configCommand(rest, io);
+      case 'providers':
+        return providers(rest, io);
       case 'sessions':
         return sessions(io);
       case 'start':
@@ -183,11 +193,12 @@ function configCommand(args: string[], io: Io): number {
     io.out(explain(configSchema.toJSONSchema() as JsonSchema, '').join('\n') + '\n');
     return 0;
   }
-  io.err(`Unknown config subcommand "${sub}". Use check, show or explain.\n`);
+  if (sub === 'get' || sub === 'set' || sub === 'unset') return configEdit(sub, args.slice(1), io);
+  io.err(`Unknown config subcommand "${sub}". Use check, show, explain, get, set or unset.\n`);
   return 2;
 }
 
-type JsonSchema = { description?: string; properties?: Record<string, JsonSchema>; default?: unknown; enum?: unknown[] };
+type JsonSchema = { description?: string; properties?: Record<string, JsonSchema>; additionalProperties?: JsonSchema | boolean; default?: unknown; enum?: unknown[] };
 
 function explain(schema: JsonSchema, prefix: string): string[] {
   const lines: string[] = [];
@@ -199,6 +210,8 @@ function explain(schema: JsonSchema, prefix: string): string[] {
     ].filter(Boolean).join(', ');
     lines.push(`${path}${extra ? ` (${extra})` : ''}${child.description ? ` — ${child.description}` : ''}`);
     if (child.properties) lines.push(...explain(child, path));
+    // A map of named entries (`providers`): describe the entry's fields under a <name> placeholder.
+    else if (child.additionalProperties && typeof child.additionalProperties === 'object' && child.additionalProperties.properties) lines.push(...explain(child.additionalProperties, `${path}.<name>`));
   }
   return lines;
 }

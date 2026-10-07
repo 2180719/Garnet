@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { parseCron, validTimeZone } from './cron.ts';
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 
 const permission = z.enum(['allow', 'ask', 'deny']);
 
@@ -82,6 +82,57 @@ export const jobSchema = z
 
 export type JobConfig = z.infer<typeof jobSchema>;
 
+/** Name of the provider configured by the top-level `model` block. */
+export const DEFAULT_PROVIDER = 'default';
+export const PROVIDER_KINDS = ['anthropic', 'gemini', 'openai-compatible', 'fake'] as const;
+/** A safe slug: shown in prompts and used as a config path segment. */
+export const PROVIDER_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const providerName = z
+  .string()
+  .regex(PROVIDER_NAME_RE, 'Provider names are lowercase letters, digits and dashes (at most 32, starting with a letter or digit)')
+  .refine((n) => n !== DEFAULT_PROVIDER, '"default" is the top-level model block; pick another name');
+
+const modelSchema = z
+  .object({
+    provider: z
+      .enum(PROVIDER_KINDS)
+      .default('anthropic')
+      .describe('anthropic; gemini (Google Gemini through its OpenAI-compatible endpoint, key GEMINI_API_KEY); or openai-compatible for OpenRouter and local servers (Ollama, llama.cpp, vLLM, LM Studio).'),
+    name: z.string().default('claude-opus-5-5').describe('Model ID sent to the provider.'),
+    effort: z
+      .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+      .optional()
+      .default('high')
+      .describe('Reasoning effort for models that support it. Lower is cheaper and faster.'),
+    fallbacks: z.boolean().default(true).describe('Let the provider retry a declined request on a fallback model.'),
+    apiKeyEnv: z
+      .string()
+      .optional()
+      .describe('Name of the environment variable (or encrypted secret, see `garnet secrets`) holding the API key. Keys never live in config. Default: ANTHROPIC_API_KEY for anthropic, GEMINI_API_KEY for gemini.'),
+    baseUrl: z.string().url().optional().describe('Provider API base URL. Required for openai-compatible, e.g. http://127.0.0.1:11434/v1. Gemini defaults to the Google OpenAI-compatible endpoint.'),
+    contextWindow: z.number().int().min(4096).optional().describe('Context window of an openai-compatible model (known Gemini models have it built in).'),
+    maxOutputTokens: z.number().int().positive().default(32_000).describe('Output token cap per model call.'),
+    vision: z
+      .boolean()
+      .optional()
+      .describe('The model can view images (sent as image blocks). Default: on for anthropic, off for openai-compatible; turn it on for vision models (gpt-4o, Qwen-VL, LLaVA, Gemma 3).'),
+    pdf: z
+      .boolean()
+      .optional()
+      .describe('The provider reads PDFs natively (document blocks). Default: on for anthropic, off for openai-compatible (OpenAI and OpenRouter accept them; most local servers do not).'),
+    pricing: z
+      .object({
+        input: z.number().min(0).describe('USD per million input tokens.'),
+        output: z.number().min(0).describe('USD per million output tokens.'),
+        cacheRead: z.number().min(0).optional().describe('USD per million cache-read tokens. Omit if the provider has no prompt cache; cache tokens then make the cost "?".'),
+        cacheWrite: z.number().min(0).optional().describe('USD per million cache-write tokens.'),
+      })
+      .optional()
+      .describe('USD per million tokens, to show dollar cost. Built in for current Anthropic models; set it for any other model. Without a price the cost shows "?", never $0.'),
+  });
+
+export type ModelConfig = z.infer<typeof modelSchema>;
+
 export const configSchema = z
   .object({
     version: z.literal(CONFIG_VERSION).describe('Config format version. Migrated automatically.'),
@@ -94,46 +145,15 @@ export const configSchema = z
       .refine(validTimeZone, "Unknown time zone (use an IANA name like Europe/London)")
       .optional()
       .describe("Your IANA time zone, e.g. Europe/London. Garnet shows each message's send time in it, and jobs without their own timezone use it. Defaults to the host zone."),
-    model: z
-      .object({
-        provider: z
-          .enum(['anthropic', 'openai-compatible', 'fake'])
-          .default('anthropic')
-          .describe('anthropic, or openai-compatible for OpenRouter and local servers (Ollama, llama.cpp, vLLM, LM Studio).'),
-        name: z.string().default('claude-opus-5-5').describe('Model ID sent to the provider.'),
-        effort: z
-          .enum(['low', 'medium', 'high', 'xhigh', 'max'])
-          .optional()
-          .default('high')
-          .describe('Reasoning effort for models that support it. Lower is cheaper and faster.'),
-        fallbacks: z.boolean().default(true).describe('Let the provider retry a declined request on a fallback model.'),
-        apiKeyEnv: z
-          .string()
-          .default('ANTHROPIC_API_KEY')
-          .describe('Name of the environment variable (or encrypted secret, see `garnet secrets`) holding the API key. Keys never live in config.'),
-        baseUrl: z.string().url().optional().describe('Provider API base URL. Required for openai-compatible, e.g. http://127.0.0.1:11434/v1.'),
-        contextWindow: z.number().int().min(4096).optional().describe('Context window of an openai-compatible model.'),
-        maxOutputTokens: z.number().int().positive().default(32_000).describe('Output token cap per model call.'),
-        vision: z
-          .boolean()
-          .optional()
-          .describe('The model can view images (sent as image blocks). Default: on for anthropic, off for openai-compatible; turn it on for vision models (gpt-4o, Qwen-VL, LLaVA, Gemma 3).'),
-        pdf: z
-          .boolean()
-          .optional()
-          .describe('The provider reads PDFs natively (document blocks). Default: on for anthropic, off for openai-compatible (OpenAI and OpenRouter accept them; most local servers do not).'),
-        pricing: z
-          .object({
-            input: z.number().min(0).describe('USD per million input tokens.'),
-            output: z.number().min(0).describe('USD per million output tokens.'),
-            cacheRead: z.number().min(0).optional().describe('USD per million cache-read tokens. Omit if the provider has no prompt cache; cache tokens then make the cost "?".'),
-            cacheWrite: z.number().min(0).optional().describe('USD per million cache-write tokens.'),
-          })
-          .optional()
-          .describe('USD per million tokens, to show dollar cost. Built in for current Anthropic models; set it for any other model. Without a price the cost shows "?", never $0.'),
-      })
-      .prefault({})
-      .describe('Model used for interactive tasks.'),
+    model: modelSchema.prefault({}).describe('The provider named `default`, used for interactive tasks unless `activeProvider` names another.'),
+    providers: z
+      .record(providerName, modelSchema)
+      .default({})
+      .describe('More named providers (and models) to choose from, e.g. { "work": {...}, "local": {...} }. Names are lowercase slugs (a-z, 0-9, dashes). The name `default` is the `model` block above. Switch with `garnet providers use <name>` or /provider in chat.'),
+    activeProvider: z
+      .string()
+      .default(DEFAULT_PROVIDER)
+      .describe('Name of the provider to use: `default` (the `model` block) or a key of `providers`.'),
     budgets: z
       .object({
         maxModelCalls: z.number().int().positive().default(25).describe('Model calls allowed per task.'),
@@ -429,8 +449,14 @@ export const configSchema = z
   })
   .strict()
   .superRefine((c, ctx) => {
-    if (c.model.provider === 'openai-compatible' && !c.model.baseUrl) {
-      ctx.addIssue({ code: 'custom', path: ['model', 'baseUrl'], message: 'openai-compatible needs model.baseUrl' });
+    for (const [name, m] of [[DEFAULT_PROVIDER, c.model], ...Object.entries(c.providers)] as const) {
+      if (m.provider === 'openai-compatible' && !m.baseUrl) {
+        const path = name === DEFAULT_PROVIDER ? ['model', 'baseUrl'] : ['providers', name, 'baseUrl'];
+        ctx.addIssue({ code: 'custom', path, message: `openai-compatible needs ${path.join('.')}` });
+      }
+    }
+    if (c.activeProvider !== DEFAULT_PROVIDER && !(c.activeProvider in c.providers)) {
+      ctx.addIssue({ code: 'custom', path: ['activeProvider'], message: `activeProvider "${c.activeProvider}" is not defined (known: ${[DEFAULT_PROVIDER, ...Object.keys(c.providers)].join(', ')})` });
     }
     if (c.dashboard.enabled && !c.api.enabled) {
       ctx.addIssue({ code: 'custom', path: ['dashboard', 'enabled'], message: 'The dashboard is served by the API server: enable api too' });

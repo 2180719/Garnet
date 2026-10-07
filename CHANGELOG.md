@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Gemini and named providers
+- Google Gemini is a first-class provider (`model.provider = "gemini"`, key `GEMINI_API_KEY`, in `garnet setup` as "Google Gemini"): a preset over the OpenAI-compatible adapter pointed at Google's compatibility endpoint, with a table of explicit model ids (context windows, images and PDFs on).
+- Config version 2: `providers` holds more named providers and `activeProvider` picks the one in use; the old `model` block is the provider called `default`, so existing configs keep working (migrated with a backup). Names are lowercase slugs. `garnet providers list|add|use|rm`, `garnet config get|set|unset`, `garnet doctor` and the setup wizard (`--provider-name`) know about them.
+- `/provider` in the terminal chat lists providers and swaps from the next message (`/provider <name> [model]`), keeping the session's history, system prompt and tool set. Chat apps (Telegram, Signal, Discord) and the API do not swap; change config and restart.
+
 ### Review fixes
 - Security: results of jobs and agent-sent messages that read untrusted content now carry that state into the chat they land in; forwarded voice notes and audio files count as untrusted (only a live voice note from the paired owner in a private chat does not); links in approval text are no longer treated as the owner's; "message the owner" and relative times are resolved before approval, so the action that runs is exactly the one approved; the agent cannot pause or resume `config.json` jobs, granting a job `exec` needs exec approval, and agent messages never go to group chats.
 - `web_fetch` no longer leaks a connection when a compressed response stalls.

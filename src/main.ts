@@ -2,12 +2,12 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DiscordChannel, SignalChannel, TelegramChannel, UPLOAD_LIMITS } from './channels/index.ts';
-import { loadConfig, redact, garnetHome, type Paths, type GarnetConfig } from './config/index.ts';
+import { activeProvider, findProvider, keyEnvOf, listProviders, loadConfig, redact, garnetHome, type ModelConfig, type NamedProvider, type Paths, type GarnetConfig } from './config/index.ts';
 import { assistantName, projectInstructionsSection } from './context/index.ts';
 import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
-import { AnthropicModel, FakeModel, OpenAICompatibleModel } from './models/index.ts';
+import { AnthropicModel, FakeModel, GeminiModel, OpenAICompatibleModel, SwitchableModel } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue, sessionTaint } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, StatsStore, type Db } from './store/index.ts';
@@ -66,10 +66,27 @@ export type Garnet = {
   /** The attachment files under <home>/media; null when `media.enabled` is false. */
   mediaStore: MediaStore | null;
   agent: Agent;
+  /** The main model. Its `id` and capabilities follow the active provider, which `providers.use` can swap between turns. */
   model: ModelAdapter;
-  /** USD per million tokens for the main model (config or built-in); undefined means cost shows `?`. */
-  pricing: Pricing | undefined;
+  /** USD per million tokens for the main model (config or built-in) of the active provider; undefined means cost shows `?`. */
+  readonly pricing: Pricing | undefined;
+  /** The named providers and the swap. See `ProviderControl`. */
+  providers: ProviderControl;
   close: () => void;
+};
+
+/**
+ * Provider swapping for a running process. `use` changes only what the NEXT model call goes to: the frozen system
+ * prompt, tool set and event log are untouched (the log stays append-only; each assistant message records the model
+ * id that wrote it, and adapters drop other providers' blocks when replaying history). It never writes config.json
+ * (`garnet providers use` does that, for the next start) and it is refused while the model is injected (`--fake`).
+ */
+export type ProviderControl = {
+  /** Every configured provider, `default` first. `active` marks the one in use right now (not necessarily the one in config.json). */
+  list: () => NamedProvider[];
+  active: () => NamedProvider;
+  /** Swaps to `name`, optionally on another model id. Throws a GarnetError and changes nothing when the key is missing, the name is unknown or swapping is not possible. */
+  use: (name: string, modelName?: string) => NamedProvider;
 };
 
 export type CreateOptions = {
@@ -174,18 +191,24 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   const trustedEndpoints = registerWebTools(registry, config, secret);
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
-  const model = options.model ?? (options.noModel ? new FakeModel() : createModel(config, secret));
+  const injected = options.model !== undefined || options.noModel === true;
+  const switchable = new SwitchableModel(options.model ?? (options.noModel ? new FakeModel() : createModel(config, secret)));
+  const model: ModelAdapter = switchable;
+  // What follows the active provider: its settings (output cap, price). A swap replaces this object.
+  let live: NamedProvider = activeProvider(config);
   const media = mediaStore
     ? new MediaIngest({
         store: mediaStore,
         transcriber: createTranscriber(config, secret),
         pdfText: config.media.pdfText.command ? { argv: config.media.pdfText.command, timeoutMs: config.media.pdfText.timeoutSeconds * 1000 } : null,
-        modelMedia: model.capabilities.media,
+        get modelMedia() {
+          return model.capabilities.media;
+        },
         maxTextChars: config.media.maxTextChars,
         saveText: (sessionId, text) => artifacts.save(sessionId, text),
       })
     : null;
-  const pricing = resolvePricing(config.model.provider, config.model.name, config.model.pricing);
+  const currentPricing = (): Pricing | undefined => resolvePricing(live.model.provider, live.model.name, live.model.pricing);
   const stats = new StatsStore(db);
   /**
    * The daily spending cap (budgets.dailyUsd), for the owner's calendar day: refuses new model-calling
@@ -196,6 +219,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     const cap = config.budgets.dailyUsd;
     if (cap === undefined) return null;
     const tz = ownerTimeZone(config);
+    const pricing = currentPricing();
     if (!pricing) return `Daily spending cap is set (${formatUsd(cap)}, budgets.dailyUsd) but the model has no known price, so spending cannot be measured. Set model.pricing in config.json (or remove the cap); model tasks are refused until then.`;
     const { known, unknown } = stats.costSince(startOfDayIso(tz), pricing);
     if (unknown > 0) return `Daily spending cap is set (${formatUsd(cap)}, budgets.dailyUsd) but ${unknown} model call record(s) today have an unknown cost (the provider did not report all token counts, or pricing is incomplete), so spending cannot be measured. Set model.pricing in config.json (or remove the cap); new model tasks are refused until tomorrow (${tz}).`;
@@ -217,7 +241,9 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       promptSections: (ns) => [projectInstructionsSection(paths.workspace), memory.snapshot(ns), skills.index(), importedArchiveSection(paths.workspace)],
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
-      maxOutputTokens: config.model.maxOutputTokens,
+      get maxOutputTokens() {
+        return live.model.maxOutputTokens;
+      },
       ...(mediaStore ? { loadAttachment: (ref: { id: string }) => mediaStore.read(ref.id) } : {}),
       maxAttachmentsInContext: config.media.maxInContext,
       timeZone: ownerTimeZone(config),
@@ -251,7 +277,23 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     mediaStore,
     agent,
     model,
-    pricing,
+    get pricing() {
+      return currentPricing();
+    },
+    providers: {
+      list: () => listProviders(config).map((p) => ({ ...p, active: p.name === live.name })),
+      active: () => live,
+      use: (name, modelName) => {
+        if (injected) throw new GarnetError('invalid_input', 'The model was set for this process (--fake), so it cannot be swapped.');
+        const target = findProvider(config, name);
+        if (!target) throw new GarnetError('invalid_input', `No provider named "${name}" (known: ${listProviders(config).map((p) => p.name).join(', ')}).`);
+        const settings: ModelConfig = modelName ? { ...target.model, name: modelName } : target.model;
+        const next = createModel(config, secret, settings); // throws, changing nothing, when the key is missing
+        switchable.swap(next);
+        live = { name, model: settings, active: true };
+        return live;
+      },
+    },
     close: () => db.close(),
   };
 }
@@ -275,16 +317,21 @@ function registerWebTools(registry: ToolRegistry, config: GarnetConfig, secret: 
 }
 
 /** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */
-export function createModel(config: GarnetConfig, secret: SecretLookup): ModelAdapter {
-  const m = config.model;
+export function createModel(config: GarnetConfig, secret: SecretLookup, settings: ModelConfig = activeProvider(config).model): ModelAdapter {
+  const m = settings;
   if (m.provider === 'fake') return new FakeModel();
-  const apiKey = secret(m.apiKeyEnv);
+  const keyEnv = keyEnvOf(m);
+  const apiKey = secret(keyEnv);
+  if (m.provider === 'gemini') {
+    if (!apiKey) throw new GarnetError('config', `No Gemini API key found. Set the ${keyEnv} environment variable or store it with \`garnet secrets set ${keyEnv}\`.`);
+    return new GeminiModel({ apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf, baseUrl: m.baseUrl });
+  }
   if (m.provider === 'openai-compatible') {
     // Local servers often need no key.
     return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf });
   }
   if (!apiKey) {
-    throw new GarnetError('config', `No API key found. Set the ${m.apiKeyEnv} environment variable or store it with \`garnet secrets set ${m.apiKeyEnv}\`, or run with --fake.`);
+    throw new GarnetError('config', `No API key found. Set the ${keyEnv} environment variable or store it with \`garnet secrets set ${keyEnv}\`, or run with --fake.`);
   }
   return new AnthropicModel({
     apiKey,
@@ -314,7 +361,7 @@ export function createTranscriber(config: GarnetConfig, secret: SecretLookup): T
 /** The website demo uses its own cheap model with the same provider and credentials. */
 function createDemo(garnet: Garnet): DemoChat {
   const d = garnet.config.api.demo;
-  const model = createModel({ ...garnet.config, model: { ...garnet.config.model, name: d.model, effort: 'low' } }, garnet.secret);
+  const model = createModel(garnet.config, garnet.secret, { ...activeProvider(garnet.config).model, name: d.model, effort: 'low' });
   return new DemoChat({ model, allowedOrigins: d.allowedOrigins, perIpPerHour: d.perIpPerHour, dailyTokenBudget: d.dailyTokenBudget, maxOutputTokens: d.maxOutputTokens });
 }
 

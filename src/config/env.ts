@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { keyEnvOf, listProviders } from './providers.ts';
 import type { GarnetConfig } from './schema.ts';
 
 /** Environment variables Garnet reads. Before the rename each had a `RUBY_` twin, which is still read when the `GARNET_` one is unset. */
@@ -126,5 +127,5 @@ function quoteEnv(value: string): string {
 /** Names of the environment variables (or stored secrets) the config refers to. Names only, never values. */
 export function secretNames(config: GarnetConfig): string[] {
   const transcription = config.media.transcription.backend === 'openai-compatible' ? config.media.transcription.apiKeyEnv : undefined;
-  return [...new Set([config.model.apiKeyEnv, config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : [])])];
+  return [...new Set([...listProviders(config).filter((p) => p.model.provider !== 'fake').map((p) => keyEnvOf(p.model)), config.channels.telegram.tokenEnv, config.channels.discord.tokenEnv, ...(transcription ? [transcription] : [])])];
 }

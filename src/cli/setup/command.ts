@@ -20,9 +20,11 @@ Interactive on a terminal. With --non-interactive (or -y), every answer comes
 from the options below, the current config, or safe defaults; nothing optional
 (live checks, the service, importing) happens unless you ask for it.
 
-  --provider <p>            anthropic | openrouter | local | openai-compatible | fake
+  --provider <p>            anthropic | gemini | openrouter | local | openai-compatible | fake
   --model <id>              Model ID
   --base-url <url>          API base URL (local and openai-compatible)
+  --provider-name <slug>    Name for a local/openrouter/openai-compatible provider (default: the
+                            current one; a new name is added to providers and made active)
   --key-env <NAME>          Variable or secret name that holds the model key
   --key-stdin               Read the model key from stdin (never pass it as an argument)
   --secrets <where>         encrypted (default) | env-file | env
@@ -47,6 +49,7 @@ const FLAGS = {
   provider: { type: 'string' },
   model: { type: 'string' },
   'base-url': { type: 'string' },
+  'provider-name': { type: 'string' },
   'key-env': { type: 'string' },
   'key-stdin': { type: 'boolean' },
   secrets: { type: 'string' },

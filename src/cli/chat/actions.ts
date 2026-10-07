@@ -55,6 +55,12 @@ export function pastedPath(raw: string): string {
   return resolve(p);
 }
 
+/** The model id, led by the provider's name when it is not the default one (shown in the banner, footer and header). */
+export function modelLabel(garnet: Garnet): string {
+  const a = garnet.providers.active();
+  return a.name === 'default' ? garnet.model.id : `${a.name} · ${garnet.model.id}`;
+}
+
 /** `rows` renders the output at a width, so a narrower terminal can redraw it cleanly. */
 export type CommandResult = { rows: (width: number) => string[]; effect?: 'exit' | 'clear' };
 
@@ -104,10 +110,42 @@ export async function executeCommand(parsed: NonNullable<ParsedSlash>, ctx: Comm
           row('max output', `${formatTokens(garnet.config.model.maxOutputTokens)} tokens per model call`),
           row('streaming', m.capabilities.streaming ? 'yes' : 'no'),
           row('prompt caching', m.capabilities.promptCaching ? 'yes' : 'no'),
-          ...wrapText(t.muted('  The model is set in config.json (model.provider, model.name) and fixed for this chat; restart to change it.'), w),
+          row('provider', garnet.providers.active().name),
+          ...wrapText(t.muted('  The model comes from config.json (model, providers, activeProvider). /provider swaps providers from your next message.'), w),
           '',
         ],
       };
+    }
+    case 'provider': {
+      const [name, model, ...extra] = args.split(/\s+/).filter(Boolean);
+      if (!name) {
+        const rows = garnet.providers.list();
+        return {
+          rows: (w: number) => [
+            '', t.bold('  Providers'),
+            ...rows.map((p) => truncate(`  ${p.active ? t.accent('●') : ' '} ${padEnd(sanitize(p.name), 16)}${sanitize(p.model.provider)} · ${sanitize(p.model.name)}${p.active ? t.muted('  (in use)') : ''}`, w)),
+            ...wrapText(t.muted('  /provider <name> [model] swaps from your next message; the conversation, system prompt and tools stay as they are. Not saved: `garnet providers use` changes config.json.'), w),
+            '',
+          ],
+        };
+      }
+      if (extra.length) return { rows: (w: number) => ['', t.muted('  Usage: /provider [name] [model]')] };
+      try {
+        const before = sessionTotals(garnet.store.events(ctx.sessionId), garnet.pricing).contextTokens;
+        const now = garnet.providers.use(name, model);
+        const window = garnet.model.capabilities.contextWindow;
+        const tight = before !== null && before > window * 0.9;
+        return {
+          rows: (w: number) => [
+            '',
+            ...wrapText(`  ${t.ok('✓')} Now using ${t.bold(sanitize(now.name))} (${sanitize(garnet.model.id)}). It answers from your next message; this session's history, system prompt and tools are unchanged.`, w),
+            ...(tight ? wrapText(`  ${t.warn('!')} The conversation is about ${formatTokens(before)} tokens and this model's window is ${formatTokens(window)}: /compact first.`, w) : []),
+            '',
+          ],
+        };
+      } catch (e) {
+        return { rows: (w: number) => ['', ...wrapText(`  ${t.error('✗')} ${sanitize(errorMessage(e))} Nothing changed.`, w), ''] };
+      }
     }
     case 'usage': {
       const totals = sessionTotals(garnet.store.events(ctx.sessionId), garnet.pricing);

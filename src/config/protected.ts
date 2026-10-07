@@ -14,6 +14,9 @@ export const PROTECTED_CONFIG_PATHS: readonly string[] = [
   'model.provider',
   'model.apiKeyEnv',
   'model.baseUrl',
+  'providers.*.provider', // which host receives prompts and the key
+  'providers.*.baseUrl',
+  'activeProvider',
   'api.host',
   'api.port',
   'api.trustProxy',

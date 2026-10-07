@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
-import { CONFIG_VERSION, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
+import { CONFIG_VERSION, DEFAULT_PROVIDER, keyEnvOf, listProviders, parseConfig, parseEnv, garnetHome, envVar, deprecatedEnvVars, type GarnetConfig } from '../config/index.ts';
 import { errorMessage } from '../contracts/index.ts';
 import { createSandbox } from '../sandbox/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, unlockWarnings } from '../secrets/index.ts';
@@ -131,23 +131,31 @@ export async function diagnose(d: DoctorDeps): Promise<Finding[]> {
   const missingFix = (name: string) => (storeError ? `Unlock the store (see above), or set ${name}.` : `Run \`garnet setup\`, or \`garnet secrets set ${name}\`.`);
 
   if (config) {
-    // Model and key
-    const m = config.model;
-    if (m.provider === 'fake') add('model', 'warn', 'Using the offline demo model; replies are scripted', 'Run `garnet setup` to pick a real model.');
-    else {
-      const loc = where(m.apiKeyEnv);
-      if (m.provider === 'anthropic') {
-        if (loc) add('model', 'ok', `anthropic · ${m.name} · key ${m.apiKeyEnv} (${loc})`);
-        else add('model', 'fail', `anthropic · ${m.name} · ${m.apiKeyEnv} is not set`, missingFix(m.apiKeyEnv));
+    // Model and key: the active provider is checked strictly, the others only informationally.
+    const providers = listProviders(config);
+    for (const p of providers) {
+      const m = p.model;
+      const tag = providers.length > 1 || p.name !== DEFAULT_PROVIDER ? ` [${p.name}${p.active ? ', active' : ''}]` : '';
+      // A provider that is not selected cannot break a start: its problems are only information.
+      const bad = p.active ? 'fail' : 'info';
+      const keyEnv = keyEnvOf(m);
+      if (m.provider === 'fake') {
+        if (p.active) add('model', 'warn', `Using the offline demo model; replies are scripted${tag}`, 'Run `garnet setup` to pick a real model.');
+        continue;
+      }
+      const loc = where(keyEnv);
+      if (m.provider === 'anthropic' || m.provider === 'gemini') {
+        if (loc) add('model', 'ok', `${m.provider} · ${m.name} · key ${keyEnv} (${loc})${tag}`);
+        else add('model', bad, `${m.provider} · ${m.name} · ${keyEnv} is not set${tag}`, missingFix(keyEnv));
       } else {
         const host = m.baseUrl ? new URL(m.baseUrl).hostname : '';
         const local = LOOPBACK.includes(host);
-        if (loc && m.apiKeyEnv === 'ANTHROPIC_API_KEY' && !host.endsWith('anthropic.com')) {
-          add('model', 'warn', `openai-compatible · ${m.name} · would send ANTHROPIC_API_KEY to ${host}`, 'Set model.apiKeyEnv to the key for this server (`garnet setup`).');
+        if (loc && keyEnv === 'ANTHROPIC_API_KEY' && !host.endsWith('anthropic.com')) {
+          add('model', 'warn', `openai-compatible · ${m.name} · would send ANTHROPIC_API_KEY to ${host}${tag}`, `Set ${p.name === DEFAULT_PROVIDER ? 'model' : `providers.${p.name}`}.apiKeyEnv to the key for this server (\`garnet setup\`).`);
         } else if (loc || local) {
-          add('model', 'ok', `openai-compatible · ${m.name} at ${m.baseUrl}${loc ? ` · key ${m.apiKeyEnv} (${loc})` : ' · no key'}`);
+          add('model', 'ok', `openai-compatible · ${m.name} at ${m.baseUrl}${loc ? ` · key ${keyEnv} (${loc})` : ' · no key'}${tag}`);
         } else {
-          add('model', 'warn', `openai-compatible · ${m.name} at ${m.baseUrl} · no key (${m.apiKeyEnv} is not set)`, missingFix(m.apiKeyEnv));
+          add('model', p.active ? 'warn' : 'info', `openai-compatible · ${m.name} at ${m.baseUrl} · no key (${keyEnv} is not set)${tag}`, missingFix(keyEnv));
         }
       }
     }

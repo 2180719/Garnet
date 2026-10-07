@@ -10,6 +10,8 @@ type Migration = (raw: Record<string, unknown>) => Record<string, unknown>;
  */
 const migrations: Record<number, Migration> = {
   0: (raw) => ({ ...raw, version: 1 }),
+  // Named providers: the single `model` block stays as the provider called "default".
+  1: (raw) => ({ ...raw, version: 2, providers: raw.providers ?? {}, activeProvider: raw.activeProvider ?? 'default' }),
 };
 
 export function migrate(raw: unknown): unknown {

@@ -25,7 +25,7 @@ Deploying and testing against real providers and channels: [docs/LIVE-TESTING.md
 | `src/store/` | SQLite: schema migrations, sessions, append-only event log, tasks, gateway tables, API keys and audit log. |
 | `src/policy/` | Capability permissions, host scopes, untrusted-content containment (taint escalates allow to ask), approvals, workspace path containment. |
 | `src/tools/` | Tool registry, executor (repair → validate → authorize → run with limits), artifacts for large outputs, built-in tools, `web_fetch`/`web_search` with an SSRF-guarded HTTP client (`web/`). |
-| `src/models/` | Model adapters: `fake` (tests), `anthropic`, and `openai-compatible` (OpenRouter, local servers). |
+| `src/models/` | Model adapters: `fake` (tests), `anthropic`, `openai-compatible` (OpenRouter, local servers) and the `gemini` preset over it, plus the swappable model wrapper. |
 | `src/context/` | Frozen per-session system prompt, model-facing history derived from events, keep-tail compaction planning. |
 | `src/memory/` | Bounded `MEMORY.md`/`USER.md` per namespace with versioning, and the `memory` tool. |
 | `src/skills/` | `SKILL.md` skills (agentskills.io format) with provenance, owner-edit locks and proposals. |

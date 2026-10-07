@@ -411,6 +411,30 @@ test('non-interactive: the service is only touched with --service (install, or r
   assert.equal(fresh.svc.installs, 1);
 });
 
+test('gemini: its own key name, the table default model, a models check on the compatibility endpoint', async () => {
+  const h = harness({ responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-2.5-flash' }] } })] });
+  assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: true, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  const c = h.config();
+  assert.equal(c.model.provider, 'gemini');
+  assert.equal(c.model.name, 'gemini-2.5-flash');
+  assert.equal(c.model.apiKeyEnv, 'GEMINI_API_KEY');
+  assert.equal(h.calls[0]!.url, 'https://generativelanguage.googleapis.com/v1beta/openai/models');
+  assert.match(h.out(), /✓ server answered/);
+});
+
+test('a custom provider can be named: it is added next to the others and becomes the one in use', async () => {
+  const h = harness({});
+  assert.equal(await h.run({ provider: 'local', model: 'qwen3:8b', 'provider-name': 'laptop', telegram: false, discord: false, signal: false }).done, 0);
+  const c = h.config();
+  assert.equal(c.activeProvider, 'laptop');
+  assert.equal(c.providers.laptop!.baseUrl, 'http://127.0.0.1:11434/v1');
+  assert.equal(c.providers.laptop!.name, 'qwen3:8b');
+  assert.equal(c.model.provider, 'anthropic', 'the default block is untouched');
+  assert.match(h.out(), /Model +laptop: local · qwen3:8b/);
+  // A bad name is refused.
+  await assert.rejects(harness({}).run({ provider: 'local', model: 'x', 'provider-name': 'Bad Name', telegram: false, discord: false, signal: false }).done, /--provider-name/);
+});
+
 test('hidden input ignores arrow keys and paste markers', () => {
   assert.equal(stripKeySequences('sk-\x1b[Dab\x1bOHc\x1b[200~def\x1b[201~\x1b[1;5C'), 'sk-abcdef');
   assert.equal(stripKeySequences('plain-value_123'), 'plain-value_123');

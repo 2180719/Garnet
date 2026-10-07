@@ -7,15 +7,22 @@ import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
+  DEFAULT_PROVIDER,
+  PROVIDER_NAME_RE,
+  activeProvider,
   defaultConfig,
+  keyEnvOf,
   parseConfig,
   parseEnv,
   pathsFor,
   removeFromEnvFile,
   setInEnvFile,
+  withProvider,
   writeConfig,
   type GarnetConfig,
+  type ModelConfig,
 } from '../../config/index.ts';
+import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV, GEMINI_MODELS } from '../../models/index.ts';
 import { GarnetError, errorMessage } from '../../contracts/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, unlockFrom, writePrivateFile, type KdfParams } from '../../secrets/index.ts';
 import type { ServiceResult } from '../../service/index.ts';
@@ -67,7 +74,7 @@ export type ImportDraft = {
 };
 
 type Storage = 'encrypted' | 'env-file' | 'env';
-type ProviderChoice = 'anthropic' | 'openrouter' | 'local' | 'openai-compatible' | 'fake';
+type ProviderChoice = 'anthropic' | 'gemini' | 'openrouter' | 'local' | 'openai-compatible' | 'fake';
 type Section = 'model' | 'persona' | 'channels' | 'import' | 'service' | 'done' | 'quit';
 
 type State = {
@@ -102,7 +109,7 @@ const validUrl = (v: string): string | null => {
 const required = (what: string) => (v: string) => (v.trim() ? null : `Enter ${what}.`);
 const validEnvName = (v: string) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) ? null : 'Use letters, digits and _ (like an environment variable).');
 
-export function providerOf(m: GarnetConfig['model']): ProviderChoice {
+export function providerOf(m: ModelConfig): ProviderChoice {
   if (m.provider !== 'openai-compatible') return m.provider;
   if (m.baseUrl && new URL(m.baseUrl).host === 'openrouter.ai') return 'openrouter';
   if (m.baseUrl && ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(m.baseUrl).hostname)) return 'local';
@@ -111,6 +118,7 @@ export function providerOf(m: GarnetConfig['model']): ProviderChoice {
 
 const PROVIDERS: Choice<ProviderChoice>[] = [
   { value: 'anthropic', label: 'Anthropic (Claude)', hint: 'recommended · key from console.anthropic.com' },
+  { value: 'gemini', label: 'Google Gemini', hint: 'key from aistudio.google.com/apikey' },
   { value: 'openrouter', label: 'OpenRouter', hint: 'one key, many models · openrouter.ai/keys' },
   { value: 'local', label: 'A model on this machine', hint: 'Ollama, LM Studio, llama.cpp, vLLM · no key' },
   { value: 'openai-compatible', label: 'Another OpenAI-compatible API', hint: 'any /v1/chat/completions endpoint' },
@@ -183,7 +191,7 @@ function menu(st: State, deps: SetupDeps): Choice<Section>[] {
   const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => c.channels[n].enabled);
   const persona = readPersona(c.persona);
   const items: Choice<Section>[] = [
-    { value: 'model', label: 'Model and API key', hint: `${providerOf(c.model)} · ${c.model.name}` },
+    { value: 'model', label: 'Model and API key', hint: `${providerOf(activeProvider(c).model)} · ${activeProvider(c).model.name}` },
     { value: 'persona', label: 'Name and persona', hint: `${persona.name}${persona.owner ? `, for ${persona.owner}` : ''}` },
     { value: 'channels', label: 'Messaging channels', hint: channels.length ? channels.join(', ') : 'none' },
   ];
@@ -242,12 +250,13 @@ async function importStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Prom
 
 async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   heading(io, deps.style, 'Model');
-  const cur = st.config.model;
+  const current = activeProvider(st.config);
+  const cur = current.model;
   const was = providerOf(cur);
   const provider = await p.select<ProviderChoice>({ id: 'provider', message: 'Which model should Garnet think with?', choices: PROVIDERS, default: was });
   const same = provider === was;
   const defaults = defaultConfig().model;
-  const m: GarnetConfig['model'] = { ...cur };
+  const m: ModelConfig = { ...cur };
   delete m.contextWindow;
   if (!same) delete m.baseUrl;
   if (same && cur.contextWindow) m.contextWindow = cur.contextWindow;
@@ -263,13 +272,18 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
     case 'anthropic':
       m.provider = 'anthropic';
       m.name = await askModel('Press Enter for the default.', same ? cur.name : defaults.name);
-      m.apiKeyEnv = await askKeyEnv(same ? cur.apiKeyEnv : 'ANTHROPIC_API_KEY');
+      m.apiKeyEnv = await askKeyEnv(same ? keyEnvOf(cur) : 'ANTHROPIC_API_KEY');
+      break;
+    case 'gemini':
+      m.provider = 'gemini';
+      m.name = await askModel(`Known IDs: ${GEMINI_MODELS.map((g) => g.id).join(', ')}.`, same ? cur.name : DEFAULT_GEMINI_MODEL);
+      m.apiKeyEnv = await askKeyEnv(same ? keyEnvOf(cur) : GEMINI_API_KEY_ENV);
       break;
     case 'openrouter':
       m.provider = 'openai-compatible';
       m.baseUrl = OPENROUTER_URL;
       m.name = await askModel('IDs look like provider/model; browse https://openrouter.ai/models. Pick one that supports tools.', same ? cur.name : undefined);
-      m.apiKeyEnv = await askKeyEnv(same ? cur.apiKeyEnv : 'OPENROUTER_API_KEY');
+      m.apiKeyEnv = await askKeyEnv(same ? keyEnvOf(cur) : 'OPENROUTER_API_KEY');
       break;
     case 'local':
       m.provider = 'openai-compatible';
@@ -281,16 +295,27 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
         validate: validUrl,
       });
       m.name = await askModel('The name your server uses, e.g. from `ollama list`. Pick one that supports tools.', same ? cur.name : undefined);
-      m.apiKeyEnv = same ? cur.apiKeyEnv : LOCAL_KEY_ENV;
+      m.apiKeyEnv = same ? keyEnvOf(cur) : LOCAL_KEY_ENV;
       break;
     case 'openai-compatible':
       m.provider = 'openai-compatible';
       m.baseUrl = await p.text({ id: 'base-url', message: 'API base URL (ending in /v1)', ...(same && cur.baseUrl ? { default: cur.baseUrl } : {}), validate: validUrl });
       m.name = await askModel('The model ID the API expects.', same ? cur.name : undefined);
-      m.apiKeyEnv = await askKeyEnv(same && cur.apiKeyEnv !== 'ANTHROPIC_API_KEY' ? cur.apiKeyEnv : 'OPENAI_API_KEY');
+      m.apiKeyEnv = await askKeyEnv(same && keyEnvOf(cur) !== 'ANTHROPIC_API_KEY' ? keyEnvOf(cur) : 'OPENAI_API_KEY');
       break;
   }
-  st.config.model = m;
+  // A custom provider can be given a name (kept next to the others in `providers`); other kinds stay where they are.
+  let name = current.name;
+  if (provider === 'local' || provider === 'openrouter' || provider === 'openai-compatible') {
+    name = await p.text({
+      id: 'provider-name',
+      message: 'Name for this provider',
+      help: 'Lowercase letters, digits and dashes. "default" is the main model block; a new name is added next to your other providers and becomes the one in use.',
+      default: current.name,
+      validate: (v) => (v === DEFAULT_PROVIDER || PROVIDER_NAME_RE.test(v) ? null : 'Use lowercase letters, digits and dashes (at most 32).'),
+    });
+  }
+  st.config = name === DEFAULT_PROVIDER ? { ...st.config, model: m, activeProvider: DEFAULT_PROVIDER } : { ...withProvider(st.config, name, m), activeProvider: name };
 
   if (provider === 'fake') {
     io.out(`  ${deps.style.muted('The demo model replies from a script. Run `garnet setup` again when you have a key.')}\n`);
@@ -299,6 +324,7 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
   const keySpec = {
     anthropic: { label: 'Anthropic API key', help: 'Create one at https://console.anthropic.com/settings/keys', required: true },
     openrouter: { label: 'OpenRouter API key', help: 'Create one at https://openrouter.ai/keys', required: true },
+    gemini: { label: 'Gemini API key', help: 'Create one at https://aistudio.google.com/apikey', required: true },
     'openai-compatible': { label: 'API key', help: 'Leave empty if the server needs none.', required: false },
     local: null,
   }[provider];
@@ -306,7 +332,7 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
   await checked(p, io, deps, st, {
     what: 'model',
     consentHelp: `One request to ${host} that lists models; it uses no tokens.`,
-    enter: async (fresh) => (keySpec ? secretStep(p, io, deps, st, { id: 'key', name: m.apiKeyEnv, ...keySpec }, fresh) : undefined),
+    enter: async (fresh) => (keySpec ? secretStep(p, io, deps, st, { id: 'key', name: keyEnvOf(m), ...keySpec }, fresh) : undefined),
     check: (key) => checkModel(m, key, deps.fetch),
     canRetry: keySpec !== null,
     needsValue: keySpec?.required ?? false,
@@ -665,13 +691,14 @@ function keyState(deps: SetupDeps, st: State, name: string): string {
 function summary(st: State, deps: SetupDeps): string {
   const c = st.config;
   const s = deps.style;
-  const provider = providerOf(c.model);
+  const active = activeProvider(c);
+  const provider = providerOf(active.model);
   const persona = readPersona(c.persona);
   const channels = (['telegram', 'discord', 'signal'] as const).filter((n) => c.channels[n].enabled);
   const rows: [string, string][] = [
-    ['Model', provider === 'fake' ? 'offline demo model (scripted replies)' : `${provider} · ${c.model.name}${c.model.baseUrl ? ` · ${c.model.baseUrl}` : ''}`],
+    ['Model', provider === 'fake' ? 'offline demo model (scripted replies)' : `${active.name === DEFAULT_PROVIDER ? '' : `${active.name}: `}${provider} · ${active.model.name}${active.model.baseUrl ? ` · ${active.model.baseUrl}` : ''}`],
   ];
-  if (provider !== 'fake' && provider !== 'local') rows.push(['Key', keyState(deps, st, c.model.apiKeyEnv)]);
+  if (provider !== 'fake' && provider !== 'local') rows.push(['Key', keyState(deps, st, keyEnvOf(active.model))]);
   rows.push(['Persona', `${persona.name}${persona.owner ? `, working for ${persona.owner}` : ''}`]);
   rows.push([
     'Channels',
@@ -696,7 +723,7 @@ function nextSteps(st: State, deps: SetupDeps, service: ServiceOutcome): string 
   }
   lines.push(`\n${s.bold('Next')}\n`);
   const step = (cmd: string, why: string) => lines.push(`  ${s.accent(cmd.padEnd(22))} ${why}\n`);
-  step(c.model.provider === 'fake' ? 'garnet chat --fake' : 'garnet chat', 'talk to Garnet in this terminal');
+  step(activeProvider(c).model.provider === 'fake' ? 'garnet chat --fake' : 'garnet chat', 'talk to Garnet in this terminal');
   if (channels.length && service !== 'installed' && service !== 'restarted') step('garnet start', 'run Garnet for your channels (or `garnet service install`)');
   if (channels.length) step('garnet pair list', 'see and approve who wants to talk to Garnet');
   step('garnet doctor', 'check that everything is wired up');
