@@ -78,7 +78,7 @@ Your events for a day or a range, in your time zone (`timezone` in config).
 2. `garnet secrets set GARNET_CALENDAR_URL` and paste it. It is a secret because the address itself is the password. Errors name only the feed's host, never its path or query.
 3. `garnet connectors enable calendar` (optionally add the feed host to `web.allowHosts`).
 
-It understands time zones, all-day events, durations, cancelled events, moved and excluded occurrences, and daily, weekly, monthly and yearly repeats (with intervals, counts, end dates, weekdays like "last Friday", days of the month and months). Anything else (for example `BYSETPOS`, hourly repeats, Windows time-zone names) is shown with a note instead of guessed. Settings: `connectors.calendar.urlEnv`, `maxDays`.
+It understands time zones, all-day events, durations, cancelled events, moved and excluded occurrences, and daily, weekly, monthly and yearly repeats (with intervals, counts, end dates, weekdays like "last Friday", days of the month and months, combined as the iCalendar standard says). Days follow the calendar, so an all-day event on a clock-change day still ends at local midnight. Anything else (for example `BYSETPOS`, hourly repeats, Windows time-zone names) is shown with a note instead of guessed. Settings: `connectors.calendar.urlEnv`, `maxDays`.
 
 ### github
 

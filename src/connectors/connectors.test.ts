@@ -361,6 +361,33 @@ test('ICS: an all-day day and a P1D duration end at the next local midnight acro
   assert.deepEqual(onDay(fall, '2026-10-31', zone).map((o) => o[0]), ['e2', 'e3']);
 });
 
+test('ICS: BYDAY, BYMONTHDAY and BYMONTH limit each other as RFC 5545 says; combinations not handled are shown once with a note', () => {
+  const zone = 'UTC';
+  const starts = (text: string, from: string, to: string) => occurrences(parseIcs(text), new Date(from), new Date(to), zone).map((o) => [o.start.toISOString().slice(0, 10), o.note ?? '']);
+  // MONTHLY: with BYMONTHDAY, BYDAY limits (the first Monday of the month here).
+  const firstMonday = ics(['DTSTART:20261005T090000Z', 'RRULE:FREQ=MONTHLY;BYMONTHDAY=1,2,3,4,5,6,7;BYDAY=MO']);
+  assert.deepEqual(starts(firstMonday, '2026-11-01T00:00:00Z', '2026-11-09T00:00:00Z'), [['2026-11-02', '']]);
+  assert.deepEqual(starts(firstMonday, '2026-10-01T00:00:00Z', '2027-01-09T00:00:00Z').map((o) => o[0]), ['2026-10-05', '2026-11-02', '2026-12-07', '2027-01-04']);
+  // Friday the 13th, monthly and yearly (YEARLY with BYMONTH and BYMONTHDAY: BYDAY limits too).
+  assert.deepEqual(starts(ics(['DTSTART:20261113T120000Z', 'RRULE:FREQ=MONTHLY;BYMONTHDAY=13;BYDAY=FR']), '2026-11-01T00:00:00Z', '2027-12-31T00:00:00Z').map((o) => o[0]), ['2026-11-13', '2027-08-13']);
+  assert.deepEqual(starts(ics(['DTSTART:20261113T120000Z', 'RRULE:FREQ=YEARLY;BYMONTH=11;BYMONTHDAY=13;BYDAY=FR']), '2026-11-01T00:00:00Z', '2038-01-01T00:00:00Z').map((o) => o[0]), ['2026-11-13', '2037-11-13']);
+  // DAILY: BYMONTHDAY and BYMONTH limit.
+  assert.deepEqual(starts(ics(['DTSTART:20261001T090000Z', 'RRULE:FREQ=DAILY;BYMONTHDAY=1']), '2026-10-01T00:00:00Z', '2027-01-01T00:00:00Z').map((o) => o[0]), ['2026-10-01', '2026-11-01', '2026-12-01']);
+  const december = ics(['DTSTART:20261201T080000Z', 'RRULE:FREQ=DAILY;BYMONTH=12']);
+  assert.deepEqual(starts(december, '2026-12-30T00:00:00Z', '2027-01-03T00:00:00Z').map((o) => o[0]), ['2026-12-30', '2026-12-31']);
+  assert.deepEqual(starts(december, '2027-11-30T00:00:00Z', '2027-12-02T00:00:00Z').map((o) => o[0]), ['2027-12-01'], 'and comes back the next December');
+  assert.deepEqual(starts(ics(['DTSTART:20270101T080000Z', 'RRULE:FREQ=DAILY;BYMONTH=1;BYMONTHDAY=1;COUNT=3']), '2027-01-01T00:00:00Z', '2031-01-01T00:00:00Z').map((o) => o[0]), ['2027-01-01', '2028-01-01', '2029-01-01']);
+  assert.deepEqual(starts(ics(['DTSTART:20261201T080000Z', 'RRULE:FREQ=DAILY;BYMONTH=12;BYDAY=MO']), '2026-12-01T00:00:00Z', '2027-01-31T00:00:00Z').map((o) => o[0]), ['2026-12-07', '2026-12-14', '2026-12-21', '2026-12-28']);
+  // WEEKLY: BYMONTH limits.
+  assert.deepEqual(starts(ics(['DTSTART:20261201T080000Z', 'RRULE:FREQ=WEEKLY;BYMONTH=12;BYDAY=TU,TH']), '2026-12-28T00:00:00Z', '2027-01-09T00:00:00Z').map((o) => o[0]), ['2026-12-29', '2026-12-31']);
+  // Not valid or not handled: shown once, with a note, never extra dates.
+  for (const rule of ['FREQ=WEEKLY;BYMONTHDAY=1', 'FREQ=DAILY;BYDAY=1MO', 'FREQ=WEEKLY;BYDAY=-1FR']) {
+    const list = starts(ics(['DTSTART:20261201T080000Z', `RRULE:${rule}`]), '2026-11-01T00:00:00Z', '2027-03-01T00:00:00Z');
+    assert.equal(list.length, 1, rule);
+    assert.match(list[0]![1]!, /only the first date is shown/, rule);
+  }
+});
+
 // ---------- calendar tool ----------
 
 const FEED = 'webcal://cal.example.com/private/SECRET123abc/basic.ics';

@@ -288,6 +288,9 @@ function expand(e: IcsEvent, from: Date, to: Date, ownerZone: string): Occurrenc
   const months = (rule.get('BYMONTH') ?? '').split(',').filter(Boolean).map(Number);
   const wkst = WEEKDAYS.indexOf(rule.get('WKST') ?? 'MO');
   if (freq === 'YEARLY' && days.length && !months.length) return [one(first.at, 'repeats (yearly by weekday without a month is not supported; only the first date is shown)')];
+  // RFC 5545 3.3.10: BYMONTHDAY is not valid in a weekly rule, and a numbered BYDAY (2TU) only in a monthly or yearly one.
+  if (freq === 'WEEKLY' && monthDays.length) return [one(first.at, 'repeats (BYMONTHDAY in a weekly rule is not supported; only the first date is shown)')];
+  if ((freq === 'DAILY' || freq === 'WEEKLY') && days.some((b) => b.n !== 0)) return [one(first.at, `repeats (a numbered BYDAY in a ${freq.toLowerCase()} rule is not supported; only the first date is shown)`)];
 
   const s = e.start;
   const wall = (n: number): Wall => ({ ...fromDayNumber(n), hh: s.date ? 0 : s.hh, mi: s.date ? 0 : s.mi });
@@ -300,13 +303,21 @@ function expand(e: IcsEvent, from: Date, to: Date, ownerZone: string): Occurrenc
   const period = (k: number): number[] => {
     switch (freq) {
       case 'DAILY': {
+        // BYMONTH, BYMONTHDAY and BYDAY all limit a daily rule.
         const n = start0 + k * interval;
+        const { y, m, d } = fromDayNumber(n);
+        if (months.length && !months.includes(m)) return [];
+        if (monthDays.length && !monthDays.some((md) => (md > 0 ? md : daysInMonth(y, m) + md + 1) === d)) return [];
         return !days.length || days.some((b) => b.wd === weekday(n)) ? [n] : [];
       }
       case 'WEEKLY': {
+        // BYDAY expands the week; BYMONTH limits.
         const weekStart = start0 - ((weekday(start0) - wkst + 7) % 7) + k * interval * 7;
         const wds = days.length ? days.map((b) => b.wd) : [weekday(start0)];
-        return wds.map((wd) => weekStart + ((wd - wkst + 7) % 7)).sort((a, b) => a - b);
+        return wds
+          .map((wd) => weekStart + ((wd - wkst + 7) % 7))
+          .filter((n) => !months.length || months.includes(fromDayNumber(n).m))
+          .sort((a, b) => a - b);
       }
       case 'MONTHLY': {
         const idx = s.m - 1 + k * interval;
@@ -324,10 +335,12 @@ function expand(e: IcsEvent, from: Date, to: Date, ownerZone: string): Occurrenc
   const inMonth = (y: number, m: number): number[] => {
     const len = daysInMonth(y, m);
     if (monthDays.length) {
-      return monthDays
-        .map((md) => (md > 0 ? md : len + md + 1))
+      // With BYMONTHDAY, BYDAY limits instead of expanding (RFC 5545 3.3.10).
+      const weekdays = days.length ? byDayInMonth(y, m, days) : null;
+      return [...new Set(monthDays.map((md) => (md > 0 ? md : len + md + 1)))]
         .filter((d) => d >= 1 && d <= len)
         .map((d) => dayNumber(y, m, d))
+        .filter((n) => !weekdays || weekdays.includes(n))
         .sort((a, b) => a - b);
     }
     if (days.length) return byDayInMonth(y, m, days);
