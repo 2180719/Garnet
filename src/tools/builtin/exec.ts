@@ -23,7 +23,9 @@ export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
     return ready;
   };
 
-  const where = sandbox.isolated
+  const where = sandbox.kind === 'ssh'
+    ? 'Runs on a remote host over ssh (sh -c), starting in the remote working directory that stands in for the workspace. It is not the local workspace: local files are not there unless the owner synced them, and file tools do not see what the command writes.'
+    : sandbox.isolated
     ? 'Runs in an isolated Linux container (sh -c) with the workspace mounted read-write at /workspace; the rest of the filesystem is read-only except /tmp, and there is no network unless the owner enabled it.'
     : 'Runs on the host with sh -c (not isolated), starting in the workspace.';
   return {

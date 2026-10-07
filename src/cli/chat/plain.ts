@@ -3,11 +3,13 @@
 // tool calls, status) goes to stderr, so stdout stays clean for scripts.
 
 import { createInterface } from 'node:readline';
-import { costOf, errorMessage, formatUsd, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
+import { costOf, errorMessage, formatUsd, type TaskStatus, type ToolCallBlock, type ToolResult } from '../../contracts/index.ts';
 import type { Garnet } from '../../main.ts';
 import type { ApprovalDecision, ApprovalRequest } from '../../policy/index.ts';
 import type { RuntimeEvent } from '../../runtime/index.ts';
+import type { Prompter, TextAsk } from '../setup/prompt.ts';
 import { executeCommand, prepareTurn, type PendingFile } from './actions.ts';
+import type { OnboardFlow } from './flow.ts';
 import { messageText, parseSlash } from './commands.ts';
 import { describeCall } from './render.ts';
 import { formatTokens, sanitize, truncate } from './text.ts';
@@ -21,6 +23,8 @@ export type PlainOptions = {
   err: (text: string) => void;
   /** Show the `you ›` prompt (only useful when a person is typing). */
   prompt: boolean;
+  /** First-run wake-up (see `flow.ts`). */
+  onboard?: OnboardFlow;
 };
 
 const plainTheme = makeTheme({ styled: false, color: false, truecolor: false });
@@ -34,6 +38,8 @@ export class PlainChat {
   private readonly always = new Set<string>();
   private readonly toolLog: { call: ToolCallBlock; result: ToolResult }[] = [];
   private readonly attachments: PendingFile[] = [];
+  /** Set when the onboarding check gave up on the conversation and the form ran inline. */
+  fellBack = false;
 
   constructor(options: PlainOptions) {
     this.o = options;
@@ -80,6 +86,10 @@ export class PlainChat {
     process.on('SIGINT', onSigint);
     try {
       this.o.err(`Garnet (${garnet.model.id}) · session ${this.sessionId}\nType a message. /help for commands, /exit to quit, Ctrl+C to interrupt.\n\n`);
+      if (this.o.onboard) {
+        const status = await this.turn(this.o.onboard.kickoff);
+        if (await this.checkOnboarding(status)) return 0;
+      }
       for (;;) {
         const raw = await this.ask(this.o.prompt ? 'you › ' : '');
         if (raw === null) return 0;
@@ -88,6 +98,7 @@ export class PlainChat {
         if (slash) {
           const result = await executeCommand(slash, {
             garnet, sessionId: this.sessionId, theme: plainTheme, width: 100, toolLog: this.toolLog, attachments: this.attachments,
+            ...(this.o.onboard ? { onboarding: true } : {}),
             switchTo: (id) => (this.sessionId = id),
           });
           if (result.effect === 'exit') return 0;
@@ -95,7 +106,8 @@ export class PlainChat {
           if (rows.length) this.o.err(rows.join('\n') + '\n');
           continue;
         }
-        await this.turn(messageText(raw).trim());
+        const status = await this.turn(messageText(raw).trim());
+        if (await this.checkOnboarding(status)) return 0;
       }
     } finally {
       process.off('SIGINT', onSigint);
@@ -103,7 +115,39 @@ export class PlainChat {
     }
   }
 
-  private async turn(text: string): Promise<void> {
+  /** True when the chat gave up and the form ran instead. */
+  private async checkOnboarding(status: TaskStatus): Promise<boolean> {
+    const flow = this.o.onboard;
+    if (!flow) return false;
+    const v = flow.check(status);
+    if (v.next === 'continue') {
+      if (v.note) this.o.err(`  [${v.note}]\n\n`);
+      return false;
+    }
+    this.fellBack = true;
+    this.o.err(`\n  [Setup chat is stopping because ${sanitize(v.reason)}. A short form comes next; your replies stay in session ${this.sessionId}.]\n\n`);
+    const text = async (q: TextAsk): Promise<string> => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (q.help) this.o.err(`  ${q.help}\n`);
+        const raw = await this.ask(`${q.message}${q.default ? ` (${q.default})` : ''} `);
+        if (raw === null) break; // input ended: keep the default
+        const answer = raw.trim() || q.default || '';
+        const problem = q.validate?.(answer);
+        if (!problem) return answer;
+        this.o.err(`  ${problem}\n`);
+      }
+      return q.default ?? '';
+    };
+    try {
+      await flow.form({ text } satisfies Pick<Prompter, 'text'>, (t) => this.o.err(t));
+    } catch (e) {
+      this.o.err(`  [could not save: ${sanitize(errorMessage(e))}. Run \`garnet setup\` to set the name and persona.]\n`);
+    }
+    return true;
+  }
+
+  private async turn(text: string): Promise<TaskStatus> {
+    let status: TaskStatus = 'failed';
     this.current = new AbortController();
     let wroteText = false;
     const onEvent = (e: RuntimeEvent) => {
@@ -129,10 +173,11 @@ export class PlainChat {
       const prepared = await prepareTurn(this.o.garnet, this.sessionId, text, this.attachments.splice(0), this.current.signal);
       if ('reply' in prepared) {
         this.o.out(`${prepared.reply}\n`);
-        return;
+        return 'completed';
       }
       const task = await this.o.garnet.agent.run(this.sessionId, prepared.turn, { signal: this.current.signal, onEvent, source: 'cli' });
       if (wroteText) this.o.out('\n');
+      status = task.status;
       const u = task.usage;
       this.o.err(`  [${task.status}${task.reason ? `: ${sanitize(task.reason)}` : ''} · in ${formatTokens(u.inputTokens)} · cached ${formatTokens(u.cacheReadTokens)} · out ${formatTokens(u.outputTokens)} tokens${task.modelCalls ? ` · ${formatUsd(costOf(u, this.o.garnet.pricing))}` : ''}]\n\n`);
     } catch (e) {
@@ -142,5 +187,6 @@ export class PlainChat {
     } finally {
       this.current = null;
     }
+    return status;
   }
 }

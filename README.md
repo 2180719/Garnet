@@ -31,10 +31,13 @@ npm link            # optional: puts `garnet` on your PATH (otherwise use `npm r
 ## Set up
 
 ```sh
-garnet setup     # model and key, persona, channels, background service, pairing
+garnet setup     # model and key, persona, where commands run, channels (a checklist), background service, pairing
 garnet doctor    # checks the install and setup, and says how to fix what it finds
-garnet chat      # talk to Garnet in the terminal (`garnet chat --fake` needs no key)
+garnet chat      # talk to Garnet in the terminal, full screen (`--inline` keeps it in the scrollback; `--fake` needs no key)
+garnet wake      # first-run wake-up: Garnet introduces itself and sets itself up by talking (`--fake` works offline)
 ```
+
+Setup offers two ways to name your assistant and tell it how you like answers: a quick form (three questions), or "Wake it up", a first chat where the agent asks the same things itself and saves them with its real tools (`set_profile` and `memory`). The transcript shows those tool calls. If the model cannot use its tools, the chat stops after a few tries and asks the form questions instead (your replies stay in the session log, and the form starts from whatever was already saved). `garnet setup -y` never starts a chat. Run `garnet wake` (or `garnet chat --onboard`) any time to do it again.
 
 `garnet setup` asks a few questions and saves nothing until the end:
 
@@ -49,8 +52,13 @@ garnet chat      # talk to Garnet in the terminal (`garnet chat --fake` needs no
 Run it again to change one part: it shows what is set and offers a menu. For scripts and CI, `garnet setup -y` takes every answer from flags (`garnet setup --help`), for example:
 
 ```sh
-printf '%s' "$KEY" | garnet setup -y --provider anthropic --key-stdin --name Juno --telegram --service
+printf '%s' "$KEY" | garnet setup -y --provider anthropic --key-stdin --name Juno --channels telegram --service
 ```
+
+`--channels telegram,discord` picks several (`--channels none` picks none; `--telegram` and `--no-telegram` still work). On a terminal, setup shows the channels as one checklist: arrow keys or numbers to tick, Enter to continue, then it sets up each ticked channel in turn. If commands are allowed (`permissions.exec` is `ask` or `allow`), setup also asks where they run: Docker, another machine over ssh (`--sandbox ssh --ssh-host ... --ssh-user ... --ssh-workdir ...`) or this machine.
+### The terminal chat
+
+`garnet chat` fills the terminal: a status bar at the top (name, model, session, what Garnet is doing, context, tokens and cost, and a warning once the conversation has read untrusted content), the conversation in the middle, and the input at the bottom. Scroll with PgUp/PgDn, Shift+Up/Down, Ctrl+Home/Ctrl+End or the mouse wheel; while you are scrolled up, new replies wait below with a "new messages below" line. With mouse reporting on, hold Shift (Option in iTerm2) to select text, or press F2 to turn it off. `/help` lists every key. Prefer the conversation to stay in your terminal's scrollback? Use `garnet chat --inline`, or `garnet config set chat.fullscreen false` to make that the default. Pipes and `--plain` give a line-based chat.
 
 ### Telegram by hand
 
@@ -113,6 +121,19 @@ Garnet shows dollar cost beside token usage (terminal turn summary and `/usage`,
 `web_fetch` reads a page as Markdown and `web_search` searches the web. Both ask first by default (`permissions.net.fetch`); list hosts you trust in `web.allowHosts` to skip the question for them, or set `net.fetch` to `allow`. They only reach public internet addresses: private, loopback, link-local and cloud-metadata addresses are refused, after DNS and on every redirect. Search uses DuckDuckGo's HTML page by default, which needs no key but is unofficial and may be rate limited; `web.search.backend` can be `searxng` (your instance), `brave` or `tavily` (keys by secret name, e.g. `garnet secrets set BRAVE_API_KEY`).
 
 Web pages can carry instructions meant for Garnet (prompt injection). Once a conversation has read a page or search results, Garnet asks before any action that could do harm or leak data, even ones you set to `allow`: writing files, running commands, sending messages, changing memory, skills or schedules, and fetching a URL that neither you wrote nor a page contained word for word. The approval says why, `garnet chat` shows `⚠ untrusted content read`, and the dashboard marks the session. It lasts until `/new` starts a fresh conversation. `containment` in config changes which actions this covers.
+
+### Built-in skills and connectors (optional, off by default)
+
+Garnet ships three skills (`daily-briefing`, `web-research`, `github-triage`) and three connectors: `calendar` (your calendar's private ICS feed, read-only), `github` (issues, pull requests, notifications; comments only if you allow them) and `weather` (Open-Meteo, keyless). Nothing is on until you enable it, everywhere or for one channel, chat, API key, job or shared conversation:
+
+```sh
+garnet connectors enable calendar --channel telegram
+garnet secrets set GARNET_CALENDAR_URL
+garnet skills enable daily-briefing --channel telegram
+garnet skills effective --channel telegram
+```
+
+Connectors go through the same permissions and untrusted-content rules as web access, and config only names their secrets. A conversation keeps the set it started with; restart the service and send `/new` to pick up changes. Details and setup for each: [docs/CONNECTORS.md](docs/CONNECTORS.md).
 
 ## Develop
 

@@ -71,6 +71,17 @@ export class SessionStore {
     return row.seq;
   }
 
+  /**
+   * Every connector name any session recorded in a `context_frozen` event's `extras`, so the composition root
+   * can keep registering a connector that existing sessions still use after config turns it off.
+   */
+  frozenConnectors(): string[] {
+    const rows = this.db
+      .prepare("SELECT DISTINCT j.value AS name FROM events, json_each(events.payload, '$.extras.connectors') AS j WHERE events.type = 'context_frozen' AND j.type = 'text'")
+      .all() as { name: string }[];
+    return rows.map((r) => r.name).sort();
+  }
+
   /** Fails tasks a crash left `running`, so they are never silently resumed. Returns them. */
   failInterrupted(reason: string): TaskRecord[] {
     const tasks = this.unfinishedTasks().filter((t) => t.status === 'running');

@@ -67,7 +67,7 @@ Small changes that remove the sharpest edges. About a week in total.
 | `/v1/responses` (Open Responses) | S–M | |
 | File snapshots and `/rewind` | M | Rewind is a new event; the log stays append-only |
 | Voice replies (TTS voice notes) | S | Realtime voice stays a non-goal |
-| Streaming replies to channels, inline approval buttons, SSH sandbox | M each | Promised in PLAN.md, not built |
+| Streaming replies to channels, inline approval buttons | M each | Promised in PLAN.md, not built (the SSH sandbox is built) |
 | Data retention for inbox, outbox, job runs and approvals | S | Found in the polish pass |
 | Dashboard session cookie (HttpOnly, SameSite=Strict) | S–M | Found in the polish pass |
 | A2A | M | Low value for a personal agent |

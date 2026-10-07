@@ -31,7 +31,8 @@ function eventView(e: SessionEvent): unknown {
     case 'assistant_message':
       return { ...safe({ seq: e.seq, at: e.at, type: e.type, model: e.model, stopReason: e.stopReason, usage: e.usage }), content: e.message.content.map(blockView) };
     case 'context_frozen':
-      return { seq: e.seq, at: e.at, type: e.type, chars: e.system.length }; // the prompt embeds memory; show only its size
+      // The prompt embeds memory: show only its size, plus which optional built-ins the session runs with.
+      return { seq: e.seq, at: e.at, type: e.type, chars: e.system.length, ...(e.extras ? { extras: e.extras } : {}) };
     default: {
       const { sessionId: _s, ...rest } = e;
       return safe(rest);

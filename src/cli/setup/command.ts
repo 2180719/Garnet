@@ -9,6 +9,7 @@ import { approvePairing } from '../../gateway/index.ts';
 import { createGarnet } from '../../main.ts';
 import { defaultSourceDir, runImport } from '../../migrate/index.ts';
 import { defaultEntry, installService, resolveService, restartService } from '../../service/index.ts';
+import { chat } from '../chat/index.ts';
 import { importDeps } from '../import.ts';
 import type { Io } from '../main.ts';
 import { AnswerPrompter, TerminalPrompter, makeStyle, wantsColor, type Answer, type Prompter } from './prompt.ts';
@@ -30,9 +31,19 @@ from the options below, the current config, or safe defaults; nothing optional
   --name <name>             What the assistant is called (default Garnet)
   --owner <name>            What it calls you
   --notes <text>            One line about how you like answers
-  --telegram / --no-telegram, --telegram-token-env <NAME>
+  --channels <list>         Channels to connect, comma separated: telegram,discord,signal (none for none).
+                            On a re-run the enabled ones are kept unless you leave them out.
+  --telegram / --no-telegram, --telegram-token-env <NAME>   (adds or removes one channel)
   --discord / --no-discord, --discord-token-env <NAME>
   --signal / --no-signal, --signal-number <+E164>, --signal-url <url>
+  --sandbox <where>         docker | ssh | local: where commands run (default: keep the current one)
+  --ssh-host <host>         ssh: remote host name or IP address
+  --ssh-user <user>         ssh: remote account (use a dedicated, unprivileged one)
+  --ssh-workdir <dir>       ssh: absolute directory on the remote host
+  --ssh-auth <how>          ssh: agent | key
+  --ssh-key <path>          ssh: absolute path of the private key file (--ssh-auth key)
+  --ssh-passphrase-env <NAME>  ssh: name of the secret holding the key passphrase (store it with garnet secrets set)
+  --ssh-host-keys <policy>  ssh: strict (default) | accept-new
   --check                   Check keys and connections with live requests
   --service                 Install (or restart) the background service
   --import                  Import from OpenClaw/Hermes when found (applies it)
@@ -54,6 +65,15 @@ const FLAGS = {
   name: { type: 'string' },
   owner: { type: 'string' },
   notes: { type: 'string' },
+  channels: { type: 'string' },
+  sandbox: { type: 'string' },
+  'ssh-host': { type: 'string' },
+  'ssh-user': { type: 'string' },
+  'ssh-workdir': { type: 'string' },
+  'ssh-auth': { type: 'string' },
+  'ssh-key': { type: 'string' },
+  'ssh-passphrase-env': { type: 'string' },
+  'ssh-host-keys': { type: 'string' },
   telegram: { type: 'boolean' },
   'telegram-token-env': { type: 'string' },
   discord: { type: 'boolean' },
@@ -170,6 +190,7 @@ function defaultDeps(io: Io): SetupDeps {
         garnet.close();
       }
     },
+    wake: ({ fake }) => chat(['--onboard', ...(fake ? ['--fake'] : [])], { ...io, stdin: process.stdin, stdout: process.stdout, env: process.env }),
     pairing: () => {
       const garnet = createGarnet({ noModel: true, home });
       return {
