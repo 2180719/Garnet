@@ -559,6 +559,17 @@ test('fullscreen: approvals are answered from the dock, even after scrolling; es
   assert.equal(await c.done, 0);
 });
 
+test('fullscreen: a mouse report split across slow reads puts nothing in the input, and Ctrl+D still exits', async () => {
+  const c = start(new FakeModel([]), { fullscreen: true });
+  await c.until((t) => t.includes('›'), 'the prompt');
+  c.stdin.write('\x1b[<0;1');
+  await new Promise((r) => setTimeout(r, 400)); // longer than any flush timeout
+  await c.type(';1M');
+  assert.doesNotMatch(c.text(), /<0;1|;1M/, 'no part of the report reaches the editor');
+  await c.type('\x04');
+  assert.equal(await c.done, 0);
+});
+
 test('fullscreen: Esc interrupts a turn and drops the queue; Ctrl+C twice exits with the terminal restored', async () => {
   const hanging: ModelAdapter = {
     id: 'test:hang',

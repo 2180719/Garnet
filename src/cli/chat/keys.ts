@@ -75,23 +75,69 @@ function fromCodepoint(code: number, mods: Pick<Key, 'ctrl' | 'meta' | 'shift'>)
   return key(ch.toLowerCase(), mods);
 }
 
+/** Flush timeout for a lone ESC: short, so the Escape key feels immediate. */
+const ESC_TIMEOUT_MS = 30;
+/** Flush timeout once a sequence has started (`ESC [`, `ESC O`): a slow terminal or link may split it across reads. */
+const SEQUENCE_TIMEOUT_MS = 150;
+
+/**
+ * What to swallow from the next read after `flush` dropped an incomplete
+ * sequence: the rest of a CSI (parameters, intermediates, final byte) or the
+ * remaining raw bytes of an X10 mouse report.
+ */
+type Leftover = { kind: 'csi' } | { kind: 'bytes'; n: number };
+
 export class KeyParser {
   private buffer = '';
   private paste: string | null = null;
+  private leftover: Leftover | null = null;
 
-  /** True when buffered bytes may be the start of an escape sequence (call `flush` after a short timeout). */
+  /** True when buffered bytes may be the start of an escape sequence (call `flush` after `pendingTimeoutMs`). */
   get pendingEscape(): boolean {
     return this.paste === null && this.buffer.length > 0;
   }
 
+  /** How long to wait for more input before `flush`: short for a lone ESC, longer inside a started sequence. */
+  get pendingTimeoutMs(): number {
+    return this.buffer === '\x1b' ? ESC_TIMEOUT_MS : SEQUENCE_TIMEOUT_MS;
+  }
+
   feed(chunk: string): Key[] {
     this.buffer += chunk;
+    if (this.leftover) this.swallowLeftover();
     return this.drain(false);
   }
 
-  /** Emits anything held back (a lone ESC becomes the Escape key). */
+  /**
+   * Emits anything held back: a lone ESC becomes the Escape key, a bare `ESC [`
+   * is Alt+[. A sequence cut off after its parameters (a mouse report split by
+   * a slow read) is dropped, never turned into text, and the rest of it is
+   * swallowed if it starts the next read.
+   */
   flush(): Key[] {
     return this.drain(true);
+  }
+
+  /** Drops the remainder of a sequence `flush` cut off, from the start of the buffer. Only the read right after the flush can continue it. */
+  private swallowLeftover(): void {
+    const left = this.leftover!;
+    this.leftover = null;
+    if (left.kind === 'bytes') {
+      const n = Math.min(left.n, this.buffer.length);
+      this.buffer = this.buffer.slice(n);
+      if (n < left.n) this.leftover = { kind: 'bytes', n: left.n - n };
+      return;
+    }
+    const m = /^[0-9;:?<>=]*[ -/]*/.exec(this.buffer)!;
+    const rest = this.buffer.slice(m[0].length);
+    if (rest === '') {
+      // Still no final byte: keep swallowing in the next read.
+      this.buffer = '';
+      if (m[0].length) this.leftover = left;
+      return;
+    }
+    // The final byte ends it. Anything else (an ESC starting a new sequence, a control key) means the remainder never came.
+    this.buffer = /^[@-~]/.test(rest) ? rest.slice(1) : rest;
   }
 
   private drain(force: boolean): Key[] {
@@ -132,14 +178,14 @@ export class KeyParser {
       pushText();
       const parsed = this.escape(force);
       if (!parsed) break; // incomplete; wait for more input or a flush
-      if (parsed !== 'paste') keys.push(parsed);
+      if (parsed !== 'paste' && parsed !== 'dropped') keys.push(parsed);
     }
     pushText();
     return keys;
   }
 
   /** Parses an escape sequence at the start of the buffer. Null when incomplete. */
-  private escape(force: boolean): Key | 'paste' | null {
+  private escape(force: boolean): Key | 'paste' | 'dropped' | null {
     const b = this.buffer;
     if (b.startsWith(PASTE_START)) {
       this.buffer = b.slice(PASTE_START.length);
@@ -158,14 +204,22 @@ export class KeyParser {
         if (b.length < 6) {
           if (!force) return null;
           this.buffer = '';
-          return key('unknown');
+          this.leftover = { kind: 'bytes', n: 6 - b.length };
+          return 'dropped';
         }
         this.buffer = b.slice(6);
         return mouse(b.charCodeAt(3) - 32);
       }
       const m = /^\x1b\[([0-9;:?<>=]*)([ -/]*)([@-~])/.exec(b);
       if (!m) {
-        if (!force && /^\x1b\[[0-9;:?<>=]*[ -/]*$/.test(b)) return null;
+        const partial = /^\x1b\[[0-9;:?<>=]*[ -/]*$/.test(b);
+        if (!force && partial) return null;
+        if (partial && b.length > 2) {
+          // Cut off after its parameters: no key a person types looks like this, so drop it and its late remainder.
+          this.buffer = '';
+          this.leftover = { kind: 'csi' };
+          return 'dropped';
+        }
         this.buffer = b.slice(2);
         return key('[', { meta: true });
       }

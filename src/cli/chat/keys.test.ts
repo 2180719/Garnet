@@ -68,6 +68,38 @@ test('mouse reports: the wheel is a key, other mouse events are ignorable, nothi
   assert.deepEqual(names(p.feed('`!!')), ['wheelup']);
 });
 
+test('an escape sequence cut off by the flush timeout is dropped, and its late remainder is swallowed', () => {
+  const p = new KeyParser();
+  assert.deepEqual(p.feed('\x1b[<0;1'), []);
+  assert.deepEqual(names(p.flush()), [], 'an incomplete mouse report is not text');
+  assert.deepEqual(names(p.feed(';1M')), [], 'the rest of it arrives later and is swallowed');
+  assert.deepEqual(names(p.feed('\x04')), ['C-d'], 'later keys work as usual');
+
+  const q = new KeyParser();
+  q.feed('\x1b[<0;1');
+  q.flush();
+  assert.deepEqual(names(q.feed(';1Mhi')), ['text:hi'], 'text after the swallowed remainder is kept');
+  assert.deepEqual(names(q.feed('x')), ['text:x'], 'only the next read can continue a dropped sequence');
+
+  const x = new KeyParser();
+  x.feed('\x1b[M`');
+  assert.deepEqual(names(x.flush()), []);
+  assert.deepEqual(names(x.feed('!!y')), ['text:y'], 'an X10 report: its remaining bytes are swallowed');
+
+  const alt = new KeyParser();
+  alt.feed('\x1b[');
+  assert.deepEqual(names(alt.flush()), ['M-['], 'a bare ESC [ is still Alt+[');
+  assert.deepEqual(names(alt.feed('a')), ['text:a'], 'and the next key is not swallowed');
+});
+
+test('the flush timeout is short for a lone Escape and longer for a started sequence', () => {
+  const p = new KeyParser();
+  p.feed('\x1b');
+  assert.equal(p.pendingTimeoutMs, 30);
+  p.feed('[<0;1');
+  assert.ok(p.pendingTimeoutMs > 30);
+});
+
 test('function keys F1-F4', () => {
   assert.deepEqual(names(parse('\x1bOP\x1bOQ\x1b[12~\x1b[1;2Q')), ['f1', 'f2', 'f2', 'S-f2']);
 });

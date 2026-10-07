@@ -244,7 +244,7 @@ export class InteractiveChat {
       this.escapeTimer = setTimeout(() => {
         this.escapeTimer = null;
         this.keys(() => this.parser.flush());
-      }, 30);
+      }, this.parser.pendingTimeoutMs);
     }
   }
 
