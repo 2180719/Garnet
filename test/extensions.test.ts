@@ -167,3 +167,59 @@ test('wake-up and connectors coexist: the onboarding session gets set_profile an
     garnet.close();
   }
 });
+
+test('a session keeps its connector after the last scope that enabled it is turned off and Garnet restarts, through compaction; a new session does not get it', async () => {
+  const home = homeWith({ connectors: { channels: { telegram: { enable: ['weather'] } } }, permissions: { 'net.fetch': 'ask' } });
+  const first = createGarnet({ home, model: new FakeModel([{ text: 'one' }]) });
+  const session = first.store.createSession();
+  first.gatewayStore.bindConversation('telegram:default:7', session.id);
+  await first.agent.run(session.id, 'hi');
+  first.close();
+
+  // The owner turns weather off everywhere and restarts.
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: CONFIG_VERSION, permissions: { 'net.fetch': 'ask' }, context: { compactAtTokens: 10_000, keepTurns: 1 } }));
+  const model = new FakeModel([
+    // Invalid input: the call reaches the weather tool, which refuses before any network request.
+    { toolCalls: [{ name: 'weather', input: { latitude: 1 } }] },
+    { text: 'ok', usage: { inputTokens: 20_000, outputTokens: 5 } }, // crosses compactAtTokens
+    { text: '<summary>earlier</summary>' }, // compaction before the next turn
+    { text: 'two' },
+    { text: 'fresh' },
+  ]);
+  const second = createGarnet({ home, model, approver: async () => 'approved' });
+  try {
+    await second.agent.run(session.id, 'weather?');
+    assert.ok(model.requests[0]!.tools.some((t) => t.name === 'weather'), 'the old session is still offered weather');
+    assert.deepEqual(second.extrasFor(session.id).connectors, ['weather']);
+    const result = second.store.events(session.id).find((e) => e.type === 'tool_finished');
+    assert.ok(result?.type === 'tool_finished');
+    assert.doesNotMatch(result.result.content, /Unknown tool/);
+    assert.match(result.result.content, /both latitude and longitude/, 'the weather tool itself answered');
+
+    await second.agent.run(session.id, 'and tomorrow?');
+    const frozen = second.store.events(session.id).filter((e) => e.type === 'context_frozen');
+    assert.equal(frozen.length, 2, 'compacted and frozen again');
+    const last = frozen.at(-1)!;
+    assert.ok(last.type === 'context_frozen' && last.tools?.some((t) => t.name === 'weather'), 'compaction keeps the connector tool');
+    assert.deepEqual(last.type === 'context_frozen' && last.extras?.connectors, ['weather']);
+    assert.ok(model.requests.at(-1)!.tools.some((t) => t.name === 'weather'));
+
+    const fresh = second.store.createSession();
+    second.gatewayStore.bindConversation('telegram:default:7', fresh.id);
+    await second.agent.run(fresh.id, 'new conversation');
+    assert.ok(!model.requests.at(-1)!.tools.some((t) => t.name === 'weather'), 'a new session gets only what config enables now');
+    assert.deepEqual(second.extrasFor(fresh.id).connectors, []);
+  } finally {
+    second.close();
+  }
+
+  // net.fetch denied still means no connector tool at all, even for a session that had one.
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: CONFIG_VERSION, permissions: { 'net.fetch': 'deny' } }));
+  const third = createGarnet({ home, noModel: true });
+  try {
+    assert.equal(third.registry.get('weather'), undefined);
+    assert.deepEqual(third.connectors, []);
+  } finally {
+    third.close();
+  }
+});

@@ -58,6 +58,8 @@ The tool set and system prompt are fixed for a conversation (prompt caching and 
 1. restart the service (`garnet service restart`), then
 2. send `/new` in a chat (or start a new terminal chat) to get the new set.
 
+Turning a connector off does not take it away from conversations that already have it, even after a restart: Garnet keeps its tool loaded for them until they end with `/new`. Denying `net.fetch` is the switch that removes every connector at once.
+
 ## Policy and safety
 
 - **Permissions.** Every connector call needs `net.fetch`; with `net.fetch: deny` no connector is offered at all. With `ask` (the default) each call asks for your approval and shows the exact URLs. Add a connector's hosts to `web.allowHosts` to let it run without asking. A GitHub comment also needs `message.send` (ask by default) and the approval shows the full text.

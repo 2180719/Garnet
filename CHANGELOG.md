@@ -23,6 +23,7 @@
 
 ### Connector fixes
 - Security: a calendar feed that fails to load (a redirect loop, a refused redirect, a network error) now reports only its host and the secret name. Before, a redirect error could quote the feed's private path and query into the tool result, the event log and the model's context.
+- A conversation keeps its connectors after config turns them off and Garnet restarts, compaction included, until `/new`. Before, the tool was still listed but calls failed with "Unknown tool" and compaction dropped it. New conversations still get only what config turns on, and `net.fetch: deny` still removes every connector.
 
 ### Review fixes
 - Security: results of jobs and agent-sent messages that read untrusted content now carry that state into the chat they land in; forwarded voice notes and audio files count as untrusted (only a live voice note from the paired owner in a private chat does not); links in approval text are no longer treated as the owner's; "message the owner" and relative times are resolved before approval, so the action that runs is exactly the one approved; the agent cannot pause or resume `config.json` jobs, granting a job `exec` needs exec approval, and agent messages never go to group chats.

@@ -65,7 +65,7 @@ export type Garnet = {
   skills: SkillStore;
   /** Optional skills shipped with Garnet (read-only); which are on comes from config `skills`. */
   builtinSkills: BuiltinSkills;
-  /** Connectors whose tool is registered (on globally or in some scope, and net.fetch not denied). */
+  /** Connectors whose tool is registered (on globally or in some scope, or kept by an existing session; and net.fetch not denied). */
   connectors: ConnectorName[];
   /**
    * The optional built-ins a session uses: as recorded when its context was
@@ -220,8 +220,11 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   }
   // web_fetch and web_search exist only when net.fetch is not denied. They run in-process (the sandbox has no network).
   const trustedEndpoints = registerWebTools(registry, config, secret);
-  // Connectors: a tool each, registered when the connector is on anywhere; a session only gets the ones on for its scope.
-  for (const { connector, tool } of registerConnectors(registry, config, secret, ownerTimeZone(config))) connectorOf.set(tool, connector);
+  // Connectors: a tool each, registered when the connector is on anywhere or an existing session froze it in (so that
+  // session keeps it through a restart and compaction after config turned it off); a new session only gets the ones
+  // config turns on for its scope now.
+  const inUse = store.frozenConnectors().filter((c): c is ConnectorName => (CONNECTORS as readonly string[]).includes(c));
+  for (const { connector, tool } of registerConnectors(registry, config, secret, ownerTimeZone(config), inUse)) connectorOf.set(tool, connector);
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
   // The demo provider has no real model: the wake-up conversation plays its offline script instead of echoing.
@@ -352,11 +355,12 @@ export function extrasForScopes(config: GarnetConfig, scopes: readonly string[],
 }
 
 /**
- * Registers the tool of every connector that is on anywhere (globally or in a scope). Like web_fetch, they need
- * net.fetch: with it denied none is registered (doctor says so). Credentials are resolved by name at call time.
+ * Registers the tool of every connector that is on anywhere (globally or in a scope) or still `inUse` by an
+ * existing session's frozen set. Like web_fetch, they need net.fetch: with it denied none is registered (doctor
+ * says so). Credentials are resolved by name at call time.
  */
-function registerConnectors(registry: ToolRegistry, config: GarnetConfig, secret: SecretLookup, timeZone: string): { connector: ConnectorName; tool: string }[] {
-  const names = enabledAnywhere(config.connectors) as ConnectorName[];
+function registerConnectors(registry: ToolRegistry, config: GarnetConfig, secret: SecretLookup, timeZone: string, inUse: readonly ConnectorName[]): { connector: ConnectorName; tool: string }[] {
+  const names = [...new Set([...(enabledAnywhere(config.connectors) as ConnectorName[]), ...inUse])].sort();
   if (!names.length || config.permissions['net.fetch'] === 'deny') return [];
   const w = config.web.fetch;
   const fetcher = new WebFetcher({ maxBytes: w.maxBytes, timeoutMs: w.timeoutSeconds * 1000, maxRedirects: w.maxRedirects });
