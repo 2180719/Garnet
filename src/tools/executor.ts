@@ -48,11 +48,15 @@ export class ToolExecutor {
 
   private async run(call: ToolCallBlock, ctx: Omit<ToolContext, 'callId'>): Promise<ToolResult> {
     const started = Date.now();
+    // Time spent waiting on an interactive approver; reported so the task's time budget can exclude it.
+    let approvalWaitMs = 0;
+    const waitMeta = () => (approvalWaitMs > 0 ? { approvalWaitMs } : {});
     const fail = (category: ErrorCategory, content: string): ToolResult => ({
       status: 'error',
       category,
       content,
       durationMs: Date.now() - started,
+      ...waitMeta(),
     });
 
     const tool = this.deps.registry.get(call.name);
@@ -113,6 +117,7 @@ export class ToolExecutor {
         return fail(isGarnetError(e) ? e.category : 'invalid_input', errorMessage(e));
       }
       let answer: ApprovalDecision;
+      const asked = Date.now();
       try {
         answer = await this.deps.approver({
           sessionId: ctx.sessionId,
@@ -125,8 +130,10 @@ export class ToolExecutor {
           ...(taint ? { taint } : {}),
         });
       } catch (e) {
+        approvalWaitMs = Date.now() - asked;
         return fail('internal', `Could not ask the owner for approval: ${errorMessage(e)}. The operation did not run.`);
       }
+      approvalWaitMs = Date.now() - asked;
       if (answer === 'denied') return fail('denied', 'The owner declined this operation. Do not retry it.');
       if (answer === 'deferred') return fail('needs_approval', 'Waiting for the owner to approve this operation.');
     }
@@ -147,7 +154,7 @@ export class ToolExecutor {
     }
     const { content, truncated, artifactId } = this.limit(output.content, tool.maxOutputChars ?? DEFAULT_MAX_OUTPUT, ctx.sessionId);
     const untrusted = output.untrusted ?? defaultMark.untrusted;
-    const meta = { ...(artifactId ? { artifactId } : {}), ...(untrusted ? { untrusted: boundMark(untrusted) } : {}) };
+    const meta = { ...waitMeta(), ...(artifactId ? { artifactId } : {}), ...(untrusted ? { untrusted: boundMark(untrusted) } : {}) };
     // A tool that ran but reports a failed operation is an error result, never a success.
     if (output.error) return { ...fail(output.error, content), ...meta };
     return { status: 'ok', content, truncated, durationMs: Date.now() - started, ...meta };

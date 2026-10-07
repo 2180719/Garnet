@@ -105,6 +105,8 @@ export type ToolDefinition<I = any> = {
 
 /** Extra facts recorded with a result for audit; not sent to the model separately. */
 export type ToolResultMeta = {
+  /** Milliseconds the call waited on an interactive approval. The runtime does not count it against the task's time limit. */
+  approvalWaitMs?: number;
   /** Deterministic repairs applied to the call before execution (repair records). */
   repairs?: string[];
   /** Artifact holding the full output when it was too large to return. */
