@@ -9,7 +9,7 @@ import { openDb, SessionStore } from '../store/index.ts';
 import { isGarnetError, type SessionTaint, type ToolCallBlock, type ToolContext, type ToolDefinition } from '../contracts/index.ts';
 import { Policy, type ApprovalRequest } from '../policy/index.ts';
 import { ToolExecutor, ToolRegistry, WebFetcher, type FetchRequest, type FetchResponse } from '../tools/index.ts';
-import { CONNECTOR_INFO, calendarTool, connectorTools, githubTool, occurrences, parseDuration, parseIcs, parseWhen, repoAllowed, weatherTool, type ConnectorDeps } from './index.ts';
+import { CONNECTOR_INFO, calendarTool, connectorTools, githubTool, occurrences, parseDuration, parseDurationParts, parseIcs, parseWhen, repoAllowed, toInstant, weatherTool, type ConnectorDeps } from './index.ts';
 
 // ---------- helpers ----------
 
@@ -308,6 +308,57 @@ test('ICS: recurrences expand in their own zone across DST, with EXDATE, moved a
   assert.ok(old.length >= 8 && old.length <= 10, `a rule from 1990 still expands cheaply into the window (${old.length})`);
   assert.ok(old.every((o) => /T0[67]:00:00/.test(o.start.toISOString())));
   for (let i = 1; i < list.length; i++) assert.ok(list[i - 1]!.start <= list[i]!.start, 'sorted');
+});
+
+/** A calendar of VEVENTs, each given as its property lines. */
+const ics = (...events: string[][]): string => ['BEGIN:VCALENDAR', ...events.flatMap((p, i) => ['BEGIN:VEVENT', `UID:e${i}`, `SUMMARY:e${i}`, ...p, 'END:VEVENT']), 'END:VCALENDAR'].join('\r\n');
+/** Occurrences on one local day in `zone`, as [summary, start, end] in UTC. */
+const onDay = (text: string, day: string, zone: string): string[][] => {
+  const [y, m, d] = day.split('-').map(Number) as [number, number, number];
+  const from = toInstant({ date: true, y, m, d }, zone).at;
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  const to = toInstant({ date: true, y: next.getUTCFullYear(), m: next.getUTCMonth() + 1, d: next.getUTCDate() }, zone).at;
+  return occurrences(parseIcs(text), from, to, zone).map((o) => [o.event.summary, o.start.toISOString(), o.end.toISOString()]);
+};
+
+test('ICS: an all-day day and a P1D duration end at the next local midnight across DST, not 24 hours later', () => {
+  assert.deepEqual(parseDurationParts('P1W2DT3H'), { days: 9, ms: 3 * 3_600_000 });
+  assert.deepEqual(parseDurationParts('-P1D'), { days: -1, ms: 0 });
+  const zone = 'America/Denver'; // DST starts 2026-03-08, ends 2026-11-01
+  // Spring forward: March 8 is 23 hours long.
+  const spring = ics(
+    ['DTSTART;VALUE=DATE:20260308'], // e0: no DTEND or DURATION: one day
+    ['DTSTART;VALUE=DATE:20260308', 'DURATION:P1D'], // e1
+    ['DTSTART;TZID=America/Denver:20260307T120000', 'DURATION:P1D'], // e2: nominal day: 12:00 local the next day
+    ['DTSTART;TZID=America/Denver:20260307T120000', 'DURATION:PT24H'], // e3: exact hours stay exact
+    ['DTSTART;VALUE=DATE:20260307', 'DURATION:P1D', 'RRULE:FREQ=DAILY;COUNT=3'], // e4: every instance is one local day
+    ['DTSTART;VALUE=DATE:20260301', 'DTEND;VALUE=DATE:20260302', 'RRULE:FREQ=WEEKLY;COUNT=3'], // e5: date DTEND: whole days
+  );
+  assert.deepEqual(onDay(spring, '2026-03-08', zone), [
+    ['e0', '2026-03-08T07:00:00.000Z', '2026-03-09T06:00:00.000Z'],
+    ['e1', '2026-03-08T07:00:00.000Z', '2026-03-09T06:00:00.000Z'],
+    ['e4', '2026-03-08T07:00:00.000Z', '2026-03-09T06:00:00.000Z'],
+    ['e5', '2026-03-08T07:00:00.000Z', '2026-03-09T06:00:00.000Z'],
+    ['e2', '2026-03-07T19:00:00.000Z', '2026-03-08T18:00:00.000Z'],
+    ['e3', '2026-03-07T19:00:00.000Z', '2026-03-08T19:00:00.000Z'],
+  ].sort((a, b) => a[1]!.localeCompare(b[1]!) || a[0]!.localeCompare(b[0]!)));
+  assert.deepEqual(onDay(spring, '2026-03-09', zone), [['e4', '2026-03-09T06:00:00.000Z', '2026-03-10T06:00:00.000Z']], 'nothing from March 8 spills into March 9');
+
+  // Fall back: November 1 is 25 hours long.
+  const fall = ics(
+    ['DTSTART;VALUE=DATE:20261101'],
+    ['DTSTART;VALUE=DATE:20261101', 'DURATION:P1D'],
+    ['DTSTART;TZID=America/Denver:20261031T120000', 'DURATION:P1D'],
+    ['DTSTART;TZID=America/Denver:20261031T120000', 'DURATION:PT24H'],
+  );
+  assert.deepEqual(onDay(fall, '2026-11-01', zone), [
+    ['e2', '2026-10-31T18:00:00.000Z', '2026-11-01T19:00:00.000Z'],
+    ['e3', '2026-10-31T18:00:00.000Z', '2026-11-01T18:00:00.000Z'],
+    ['e0', '2026-11-01T06:00:00.000Z', '2026-11-02T07:00:00.000Z'],
+    ['e1', '2026-11-01T06:00:00.000Z', '2026-11-02T07:00:00.000Z'],
+  ]);
+  assert.deepEqual(onDay(fall, '2026-11-02', zone), [], 'nothing from November 1 spills into November 2');
+  assert.deepEqual(onDay(fall, '2026-10-31', zone).map((o) => o[0]), ['e2', 'e3']);
 });
 
 // ---------- calendar tool ----------

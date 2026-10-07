@@ -1,7 +1,7 @@
 // A small iCalendar (RFC 5545) reader: VEVENTs with their times, and the
 // common recurrence rules expanded in the event's own time zone. Anything it
 // does not understand is reported, never guessed.
-import { localToUtc, validTimeZone } from '../config/index.ts';
+import { localToUtc, validTimeZone, zonedParts } from '../config/index.ts';
 
 /** A date (all-day) or a date-time: in UTC, in a named zone, or floating (no zone: the owner's). */
 export type When =
@@ -16,8 +16,8 @@ export type IcsEvent = {
   status: string;
   start: When;
   end: When | null;
-  /** DURATION in milliseconds, when given instead of DTEND. */
-  durationMs: number | null;
+  /** DURATION, when given instead of DTEND: nominal days (weeks are 7) kept apart from exact time, because a day is not always 24 hours. */
+  duration: Duration | null;
   rrule: string | null;
   exdates: When[];
   recurrenceId: When | null;
@@ -63,7 +63,7 @@ export function parseIcs(text: string): IcsEvent[] {
             status: current.status ?? '',
             start: current.start,
             end: current.end ?? null,
-            durationMs: current.durationMs ?? null,
+            duration: current.duration ?? null,
             rrule: current.rrule ?? null,
             exdates: current.exdates,
             recurrenceId: current.recurrenceId ?? null,
@@ -101,7 +101,7 @@ export function parseIcs(text: string): IcsEvent[] {
         break;
       }
       case 'DURATION':
-        current.durationMs = parseDuration(value);
+        current.duration = parseDurationParts(value);
         break;
       case 'RRULE':
         current.rrule = value;
@@ -170,16 +170,27 @@ export function parseWhen(value: string, params: Record<string, string> = {}): W
   return { date: false, y: Number(dt[1]), m: Number(dt[2]), d: Number(dt[3]), hh: Number(dt[4]), mi: Number(dt[5]), zone: utc ? 'UTC' : tzid, utc };
 }
 
-/** RFC 5545 DURATION (`PT1H30M`, `P1D`, `P2W`, signed) in milliseconds; null when malformed. */
-export function parseDuration(v: string): number | null {
+/** A DURATION split as RFC 5545 3.3.6 needs: nominal `days` (weeks are 7 days) and exact `ms` (hours, minutes, seconds), both signed. */
+export type Duration = { days: number; ms: number };
+
+/** RFC 5545 DURATION (`PT1H30M`, `P1D`, `P2W`, signed) as nominal days and exact milliseconds; null when malformed. */
+export function parseDurationParts(v: string): Duration | null {
   const m = /^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(v.trim());
   if (!m || v.trim() === 'P' || v.trim().endsWith('T')) return null;
   const [w, d, h, mi, s] = [m[2], m[3], m[4], m[5], m[6]].map((x) => Number(x ?? 0)) as [number, number, number, number, number];
-  const ms = (((w * 7 + d) * 24 + h) * 60 + mi) * 60_000 + s * 1000;
-  return m[1] === '-' ? -ms : ms;
+  const sign = m[1] === '-' ? -1 : 1;
+  return { days: sign * (w * 7 + d) || 0, ms: sign * (((h * 60 + mi) * 60 + s) * 1000) || 0 };
+}
+
+/** RFC 5545 DURATION in milliseconds, counting a day as 24 hours (only right away from DST changes; occurrences use `parseDurationParts`). Null when malformed. */
+export function parseDuration(v: string): number | null {
+  const d = parseDurationParts(v);
+  return d && d.days * DAY_MS + d.ms;
 }
 
 type Wall = { y: number; m: number; d: number; hh: number; mi: number };
+
+const DAY_MS = 86_400_000;
 
 /** The instant a `When` names. All-day dates and floating times are in `ownerZone`; an unknown TZID falls back to it, flagged. */
 export function toInstant(w: When, ownerZone: string): { at: Date; unknownZone?: string } {
@@ -190,7 +201,6 @@ export function toInstant(w: When, ownerZone: string): { at: Date; unknownZone?:
   return w.zone && zone !== w.zone ? { at, unknownZone: w.zone } : { at };
 }
 
-const DAY_MS = 86_400_000;
 const WEEKDAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 const SUPPORTED = new Set(['FREQ', 'INTERVAL', 'COUNT', 'UNTIL', 'BYDAY', 'BYMONTHDAY', 'BYMONTH', 'WKST']);
 
@@ -244,11 +254,11 @@ export function occurrences(events: IcsEvent[], from: Date, to: Date, ownerZone:
 function expand(e: IcsEvent, from: Date, to: Date, ownerZone: string): Occurrence[] {
   const allDay = e.start.date;
   const first = toInstant(e.start, ownerZone);
-  const length = durationOf(e, first.at, ownerZone);
+  const endOf = lengthOf(e, first.at, ownerZone);
   const zoneNote = first.unknownZone ? `time zone "${first.unknownZone}" not recognized; shown as if in ${ownerZone}` : undefined;
   const one = (start: Date, note?: string): Occurrence => {
     const notes = [zoneNote, note].filter(Boolean).join('; ');
-    return { event: e, start, end: new Date(start.getTime() + length), allDay, ...(notes ? { note: notes } : {}) };
+    return { event: e, start, end: endOf(start), allDay, ...(notes ? { note: notes } : {}) };
   };
   if (!e.rrule || e.recurrenceId) return [one(first.at)];
 
@@ -347,15 +357,49 @@ function expand(e: IcsEvent, from: Date, to: Date, ownerZone: string): Occurrenc
         past = true;
         break;
       }
-      if (!excluded.has(at.getTime()) && at.getTime() + length > from.getTime() - 1) out.push(one(at));
+      if (excluded.has(at.getTime())) continue;
+      const o = one(at);
+      if (o.end.getTime() > from.getTime() - 1) out.push(o);
     }
     if (past) break;
   }
   return out;
 }
 
-function durationOf(e: IcsEvent, start: Date, ownerZone: string): number {
-  if (e.end) return Math.max(0, toInstant(e.end, ownerZone).at.getTime() - start.getTime());
-  if (e.durationMs !== null) return Math.max(0, e.durationMs);
-  return e.start.date ? DAY_MS : 0;
+/**
+ * How each occurrence's end follows from its start (RFC 5545 3.6.1, 3.8.5.3). A date-time DTEND gives an exact
+ * length, the same for every occurrence. Days are nominal: an all-day event with no end lasts one day, a date
+ * DTEND counts whole days, and a DURATION's days are added on the calendar in the event's own zone (the owner's
+ * for all-day and floating times), so they end at the same wall-clock time even across a DST change. A DURATION's
+ * hours, minutes and seconds are exact. A negative length becomes zero.
+ */
+function lengthOf(e: IcsEvent, firstStart: Date, ownerZone: string): (start: Date) => Date {
+  const s = e.start;
+  const zone = s.date ? ownerZone : s.utc ? 'UTC' : s.zone && validTimeZone(s.zone) ? s.zone : ownerZone;
+  const at = (start: Date, days: number, ms: number): Date => {
+    const end = new Date(addDays(start, days, zone).getTime() + ms);
+    return end < start ? start : end;
+  };
+  if (e.end) {
+    if (s.date && e.end.date) {
+      const days = dayNumber(e.end.y, e.end.m, e.end.d) - dayNumber(s.y, s.m, s.d);
+      return (start) => at(start, days, 0);
+    }
+    const exact = toInstant(e.end, ownerZone).at.getTime() - firstStart.getTime();
+    return (start) => at(start, 0, exact);
+  }
+  if (e.duration) {
+    const { days, ms } = e.duration;
+    return (start) => at(start, days, ms);
+  }
+  return (start) => at(start, s.date ? 1 : 0, 0);
+}
+
+/** The same wall-clock time `days` calendar days later in `zone` (a day is 23 to 25 hours around DST changes). */
+function addDays(start: Date, days: number, zone: string): Date {
+  if (days === 0) return start;
+  const p = zonedParts(start, zone);
+  const t = new Date(Date.UTC(p.year, p.month - 1, p.day + days));
+  // Starts are whole minutes (parseWhen reads no seconds), so the wall clock to the minute is exact.
+  return localToUtc({ year: t.getUTCFullYear(), month: t.getUTCMonth() + 1, day: t.getUTCDate(), hour: p.hour, minute: p.minute }, zone).at;
 }
