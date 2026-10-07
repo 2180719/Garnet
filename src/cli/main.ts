@@ -16,6 +16,7 @@ import { doctor } from './doctor.ts';
 import { init, setup } from './setup/command.ts';
 import { chat } from './chat/index.ts';
 import { sandboxCommand } from './sandbox.ts';
+import { update } from './update.ts';
 
 const HELP = `garnet — a persistent personal agent you can actually read
 
@@ -71,6 +72,10 @@ Usage:
   garnet service install|uninstall|status|restart|show|list [--name <name>]
                             Run Garnet as a background service (systemd/launchd);
                             --name lets several GARNET_HOMEs run side by side
+  garnet update [--check] [-y] [--ref <branch|tag>] [--reinstall]
+                            Update the install made by install.sh in place (fast-forward,
+                            rolls back on failure); --check only looks (exit 10: update available)
+  garnet --version            Print the version
   garnet help                 Show this help
 
 Environment:
@@ -98,6 +103,11 @@ const stdio: Io = {
 
 export async function main(argv: string[], io: Io = stdio): Promise<number> {
   const [command = 'help', ...rest] = argv;
+  // Before anything reads GARNET_HOME: `garnet update` runs this to check that new code loads.
+  if (command === '--version' || command === '-v') {
+    io.out(`garnet ${VERSION}\n`);
+    return 0;
+  }
   try {
     const { warning, loaded } = loadEnvFile(garnetHome());
     if (warning) io.err(`Warning: ${warning}\n`);
@@ -107,6 +117,8 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
         return await init(rest, io);
       case 'setup':
         return await setup(rest, io);
+      case 'update':
+        return await update(rest, io);
       case 'doctor':
         return await doctor(rest, io, { version: VERSION });
       case 'wake':
