@@ -41,7 +41,7 @@ Setup offers two ways to name your assistant and tell it how you like answers: a
 
 `garnet setup` asks a few questions and saves nothing until the end:
 
-- **Model:** Anthropic, OpenRouter, a local server (Ollama, LM Studio, llama.cpp, vLLM), any OpenAI-compatible API, or the offline demo model.
+- **Model:** Anthropic, Google Gemini, OpenRouter, a local server (Ollama, LM Studio, llama.cpp, vLLM), any OpenAI-compatible API, or the offline demo model. Keep several named providers (`garnet providers list|add|use|rm`) and swap between them with `/provider` in chat.
 - **Keys and tokens:** typed hidden, then kept in the encrypted secret store (setup creates a key file outside `~/.garnet`), in `~/.garnet/env` (mode 600), or left to your own environment variables. Config only ever stores the *name*. If you agree, setup checks each key with one request that costs no tokens.
 - **Persona:** the assistant's name, what to call you, and a line about how you like answers.
 - **Channels:** Telegram, Discord and Signal, with the steps for each.

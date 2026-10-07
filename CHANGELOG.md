@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Gemini and named providers
+- Google Gemini is a first-class provider (`model.provider = "gemini"`, key `GEMINI_API_KEY`, in `garnet setup` as "Google Gemini"): a preset over the OpenAI-compatible adapter pointed at Google's compatibility endpoint, with a table of explicit model ids (context windows, images and PDFs on).
+- Config version 3: `providers` holds more named providers and `activeProvider` picks the one in use; the old `model` block is the provider called `default`, so existing configs keep working (migrated with a backup). Names are lowercase slugs. `garnet providers list|add|use|rm`, `garnet doctor` and the setup wizard (`--provider-name`) know about them.
+- `/provider` in the terminal chat lists providers and swaps from the next message (`/provider <name> [model]`), keeping the session's history, system prompt and tool set. Chat apps (Telegram, Signal, Discord) and the API do not swap; change config and restart.
+
 ### garnet update
 - `garnet update` updates an install made by `install.sh` in place: fast-forward only (never `reset --hard`, `clean` or force), `npm ci --omit=dev` only when the dependency files changed (or `--reinstall`), a smoke check that the new code loads, and an automatic rollback to the previous commit when the checkout moved and anything then failed. It refuses a checkout that is not git, has uncommitted changes or has local commits, and refuses to run twice at once. `garnet update --check` only looks and exits 10 when an update is available (0 when up to date). `-y` skips questions and restarts (or, when the unit file changed, reinstalls) the background service for this `GARNET_HOME`; `--ref <branch|tag>` picks another target. The config is checked with the new code afterwards. See [docs/UPDATING.md](docs/UPDATING.md).
 - New `garnet --version`. The installer's last message mentions `garnet update`. Not included: an update hint in `garnet doctor`.

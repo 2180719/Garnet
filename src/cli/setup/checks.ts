@@ -1,7 +1,8 @@
 // Optional live checks for `garnet setup`. Each makes one cheap request that
 // costs no tokens, and only runs when the owner agreed to it. Results never
 // contain the key or token: it is scrubbed from every message.
-import type { GarnetConfig } from '../../config/index.ts';
+import type { ModelConfig } from '../../config/index.ts';
+import { GEMINI_BASE_URL } from '../../models/index.ts';
 
 /** `warn`: it works, but something deserves a look (for example the model is not listed). */
 export type CheckResult = { ok: boolean; detail: string; warn?: boolean };
@@ -35,7 +36,7 @@ async function request(fetchFn: FetchFn, url: string, init: RequestInit, secret?
 const trimSlash = (u: string) => u.replace(/\/+$/, '');
 
 /** Checks a model provider's key (and that the server answers) by listing models. */
-export async function checkModel(model: GarnetConfig['model'], key: string | undefined, fetchFn: FetchFn = fetch): Promise<CheckResult> {
+export async function checkModel(model: ModelConfig, key: string | undefined, fetchFn: FetchFn = fetch): Promise<CheckResult> {
   if (model.provider === 'fake') return { ok: true, detail: 'the offline model needs no key' };
   if (model.provider === 'anthropic') {
     if (!key) return { ok: false, detail: 'no key to check' };
@@ -49,7 +50,7 @@ export async function checkModel(model: GarnetConfig['model'], key: string | und
     if (ids.length && !known) return { ok: true, warn: true, detail: `key accepted, but "${model.name}" was not among the ${ids.length} models listed; check the model ID` };
     return { ok: true, detail: 'key accepted' };
   }
-  const base = trimSlash(model.baseUrl ?? '');
+  const base = trimSlash(model.baseUrl ?? (model.provider === 'gemini' ? GEMINI_BASE_URL : ''));
   if (!base) return { ok: false, detail: 'no base URL' };
   const headers: Record<string, string> = key ? { authorization: `Bearer ${key}` } : {};
   // OpenRouter lists models without a key, so ask about the key itself.
@@ -59,7 +60,7 @@ export async function checkModel(model: GarnetConfig['model'], key: string | und
   if (r.status === 401 || r.status === 403) return { ok: false, detail: `the server rejected the key (HTTP ${r.status})` };
   if (r.status !== 200) return { ok: false, detail: `unexpected HTTP ${r.status} from ${new URL(base).host}` };
   if (openrouter) return { ok: true, detail: 'OpenRouter accepted the key' };
-  const ids = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((m) => m.id).filter(Boolean);
+  const ids = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((m) => m.id?.replace(/^models\//, '')).filter(Boolean);
   if (ids.length && !ids.includes(model.name)) return { ok: true, warn: true, detail: `server answered, but "${model.name}" is not among its models (${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ', …' : ''})` };
   return { ok: true, detail: 'server answered' };
 }

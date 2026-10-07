@@ -36,7 +36,7 @@ test('built-in skills and connectors are all off by default', () => {
 });
 
 test('a version 1 config is migrated to the current version with a backup, keeping every setting', () => {
-  assert.equal(CONFIG_VERSION, 2);
+  assert.equal(CONFIG_VERSION, 3);
   const home = tempDir();
   // A version 1 config may already use settings added without a version bump (ssh sandbox, persona markers).
   const v1 = {
@@ -49,7 +49,7 @@ test('a version 1 config is migrated to the current version with a backup, keepi
   writeFileSync(join(home, 'config.json'), JSON.stringify(v1));
   const { config, migrated } = loadConfig(home);
   assert.equal(migrated, true);
-  assert.equal(config.version, 2);
+  assert.equal(config.version, 3);
   assert.equal(config.timezone, 'Europe/London');
   assert.equal(config.permissions.exec, 'ask');
   assert.equal(config.persona, v1.persona);
@@ -59,9 +59,9 @@ test('a version 1 config is migrated to the current version with a backup, keepi
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json.bak-v1'), 'utf8')).sandbox.ssh.host, 'box.example', 'the backup is the original file');
   assert.deepEqual(config.skills.enabled, []);
   assert.ok(readdirSync(home).includes('config.json.bak-v1'));
-  assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, 2);
+  assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, 3);
   // Version 0 (no version field) still goes all the way.
-  assert.equal(parseConfig({}).version, 2);
+  assert.equal(parseConfig({}).version, 3);
 });
 
 test('names, scopes and overrides are validated', () => {

@@ -3,6 +3,9 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
+import { VirtualTerminal } from '../../../test/vt.ts';
+import { makeTheme } from '../chat/theme.ts';
+import { FULLSCREEN_OFF, TuiPrompter } from '../tui/index.ts';
 import { tempDir } from '../../../test/helpers.ts';
 import { parseConfig, parseEnv, writeConfig, defaultConfig, readPersona, writePersona } from '../../config/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, openSecretStore } from '../../secrets/index.ts';
@@ -411,6 +414,30 @@ test('non-interactive: the service is only touched with --service (install, or r
   assert.equal(fresh.svc.installs, 1);
 });
 
+test('gemini: its own key name, the table default model, a models check on the compatibility endpoint', async () => {
+  const h = harness({ responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-2.5-flash' }] } })] });
+  assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: true, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  const c = h.config();
+  assert.equal(c.model.provider, 'gemini');
+  assert.equal(c.model.name, 'gemini-2.5-flash');
+  assert.equal(c.model.apiKeyEnv, 'GEMINI_API_KEY');
+  assert.equal(h.calls[0]!.url, 'https://generativelanguage.googleapis.com/v1beta/openai/models');
+  assert.match(h.out(), /✓ server answered/);
+});
+
+test('a custom provider can be named: it is added next to the others and becomes the one in use', async () => {
+  const h = harness({});
+  assert.equal(await h.run({ provider: 'local', model: 'qwen3:8b', 'provider-name': 'laptop', telegram: false, discord: false, signal: false }).done, 0);
+  const c = h.config();
+  assert.equal(c.activeProvider, 'laptop');
+  assert.equal(c.providers.laptop!.baseUrl, 'http://127.0.0.1:11434/v1');
+  assert.equal(c.providers.laptop!.name, 'qwen3:8b');
+  assert.equal(c.model.provider, 'anthropic', 'the default block is untouched');
+  assert.match(h.out(), /Model +laptop: local · qwen3:8b/);
+  // A bad name is refused.
+  await assert.rejects(harness({}).run({ provider: 'local', model: 'x', 'provider-name': 'Bad Name', telegram: false, discord: false, signal: false }).done, /--provider-name/);
+});
+
 test('hidden input ignores arrow keys and paste markers', () => {
   assert.equal(stripKeySequences('sk-\x1b[Dab\x1bOHc\x1b[200~def\x1b[201~\x1b[1;5C'), 'sk-abcdef');
   assert.equal(stripKeySequences('plain-value_123'), 'plain-value_123');
@@ -813,4 +840,116 @@ test('`garnet setup --help` lists the channel and sandbox flags', async () => {
   assert.equal(await setup(['--help'], { out: (t) => (out += t), err: (t) => (out += t) }), 0);
   for (const f of ['--channels', '--sandbox', '--ssh-host', '--ssh-user', '--ssh-workdir', '--ssh-auth', '--ssh-key', '--ssh-passphrase-env', '--ssh-host-keys']) assert.ok(out.includes(f), f);
   assert.equal(out.includes('—'), false);
+});
+
+class ReviewPrompter extends AnswerPrompter {
+  bodies: string[] = [];
+  private readonly save: boolean;
+  constructor(save: boolean, answers: Record<string, Answer | Answer[]>) {
+    super(answers, { interactive: true });
+    this.save = save;
+  }
+  async review(q: { id: string; body: string }): Promise<boolean> {
+    this.asked.push(q.id);
+    this.bodies.push(q.body);
+    return this.save;
+  }
+}
+
+test('review step: shown before anything is written; declining saves nothing, accepting saves', async () => {
+  const answers = { provider: 'fake', name: 'Juno', telegram: false, discord: false, signal: false, service: false };
+  const no = harness();
+  const declined = new ReviewPrompter(false, answers);
+  assert.equal(await runSetup(declined, no.io, no.deps), 0);
+  assert.equal(existsSync(join(no.home, 'config.json')), false);
+  assert.match(no.out(), /Nothing was saved/);
+  assert.equal(declined.asked.at(-1), 'review');
+  assert.match(declined.bodies[0]!, /Model/);
+  const yes = harness();
+  assert.equal(await runSetup(new ReviewPrompter(true, answers), yes.io, yes.deps), 0);
+  assert.equal(yes.config().model.provider, 'fake');
+  // Prompters without a review (line prompts, scripts) skip the step.
+  const quiet = harness();
+  const p = new AnswerPrompter(answers, { interactive: true });
+  assert.equal(await runSetup(p, quiet.io, quiet.deps), 0);
+  assert.equal(p.asked.includes('review'), false);
+});
+
+test('fullscreen wizard: a scripted run through the TUI saves the config, restores the terminal and replays the notes', async () => {
+  const h = harness();
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {} });
+  const screen = new VirtualTerminal(72, 20);
+  const writes: string[] = [];
+  const output = { columns: 72, rows: 20, write: (t: string) => { writes.push(t); screen.write(t); } };
+  const tui = new TuiPrompter({ input, output, theme: makeTheme({ styled: false, color: false, truecolor: false }), processHooks: false });
+  const wio: Io = { out: tui.capture('out'), err: tui.capture('err') };
+  const script: Record<string, string | boolean> = { provider: 'fake', name: 'Juno', owner: 'Sam', service: false };
+  const seen: string[] = [];
+  const done = runSetup(tui, wio, h.deps);
+  let finished = false;
+  void done.finally(() => { finished = true; });
+  let n = 0;
+  while (!finished) {
+    await new Promise((r) => setTimeout(r, 2));
+    if (tui.asked.length === n || !tui.current) continue;
+    n = tui.asked.length;
+    const state = tui.current;
+    const id = state.ask.id;
+    seen.push(screen.screen().join('\n'));
+    const want = script[id];
+    if (state.kind === 'select') input.write(`\x1b[H${'\x1b[B'.repeat(Math.max(0, state.ask.choices.findIndex((c) => c.value === want)))}\r`);
+    else if (state.kind === 'text') input.write(`${typeof want === 'string' ? want : ''}\r`);
+    else if (state.kind === 'confirm') input.write(want === true ? 'y' : 'n');
+    else input.write('\r');
+  }
+  assert.equal(await done, 0);
+  const log = tui.close();
+  assert.equal(writes.at(-1), FULLSCREEN_OFF);
+  assert.equal(h.config().model.provider, 'fake');
+  assert.deepEqual(readPersona(h.config().persona), { name: 'Juno', owner: 'Sam', notes: '' });
+  assert.ok(tui.asked.includes('review'));
+  // The review screen listed the model before saving.
+  assert.ok(seen.some((s) => s.includes('Save these settings?') && s.includes('Model')));
+  assert.ok(seen.some((s) => /Step \d of 5/.test(s)));
+  // What the wizard printed is replayed for the normal screen, including the next steps.
+  assert.match(log.map((l) => l.text).join(''), /Garnet is ready\./);
+});
+
+type Cfg = ReturnType<ReturnType<typeof harness>['config']>;
+
+test('fullscreen wizard: a named custom provider and a Gemini choice work through the TUI and show in the review', async () => {
+  const scripts: { answers: Record<string, string | boolean>; review: RegExp; check: (c: Cfg) => boolean }[] = [
+    { answers: { provider: 'local', model: 'qwen3:8b', 'provider-name': 'laptop' }, review: /laptop: local · qwen3:8b/, check: (c) => c.activeProvider === 'laptop' && c.providers.laptop?.name === 'qwen3:8b' },
+    { answers: { provider: 'gemini', model: 'gemini-2.5-pro' }, review: /gemini · gemini-2\.5-pro/, check: (c) => c.model.provider === 'gemini' && c.model.apiKeyEnv === 'GEMINI_API_KEY' },
+  ];
+  for (const script of scripts) {
+    const h = harness();
+    const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {} });
+    const screen = new VirtualTerminal(72, 20);
+    const output = { columns: 72, rows: 20, write: (t: string) => { screen.write(t); } };
+    const tui = new TuiPrompter({ input, output, theme: makeTheme({ styled: false, color: false, truecolor: false }), processHooks: false });
+    const wio: Io = { out: tui.capture('out'), err: tui.capture('err') };
+    const answers: Record<string, string | boolean> = { ...script.answers, service: false };
+    const seen: string[] = [];
+    const done = runSetup(tui, wio, h.deps);
+    let finished = false;
+    void done.finally(() => { finished = true; });
+    let n = 0;
+    while (!finished) {
+      await new Promise((r) => setTimeout(r, 2));
+      if (tui.asked.length === n || !tui.current) continue;
+      n = tui.asked.length;
+      const state = tui.current;
+      const want = answers[state.ask.id];
+      seen.push(screen.screen().join('\n'));
+      if (state.kind === 'select') input.write(`\x1b[H${'\x1b[B'.repeat(Math.max(0, state.ask.choices.findIndex((c) => c.value === want)))}\r`);
+      else if (state.kind === 'text') input.write(`${typeof want === 'string' ? want : ''}\r`);
+      else if (state.kind === 'confirm') input.write(want === true ? 'y' : 'n');
+      else input.write('\r'); // no key typed now
+    }
+    assert.equal(await done, 0);
+    tui.close();
+    assert.ok(script.check(h.config()), JSON.stringify(h.config().providers));
+    assert.ok(seen.some((s) => s.includes('Save these settings?') && script.review.test(s)), 'the review names the provider in use');
+  }
 });
