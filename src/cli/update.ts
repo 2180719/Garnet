@@ -436,7 +436,6 @@ class Updater {
     const merged = await this.git(['merge', '--ff-only', '--quiet', t.target]);
     if (merged.code !== 0) return await failAndRollback('Could not fast-forward the checkout.', firstLines(merged.stderr, 4));
     this.ok('Code updated');
-    await this.saveMovedRemote(t);
 
     if (depsChanged || v.reinstall) {
       installAttempted = true;
@@ -451,6 +450,7 @@ class Updater {
     const smoke = await this.smoke();
     if (smoke.code !== 0) return await failAndRollback('The new version does not start.', firstLines(smoke.stderr || smoke.stdout, 6));
     this.ok(`The new version loads (${smoke.stdout.trim().split('\n')[0] ?? ''})`);
+    await this.saveMovedRemote(t);
 
     // The update has succeeded. Everything below is advice and never changes the result.
     this.step('Checking your config with the new version');

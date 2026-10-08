@@ -269,6 +269,16 @@ test('smoke failure without dependency changes rolls back without npm', async ()
   assert.deepEqual(h.calls.npm, []);
 });
 
+test('a failed update leaves a remote naming the old GitHub location as it was', async () => {
+  const f = fixture();
+  const oldUrl = 'https://github.com/2180719/Garnet';
+  git(f.install, 'config', `url.${join(f.root, 'origin.git')}.insteadOf`, 'https://github.com/garnet-foundation/Garnet');
+  git(f.install, 'remote', 'set-url', 'origin', oldUrl);
+  f.push({ 'src/cli/bin.ts': '// BROKEN' }, 'breaks startup');
+  assert.equal(await harness(f).go(['-y']), 1);
+  assert.equal(git(f.install, 'remote', 'get-url', 'origin'), oldUrl);
+});
+
 test('npm failure rolls back to the old commit', async () => {
   const f = fixture();
   const before = head(f);
