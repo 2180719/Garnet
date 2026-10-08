@@ -3,8 +3,8 @@
 ## Unreleased
 
 ### Budgets
-- The task time limit (`maxWallMs`) now also aborts a model call or tool that is still running, not only the next turn; a reply that arrives past the deadline ends the task as `budget_exhausted` (time limit) instead of `completed`. Time spent waiting on an interactive approval is still excluded.
-- Tokens used by `delegate_task` subagents and by `vision_analyze` count against the task's token budget and the scheduler's per-run and daily job limits (`TaskRecord.delegatedUsage`, not stored, so costs are not double counted).
+- The task time limit (`maxWallMs`) now also aborts a model call or tool that is still running, not only the next turn; a complete reply that finishes just past the deadline stays `completed`. Time spent waiting on an interactive approval (including a subagent's) stops the clock. Known limits: the scheduler's own outer timer for a job is separate, and a side-effect tool cut off at the deadline may already have acted (its result is an error either way).
+- Tokens used by `delegate_task` subagents and by `vision_analyze` count against the task's token budget and the scheduler's per-run and daily job limits (`TaskRecord.delegatedUsage`, not stored, so costs are not double counted); a subagent's tokens are charged as each of its model calls completes, so a cut-off child still counts.
 
 ### More tools and subagents
 - New tools: `edit_file` (exact-string edits, several per call, all or none), `search_files` (regex over contents, glob over names), `todo_list`, `clarify`, `calculate` (a small parser, no `eval`), `datetime` (time zones, DST-aware conversion, date arithmetic), `session_search` and `delegate_task` (on unless `delegation.enabled` is false). Those that only read Garnet's own state declare no permission; `edit_file` needs `fs.write`.

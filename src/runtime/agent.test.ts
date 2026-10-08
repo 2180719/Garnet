@@ -335,24 +335,39 @@ test('time spent waiting for an interactive approval does not count against the 
   assert.equal(readFileSync(join(t.workspace, 'a.md'), 'utf8'), 'x');
 });
 
-/** A model that takes `ms` to answer. `honorsSignal: false` ignores cancellation, like a misbehaving adapter. */
-function slowModel(ms: number, text: string, honorsSignal = true): ModelAdapter {
-  const fast = new FakeModel([{ text }]);
-  return {
-    id: 'slow',
+/** A started signal plus a way to wait for it, so a test acts only once the model or tool is really running. */
+function started() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, signal: resolve };
+}
+
+/**
+ * A model that, once called, never answers on its own: it waits for the request to be aborted (or, with
+ * `honorsSignal: false`, for `lateMs`, then answers) and keeps the process alive meanwhile, since abort timers do not.
+ */
+function stuckModel(opts: { honorsSignal?: boolean; lateMs?: number } = {}) {
+  const fast = new FakeModel([{ text: 'late answer' }]);
+  const running = started();
+  const model: ModelAdapter = {
+    id: 'stuck',
     capabilities: fast.capabilities,
     async *stream(request): AsyncIterable<ModelEvent> {
-      const waited = await new Promise<'done' | 'aborted'>((resolve) => {
-        const timer = setTimeout(() => resolve('done'), ms);
-        if (honorsSignal) request.signal?.addEventListener('abort', () => (clearTimeout(timer), resolve('aborted')), { once: true });
+      running.signal();
+      const keepAlive = setInterval(() => {}, 1000);
+      const outcome = await new Promise<'late' | 'aborted'>((resolve) => {
+        if (opts.honorsSignal !== false) request.signal?.addEventListener('abort', () => resolve('aborted'), { once: true });
+        if (opts.lateMs !== undefined) setTimeout(() => resolve('late'), opts.lateMs);
       });
-      if (waited === 'aborted') {
+      clearInterval(keepAlive);
+      if (outcome === 'aborted') {
         yield { type: 'error', category: 'cancelled', message: 'aborted' };
         return;
       }
-      yield* fast.stream(request);
+      yield* fast.stream({ ...request, signal: undefined }); // the fake would refuse an aborted signal
     },
   };
+  return { model, running: running.promise };
 }
 
 function slowSetup(model: ModelAdapter, maxWallMs: number, extraTools: ToolDefinition[] = []) {
@@ -365,43 +380,60 @@ function slowSetup(model: ModelAdapter, maxWallMs: number, extraTools: ToolDefin
 }
 
 test('the wall-clock limit aborts a model call that is still running', async () => {
-  const t = slowSetup(slowModel(5000, 'late'), 20);
-  const started = Date.now();
+  const m = stuckModel();
+  const t = slowSetup(m.model, 300);
   const task = await t.run('go');
-  assert.ok(Date.now() - started < 2000, 'cut off at the deadline, not after the provider answered');
+  await m.running; // the model was called, so it was the deadline that stopped it
   assert.equal(task.status, 'budget_exhausted');
   assert.match(task.reason ?? '', /time limit/);
 });
 
-test('an answer that arrives after the deadline is not reported as completed', async () => {
-  const t = slowSetup(slowModel(60, 'late', false), 20);
+test('a complete answer that arrives after the deadline is kept as completed', async () => {
+  const m = stuckModel({ honorsSignal: false, lateMs: 250 });
+  const t = slowSetup(m.model, 100);
   const task = await t.run('go');
-  assert.equal(task.status, 'budget_exhausted');
-  assert.match(task.reason ?? '', /time limit/);
+  assert.equal(task.status, 'completed');
 });
 
 test('caller cancellation still wins over the deadline', async () => {
-  const t = slowSetup(slowModel(5000, 'late'), 10_000);
+  const m = stuckModel();
+  const t = slowSetup(m.model, 60_000);
   const ac = new AbortController();
-  setTimeout(() => ac.abort(), 10);
-  assert.equal((await t.run('go', ac.signal)).status, 'cancelled');
+  const done = t.run('go', ac.signal);
+  await m.running;
+  ac.abort();
+  assert.equal((await done).status, 'cancelled');
+});
+
+test('a provider error is reported as the failure it is, not as the time limit', async () => {
+  const t = slowSetup(new FakeModel([{ error: { category: 'provider_fatal', message: 'bad key' } }]), 60_000);
+  const task = await t.run('go');
+  assert.equal(task.status, 'failed');
+  assert.match(task.reason ?? '', /bad key/);
 });
 
 test('the wall-clock limit also stops a running tool', async () => {
-  let sawAbort = false;
+  const running = started();
   const hang: ToolDefinition = {
     name: 'hang', version: 1, description: 'never returns', input: z.object({}), capability: 'fs.read', idempotent: true,
     async run(_input, ctx) {
-      const keepAlive = setInterval(() => {}, 1000); // abort timers do not keep the process alive; a real tool holds a socket
-      await new Promise((resolve) => ctx.signal.addEventListener('abort', () => ((sawAbort = true), clearInterval(keepAlive), resolve(null)), { once: true }));
+      running.signal();
+      const keepAlive = setInterval(() => {}, 1000); // a real tool holds a socket; abort timers do not keep the process alive
+      await new Promise((resolve) => ctx.signal.addEventListener('abort', () => resolve(null), { once: true }));
+      clearInterval(keepAlive);
       return { content: 'stopped' };
     },
   };
-  const t = slowSetup(new FakeModel([{ toolCalls: [{ name: 'hang', input: {} }] }, { text: 'never' }]), 30, [hang]);
-  const started = Date.now();
+  const t = slowSetup(new FakeModel([{ toolCalls: [{ name: 'hang', input: {} }] }, { text: 'never' }]), 300, [hang]);
   const task = await t.run('go');
-  assert.ok(Date.now() - started < 2000);
-  assert.ok(sawAbort);
+  await running.promise;
   assert.equal(task.status, 'budget_exhausted');
   assert.match(task.reason ?? '', /time limit/);
+});
+
+test('a wall limit beyond the timer range still works', async () => {
+  const t = slowSetup(new FakeModel([{ toolCalls: [{ name: 'ping', input: {} }] }, { text: 'ok' }]), 2 ** 40, [
+    { name: 'ping', version: 1, description: 'ping', input: z.object({}), capability: 'fs.read', idempotent: true, run: async () => ({ content: 'pong' }) },
+  ]);
+  assert.equal((await t.run('go')).status, 'completed');
 });

@@ -15,8 +15,10 @@ export type SubagentParent = {
   remainingMs: number;
   /** Tokens the parent task may still spend (its budget less its own, delegated and side-model usage so far). */
   remainingTokens: () => number;
-  /** Debits tokens a subagent used (all of its descendants' too) to the parent task, which is what job limits read. */
+  /** Debits tokens a subagent used (all of its descendants' too) to the parent task, which is what job limits read. Called as each of the child's model calls completes. */
   charge: (usage: Usage) => void;
+  /** Stops and restarts the parent's clock while the subagent waits on an interactive approval. */
+  approval: { begin: () => void; end: () => void };
 };
 
 export type SubagentDeps = {
@@ -45,7 +47,8 @@ const BRIEF = [
  * stops when the parent is cancelled or the tool call times out, and gets at most the parent's remaining time. The
  * child is a normal session in the event log (linked to its parent, so it is scoped like the parent), so its work
  * is auditable. Its tokens are drawn from the parent's budget: it may spend at most what the parent has left, and
- * everything it used is charged to the parent task (`parent.charge`).
+ * everything it used is charged to the parent task (`parent.charge`) as each of its model calls completes, and the
+ * time it waits on the owner's approval stops the parent's clock too (`parent.approval`).
  */
 export function subagentFactory(deps: SubagentDeps): (parent: SubagentParent) => SubagentRunner {
   return (parent) => ({
@@ -60,10 +63,11 @@ export function subagentFactory(deps: SubagentDeps): (parent: SubagentParent) =>
         signal: callSignal ? AbortSignal.any([parent.signal, callSignal]) : parent.signal,
         source: 'subagent',
         taint: parent.taint.sources,
+        onUsage: parent.charge,
+        approval: parent.approval,
       });
-      // The child's whole spend (its own calls and what it delegated) comes out of the parent's allowance.
+      // Already charged to the parent call by call (`onUsage`), so a child that is cut off or throws still costs what it used.
       const usage = addUsage(task.usage, task.delegatedUsage ?? unknownUsage());
-      parent.charge(usage);
       const events = deps.store.events(session.id);
       const reply = [...events].reverse().find((e) => e.type === 'assistant_message');
       const known = new Set(parent.taint.sources);
