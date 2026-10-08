@@ -360,3 +360,38 @@ test('inline files count as a flat estimate, not their base64 length, when clamp
   for await (const e of m.stream(request)) void e;
   assert.equal(seen[0]!.body.max_tokens, 8000);
 });
+
+test('a tool call\'s extra_content (Gemini thought_signature) is kept and echoed back on the next request', async () => {
+  const extra = { google: { thought_signature: 'sig-abc' } };
+  const first = await collect(
+    model(() =>
+      sseResponse([
+        delta({ tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'list_files', arguments: '{}' }, extra_content: extra }] }),
+        delta({}, 'tool_calls'),
+        'data: [DONE]\n\n',
+      ]),
+    ),
+    [user('go')],
+    { tools },
+  );
+  const done = first.find((e) => e.type === 'done');
+  assert.ok(done && done.type === 'done');
+  const content = done.message.content;
+  assert.deepEqual(content[0], { type: 'tool_call', id: 'c1', name: 'list_files', input: {} });
+  assert.deepEqual(content[1], { type: 'provider', provider: 'openai-compatible', data: { callId: 'c1', extra } });
+
+  const seen: Seen[] = [];
+  const history: ChatMessage[] = [
+    user('go'),
+    done.message,
+    { role: 'user', content: [{ type: 'tool_result', callId: 'c1', content: 'ok', isError: false }] },
+  ];
+  await collect(model(() => sseResponse([delta({ content: 'x' }, 'stop'), 'data: [DONE]\n\n']), seen), history, { tools });
+  const assistant = seen[0]!.body.messages.find((m: any) => m.role === 'assistant');
+  assert.deepEqual(assistant.tool_calls[0].extra_content, extra);
+  // A call without extra_content gets no such field.
+  const plain = await collect(model(() => sseResponse([delta({ tool_calls: [{ index: 0, id: 'p', function: { name: 'list_files', arguments: '{}' } }] }, 'tool_calls'), 'data: [DONE]\n\n'])), [user('go')], { tools });
+  const pd = plain.find((e) => e.type === 'done');
+  assert.ok(pd && pd.type === 'done');
+  assert.equal(pd.message.content.length, 1);
+});

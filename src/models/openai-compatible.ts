@@ -50,14 +50,24 @@ type WireMessage =
   | { role: 'assistant'; content: string | null; tool_calls?: WireToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
 
-type WireToolCall = { id: string; type: 'function'; function: { name: string; arguments: string } };
+type WireToolCall = {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+  /** Vendor extension a server attached to the call (Gemini's `google.thought_signature`); echoed back verbatim. */
+  extra_content?: unknown;
+};
 
-type PartialCall = { id: string; name: string; args: string };
+type PartialCall = { id: string; name: string; args: string; extra?: unknown };
+
+/** Data of the provider block that keeps a tool call's `extra_content` so history replays it. */
+type CallExtra = { callId: string; extra: unknown };
 
 /**
  * Adapter for OpenAI-compatible Chat Completions endpoints (OpenRouter,
  * Ollama, llama.cpp, vLLM, LM Studio, ...). Streaming only, via global fetch.
- * Creates no provider blocks: history replays from text and tool calls alone.
+ * Its only provider blocks carry a tool call's vendor `extra_content` (Gemini requires the
+ * `thought_signature` there to come back on the next request); everything else replays from text and tool calls.
  */
 export class OpenAICompatibleModel implements ModelAdapter {
   readonly id: string;
@@ -164,6 +174,7 @@ export class OpenAICompatibleModel implements ModelAdapter {
             if (typeof tc.id === 'string' && tc.id) cur.id = tc.id;
             if (typeof tc.function?.name === 'string') cur.name += tc.function.name;
             if (typeof tc.function?.arguments === 'string') cur.args += tc.function.arguments;
+            if (tc.extra_content !== undefined && tc.extra_content !== null) cur.extra = tc.extra_content;
             calls.set(index, cur);
           }
         }
@@ -219,10 +230,13 @@ export class OpenAICompatibleModel implements ModelAdapter {
       const content: ContentBlock[] = [];
       if (text) content.push({ type: 'text', text });
       const toolCalls: ToolCallBlock[] = [];
+      const extras: ContentBlock[] = [];
       for (const [, c] of [...calls.entries()].sort((a, b) => a[0] - b[0])) {
-        toolCalls.push({ type: 'tool_call', id: c.id || newId('call'), name: c.name, input: parseArgs(c.args) });
+        const id = c.id || newId('call');
+        toolCalls.push({ type: 'tool_call', id, name: c.name, input: parseArgs(c.args) });
+        if (c.extra !== undefined) extras.push({ type: 'provider', provider: PROVIDER, data: { callId: id, extra: c.extra } satisfies CallExtra });
       }
-      content.push(...toolCalls);
+      content.push(...toolCalls, ...extras);
       for (const call of toolCalls) yield { type: 'tool_call', call };
       const finalUsage = usage ?? unknownUsage();
       yield {
@@ -274,16 +288,25 @@ function toWireMessages(request: ModelRequest): WireMessage[] {
 function assistantToWire(m: ChatMessage): WireMessage | null {
   const texts: string[] = [];
   const toolCalls: WireToolCall[] = [];
+  const extras = new Map<string, unknown>();
+  for (const b of m.content) {
+    if (b.type === 'provider' && b.provider === PROVIDER) {
+      const d = b.data as Partial<CallExtra> | null;
+      if (d && typeof d.callId === 'string' && d.extra !== undefined) extras.set(d.callId, d.extra);
+    }
+  }
   for (const b of m.content) {
     if (b.type === 'text') texts.push(b.text);
     else if (b.type === 'tool_call') {
+      const extra = extras.get(b.id);
       toolCalls.push({
         id: b.id,
         type: 'function',
         function: { name: b.name, arguments: typeof b.input === 'string' ? b.input : JSON.stringify(b.input ?? {}) },
+        ...(extra !== undefined ? { extra_content: extra } : {}),
       });
     }
-    // Provider blocks (ours are never created; foreign ones are meaningless here) are dropped.
+    // Other providers' blocks are meaningless here and dropped.
   }
   const content = texts.join('');
   if (!content && !toolCalls.length) return null;
