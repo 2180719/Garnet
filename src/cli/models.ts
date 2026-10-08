@@ -50,11 +50,10 @@ const usd = (n: number | undefined): string => (n === undefined ? '?' : `$${Numb
 
 export function modelRows(model: ModelConfig, lookup: ModelLookup, limit: number): string[] {
   const { catalog, live } = lookup;
-  const names = live ? live.slice().sort() : suggestModels(catalog, model, limit).map((s) => s.name);
-  const covered = catalogId(model, 'x') !== null;
+  const names = live ? live.slice().sort().slice(0, limit) : suggestModels(catalog, model, limit).map((s) => s.name);
   return names.map((name) => {
     const m = findModel(catalog, model, name);
-    const price = m?.pricing ? `${usd(m.pricing.input).padStart(8)} in ${usd(m.pricing.output).padStart(8)} out` : `${(covered ? 'price unknown' : '').padStart(8)}`;
+    const price = m?.pricing ? `${usd(m.pricing.input).padStart(8)} in ${usd(m.pricing.output).padStart(8)} out` : `price unknown`;
     return `  ${name.padEnd(40)} ${price}${m?.tiered ? '  (higher for long prompts)' : ''}`;
   });
 }
@@ -75,6 +74,7 @@ export async function modelsCommand(args: string[], io: Io, opts: Opts = {}): Pr
     const lookup = await lookupModels(picked.model, { home: paths.home, env: opts.env, fetch: opts.fetch, offline: values.offline });
     io.out(`${picked.name} (${picked.model.provider}) · ${lookup.live ? 'models from the provider' : 'models from the catalog'}\n`);
     for (const row of modelRows(picked.model, lookup, 15)) io.out(`${row}\n`);
+    if (lookup.live && lookup.live.length > 15) io.out(`  … and ${lookup.live.length - 15} more the provider lists\n`);
     const own = findModel(lookup.catalog, picked.model, picked.model.name);
     io.out(`\nIn use: ${picked.model.name}: ${picked.model.pricing ? 'price set in config (model.pricing)' : describePricing(own, catalogId(picked.model, picked.model.name) !== null)}\n`);
     io.out(`Prices: ${lookup.catalog.source} of ${lookup.catalog.fetchedAt.slice(0, 10)}, base rate per million tokens.\n`);

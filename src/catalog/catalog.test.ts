@@ -46,6 +46,8 @@ test('catalogId maps Garnet models to catalog ids and returns null where the cat
   assert.equal(catalogId({ provider: 'anthropic' }, 'claude-opus-5'), 'anthropic/claude-opus-5');
   assert.equal(catalogId({ provider: 'anthropic' }, 'claude-3-5-haiku-20241022'), 'anthropic/claude-3.5-haiku');
   assert.equal(catalogId({ provider: 'gemini' }, 'models/gemini-3.8-flash'), 'google/gemini-3.8-flash');
+  assert.equal(catalogId({ provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/' }, 'gemini-3.8-flash'), 'google/gemini-3.8-flash');
+  assert.equal(catalogId({ provider: 'gemini', baseUrl: 'https://my-proxy.example.com/gemini' }, 'gemini-3.8-flash'), null, 'a gateway may charge other rates');
   assert.equal(catalogId({ provider: 'openai-compatible', baseUrl: 'https://api.openai.com/v1' }, 'gpt-5.5'), 'openai/gpt-5.5');
   assert.equal(catalogId({ provider: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1' }, 'x/y'), 'x/y');
   assert.equal(catalogId({ provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:11434/v1' }, 'llama3'), null);

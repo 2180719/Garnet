@@ -26,7 +26,7 @@ import {
   type GarnetConfig,
   type ModelConfig,
 } from '../../config/index.ts';
-import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV } from '../../models/index.ts';
+import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV, GEMINI_BASE_URL } from '../../models/index.ts';
 import { loadCatalog, priceLine, refreshCatalog, suggestModels, type Catalog } from '../../catalog/index.ts';
 import { GarnetError, errorMessage } from '../../contracts/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, unlockFrom, writePrivateFile, type KdfParams } from '../../secrets/index.ts';
@@ -356,7 +356,7 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
     'openai-compatible': { label: 'API key', help: 'Leave empty if the server needs none.', required: false },
     local: null,
   }[provider];
-  const host = new URL(m.baseUrl ?? 'https://api.anthropic.com').host;
+  const host = new URL(m.baseUrl ?? (provider === 'gemini' ? GEMINI_BASE_URL : 'https://api.anthropic.com')).host;
   const result = await checked(p, io, deps, st, {
     what: 'model',
     consentHelp: `One request to ${host} that lists models, and one to openrouter.ai for current model prices; neither uses tokens.`,
@@ -372,7 +372,8 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
     prices = fresh.catalog;
     if (!fresh.ok) io.out(`  ${deps.style.warn('!')} ${fresh.detail}; using the ${fresh.catalog.source} from ${fresh.catalog.fetchedAt.slice(0, 10)}.\n`);
   }
-  io.out(`  ${deps.style.muted(priceLine(prices, m, m.name))}\n`);
+  const configured = m.pricing ? `${m.name}: price set in config (model.pricing): $${m.pricing.input} in / $${m.pricing.output} out per million tokens; it overrides the catalog` : null;
+  io.out(`  ${deps.style.muted(configured ?? priceLine(prices, m, m.name))}\n`);
 }
 
 // ---------- secrets ----------

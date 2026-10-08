@@ -307,3 +307,21 @@ test('createModel takes the context window from the catalog for covered endpoint
   assert.equal(mk({ contextWindow: 50_000 }).capabilities.contextWindow, 50_000);
   assert.equal(createModel(base, () => 'k', { ...base.model, provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:1/v1', name: 'llama3' }, known).capabilities.contextWindow, 128_000, 'an uncovered server keeps the default');
 });
+
+test('garnet models caps a long live list, says "price unknown" on every uncovered row and reports a configured price', async () => {
+  const { modelsCommand } = await import('../src/cli/models.ts');
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: CONFIG_VERSION, model: { provider: 'openai-compatible', name: 'm-0', baseUrl: 'http://127.0.0.1:9/v1', pricing: { input: 1, output: 2 } } }));
+  const fetchFn = (async (input: string | URL | Request) =>
+    String(input).includes('openrouter.ai')
+      ? new Response('{}', { status: 503 })
+      : new Response(JSON.stringify({ data: Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}` })) }))) as typeof fetch;
+  const out: string[] = [];
+  const io: Io = { out: (t) => out.push(t), err: (t) => out.push(t) };
+  assert.equal(await modelsCommand([], io, { home, fetch: fetchFn, env: {} }), 0);
+  const text = out.join('');
+  assert.equal(text.split('\n').filter((l) => /^ {2}m-\d+/.test(l)).length, 15);
+  assert.equal(text.split('\n').filter((l) => /^ {2}m-\d+.*price unknown/.test(l)).length, 15);
+  assert.match(text, /… and 25 more/);
+  assert.match(text, /In use: m-0: price set in config/);
+});

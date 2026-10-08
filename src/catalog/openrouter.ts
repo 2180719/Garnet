@@ -87,8 +87,17 @@ export function catalogId(ref: ProviderRef, name: string): string | null {
       const bare = id.replace(/-\d{8}$/, '');
       return `anthropic/${bare.replace(/^(claude-[a-z]+)-(\d+)-(\d+)$/, '$1-$2.$3').replace(/^claude-(\d+)-(\d+)-([a-z]+)$/, 'claude-$1.$2-$3')}`;
     }
-    case 'gemini':
+    case 'gemini': {
+      // Only Google's own endpoint: a proxy or gateway behind a custom base URL may charge other rates.
+      if (ref.baseUrl) {
+        try {
+          if (new URL(ref.baseUrl).host !== 'generativelanguage.googleapis.com') return null;
+        } catch {
+          return null;
+        }
+      }
       return `google/${id}`;
+    }
     case 'openai-compatible': {
       let host = '';
       try {
