@@ -154,13 +154,20 @@ test('connectors: calendar address is stored as a secret and only its name is in
 
 test('connectors: http (generic path) asks for the secret of each credential it already has', async () => {
   const h = harness();
-  existing(h, (c) => void (c.connectors.http.credentials.crm = { secretEnv: 'CRM_TOKEN', hosts: ['api.crm.example'], header: 'Authorization', prefix: 'Bearer ' }));
+  existing(h, (c) => {
+    c.connectors.http.credentials.crm = { secretEnv: 'CRM_TOKEN', hosts: ['api.crm.example'], header: 'Authorization', prefix: 'Bearer ' };
+    c.connectors.http.credentials.wiki = { secretEnv: 'WIKI_KEY', hosts: ['api.wiki.example'], header: 'X-Api-Key', prefix: '' };
+  });
   const token = 'crm-token-0123456789';
-  await menu(h, 'integrations', { connectors: 'http', skills: 'none', secrets: 'encrypted', check: false }, { 'http-crm-token': token });
+  const wikiKey = 'wiki-key-9876543210';
+  await menu(h, 'integrations', { connectors: 'http', skills: 'none', secrets: 'encrypted', check: false }, { 'http-crm-token': token, 'http-wiki-key': wikiKey });
   const c = h.config();
   assert.deepEqual(c.connectors.enabled, ['http']);
   assert.equal(readFileSync(join(h.home, 'config.json'), 'utf8').includes(token), false);
-  assert.equal(openSecretStore(h.home, { [KEY_FILE_ENV]: h.deps.defaultKeyFile }, { kdf: h.deps.kdf! }).get('CRM_TOKEN'), token);
+  assert.equal(readFileSync(join(h.home, 'config.json'), 'utf8').includes(wikiKey), false);
+  const store = openSecretStore(h.home, { [KEY_FILE_ENV]: h.deps.defaultKeyFile }, { kdf: h.deps.kdf! });
+  assert.equal(store.get('CRM_TOKEN'), token);
+  assert.equal(store.get('WIKI_KEY'), wikiKey);
 });
 
 test('connectors: GitHub repositories are validated; weather keeps the place; turning one off keeps its secret name', async () => {
