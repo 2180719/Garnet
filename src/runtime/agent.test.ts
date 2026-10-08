@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { z } from 'zod';
@@ -73,6 +73,17 @@ test('budgets stop runaway loops', async () => {
   const task = await t.run('loop');
   assert.equal(task.status, 'budget_exhausted');
   assert.equal(task.modelCalls, 3);
+});
+
+test('tool calls in the batch that follows an exhausted token budget are not run', async () => {
+  const t = setup(
+    [{ toolCalls: [{ name: 'write_file', input: { path: 'a.txt', content: 'x' } }, { name: 'write_file', input: { path: 'b.txt', content: 'y' } }], usage: { inputTokens: 500, outputTokens: 10 } }],
+    { budget: { maxTokens: 100 } },
+  );
+  const task = await t.run('write two files');
+  assert.equal(task.status, 'budget_exhausted');
+  assert.equal(task.toolCalls, 0);
+  assert.ok(!existsSync(join(t.workspace, 'a.txt')) && !existsSync(join(t.workspace, 'b.txt')));
 });
 
 test('approval deferral pauses the task without running the tool', async () => {

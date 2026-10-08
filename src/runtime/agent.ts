@@ -275,6 +275,9 @@ export class Agent {
           result = { status: 'error', category: 'invalid_input', content: `Not run: ${why} before this call was complete. Retry with a shorter call.`, durationMs: 0 };
         } else if (Date.now() >= deadline) {
           result = { status: 'error', category: 'budget_exhausted', content: 'Not run: the task reached its time limit.', durationMs: 0 };
+        } else if (taskTokens(task) >= this.deps.budget.maxTokens) {
+          // Side-model tools (vision_analyze) and subagents spend tokens inside the batch, so check before each call.
+          result = { status: 'error', category: 'budget_exhausted', content: 'Not run: the task used up its token budget.', durationMs: 0 };
         } else if (waiting) {
           result = { status: 'error', category: 'needs_approval', content: 'Skipped while an earlier operation awaits approval.', durationMs: 0 };
         } else if (task.toolCalls >= this.deps.budget.maxToolCalls) {
