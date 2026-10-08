@@ -14,80 +14,9 @@ import type { Io } from '../main.ts';
 import { init, setup } from './command.ts';
 import { AnswerPrompter, TerminalPrompter, makeStyle, stripKeySequences, type Answer, type MultiSelectAsk } from './prompt.ts';
 import { runSetup, type Pairing, type SetupDeps } from './wizard.ts';
-import { OPENROUTER_MODELS_URL } from '../../catalog/index.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
 
-const kdf = { N: 2 ** 10, r: 8, p: 1 };
-const KEY = 'sk-ant-api03-NEVER-PRINT-THIS-0123456789';
-const TG = '123456789:AAThisIsNotARealTelegramToken_xyz';
-
-type Call = { url: string; headers: Record<string, string> };
-
-function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((url: string) => { status: number; body: unknown })[]; installed?: boolean; catalog?: unknown; pending?: Pairing[]; sources?: SetupDeps['importSources'] } = {}) {
-  const home = opts.home ?? tempDir();
-  const keyDir = tempDir();
-  const env: NodeJS.ProcessEnv = opts.env ?? {};
-  let out = '';
-  const io: Io = { out: (t) => (out += t), err: (t) => (out += t) };
-  const calls: Call[] = [];
-  const catalogCalls: string[] = [];
-  const responses = [...(opts.responses ?? [])];
-  const svc = { installs: 0, restarts: 0, installed: opts.installed ?? false };
-  const ok = (cmd: string[]): ServiceResult => ({ ok: true, files: [], commands: [{ cmd, code: 0, stdout: '', stderr: '' }], notes: [] });
-  const imports: string[][] = [];
-  const approved: string[] = [];
-  const pending = [...(opts.pending ?? [])];
-  const deps: SetupDeps = {
-    home,
-    env,
-    style: makeStyle(false),
-    defaultKeyFile: join(keyDir, 'garnet', 'secrets.key'),
-    kdf,
-    now: () => new Date('2026-10-06T12:00:00Z'),
-    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input);
-      if (url === OPENROUTER_MODELS_URL) {
-        catalogCalls.push(url);
-        return new Response(JSON.stringify(opts.catalog ?? { data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
-      const r = (responses.shift() ?? (() => ({ status: 200, body: { data: [] } })))(url);
-      return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
-    }) as typeof fetch,
-    service: {
-      label: 'systemd user service',
-      installed: () => svc.installed,
-      install: async () => {
-        svc.installs++;
-        svc.installed = true;
-        return ok(['systemctl', '--user', 'enable', '--now', 'garnet.service']);
-      },
-      restart: async () => {
-        svc.restarts++;
-        return ok(['systemctl', '--user', 'restart', 'garnet.service']);
-      },
-    },
-    importSources: opts.sources ?? (() => []),
-    runImport: (args, persona) => {
-      imports.push(args);
-      if (args.includes('--apply') && persona.get() === undefined) persona.set('You are a careful assistant imported from elsewhere.');
-      return 0;
-    },
-    pairing: () => ({
-      pending: () => pending.filter((p) => !approved.includes(p.code)),
-      approve: (code) => {
-        approved.push(code);
-        return pending.find((p) => p.code === code) ?? null;
-      },
-      close: () => {},
-    }),
-  };
-  const run = (answers: Record<string, Answer | Answer[]>, secrets: Record<string, string> = {}, interactive = true) => {
-    const p = new AnswerPrompter(answers, { interactive, secrets });
-    return { p, done: runSetup(p, io, deps) };
-  };
-  return { home, env, deps, io, run, calls, catalogCalls, svc, imports, approved, out: () => out, config: () => parseConfig(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))) };
-}
+import { KEY, TG, harness, kdf } from '../../../test/setup-harness.ts';
 
 test('first run: Anthropic key goes into a new encrypted store, checked live with consent, never printed or put in config', async () => {
   const h = harness();
@@ -829,7 +758,7 @@ test('sandbox: --sandbox ssh with its flags is saved in config; the passphrase i
   assert.equal(readFileSync(join(bad.home, 'config.json'), 'utf8'), before);
 });
 
-test('sandbox: not asked when commands are denied (the default); the re-run menu offers it when they are allowed', async () => {
+test('sandbox: not asked while commands are off (the default); ticking commands in the tools step asks where they run', async () => {
   const h = harness();
   allowExec(h, 'deny');
   const rec = new AnswerPrompter({ section: ['channels', 'done'], channels: 'none' }, { interactive: true });
@@ -837,9 +766,10 @@ test('sandbox: not asked when commands are denied (the default); the re-run menu
   assert.equal(rec.asked.includes('sandbox'), false);
   const fresh = harness();
   allowExec(fresh, 'allow');
-  const p = new AnswerPrompter({ section: ['sandbox', 'done'], sandbox: 'local' }, { interactive: true });
+  const p = new AnswerPrompter({ section: ['tools', 'done'], sandbox: 'local' }, { interactive: true });
   assert.equal(await runSetup(p, fresh.io, fresh.deps), 0);
   assert.equal(fresh.config().sandbox.backend, 'local');
+  assert.equal(fresh.config().permissions.exec, 'allow');
 });
 
 test('`garnet setup --help` lists the channel and sandbox flags', async () => {
@@ -917,7 +847,7 @@ test('fullscreen wizard: a scripted run through the TUI saves the config, restor
   assert.ok(tui.asked.includes('review'));
   // The review screen listed the model before saving.
   assert.ok(seen.some((s) => s.includes('Save these settings?') && s.includes('Model')));
-  assert.ok(seen.some((s) => /Step \d of 5/.test(s)));
+  assert.ok(seen.some((s) => /Step \d of 7/.test(s)));
   // What the wizard printed is replayed for the normal screen, including the next steps.
   assert.match(log.map((l) => l.text).join(''), /Garnet is ready\./);
 });

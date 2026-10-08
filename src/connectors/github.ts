@@ -132,6 +132,7 @@ export function githubTool(settings: GithubSettings, deps: ConnectorDeps): ToolD
     // Reading is a fetch; a comment publishes text under the owner's name, so it is also a message.send.
     capabilitiesFor: (i): Capability[] => (i.action === 'comment' ? ['net.fetch', 'message.send'] : ['net.fetch']),
     targets: (i) => plan(i).map((r) => r.url),
+    carriesData: (i) => i.action === 'comment', // the comment body is model-composed
     summarize: (i) => {
       if (i.action === 'comment') return `github: post a comment on ${i.repo}#${i.number}, as the owner of ${settings.tokenEnv}:\n${i.body}`;
       return `github ${i.action}: ${plan(i).map((r) => r.url).join(', ')}`;

@@ -104,6 +104,10 @@ test('protected config paths', async () => {
   assert.ok(isProtectedConfigPath('model.apiKeyEnv'));
   assert.ok(!isProtectedConfigPath('persona'));
   assert.ok(!isProtectedConfigPath('api.rateLimitPerMinute'));
+  // Arrays are single leaves, so a script job added through the API changes the protected `jobs` leaf.
+  assert.ok(isProtectedConfigPath('jobs'));
+  assert.deepEqual(changedProtectedPaths({ jobs: [] }, { jobs: [{ id: 'j', kind: 'heartbeat', everyMinutes: 1, script: { command: 'touch x' } }] }), ['jobs']);
+  assert.deepEqual(changedProtectedPaths({ jobs: [{ id: 'j' }] }, { jobs: [{ id: 'j' }] }), []);
   assert.deepEqual(changedProtectedPaths({ a: 1, model: { baseUrl: 'x' } }, { a: 2, model: { baseUrl: 'y' } }), ['model.baseUrl']);
 });
 
