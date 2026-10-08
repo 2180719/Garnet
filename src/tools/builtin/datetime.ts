@@ -53,7 +53,7 @@ export function parseInstant(text: string, tz: string): number {
     if (m[7].toUpperCase() === 'Z') return wall;
     const sign = m[7][0] === '-' ? -1 : 1;
     const digits = m[7].slice(1).replace(':', '');
-    if (Number(digits.slice(0, 2)) > 14 || Number(digits.slice(2)) > 59) throw new GarnetError('invalid_input', `"${m[7]}" is not a valid UTC offset.`);
+    if (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2)) > 14 * 60 || Number(digits.slice(2)) > 59) throw new GarnetError('invalid_input', `"${m[7]}" is not a valid UTC offset.`);
     return wall - sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2))) * MINUTE;
   }
   // A wall time with no offset: try the offsets in force a day before and after. If both fit, the clocks went back

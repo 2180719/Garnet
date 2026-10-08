@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { parseCron, validTimeZone } from './cron.ts';
 import { BUILTIN_SKILLS, CONNECTORS, SCOPE_HELP, SCOPE_RE } from './extensions.ts';
 
-export const CONFIG_VERSION = 3;
+export const CONFIG_VERSION = 4;
 
 const permission = z.enum(['allow', 'ask', 'deny']);
 

@@ -38,7 +38,12 @@ function tokenize(src: string): Token[] {
       throw new GarnetError('invalid_input', `Unexpected character "${src.slice(pos).trim()[0]}" in the expression.`);
     }
     pos = re.lastIndex;
-    if (m[1] !== undefined) tokens.push({ kind: 'num', value: Number(m[1]) });
+    if (m[1] !== undefined) {
+      const value = Number(m[1]);
+      // Doubles hold integers exactly only up to 2^53; a longer literal would be silently rounded.
+      if (/^\d+$/.test(m[1]) && !Number.isSafeInteger(value)) throw new GarnetError('invalid_input', `${m[1]} is too large to calculate exactly (integers above ${Number.MAX_SAFE_INTEGER} lose digits). Use scientific notation if an approximation is fine.`);
+      tokens.push({ kind: 'num', value });
+    }
     else if (m[2] !== undefined) tokens.push({ kind: 'id', value: m[2].toLowerCase() });
     else tokens.push({ kind: 'op', value: m[3]! });
   }

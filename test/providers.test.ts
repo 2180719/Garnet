@@ -46,13 +46,13 @@ test('migration: a v1 config keeps working as the provider "default"', () => {
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
 });
 
-test('migration: a v2 config (skills and connectors, no providers) becomes v3 with the same settings', () => {
+test('migration: a v2 config (skills and connectors, no providers) becomes the current version with the same settings', () => {
   const home = tempDir();
   writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 2, skills: { enabled: [] }, model: { name: 'claude-sonnet-5-5' } }));
   const { config, migrated } = loadConfig(home);
   assert.equal(migrated, true);
-  assert.equal(config.version, 3);
-  assert.equal(CONFIG_VERSION, 3);
+  assert.equal(config.version, 4);
+  assert.equal(CONFIG_VERSION, 4);
   assert.equal(config.activeProvider, 'default');
   assert.equal(config.model.name, 'claude-sonnet-5-5');
   assert.ok(existsSync(join(home, 'config.json.bak-v2')));

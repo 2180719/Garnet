@@ -197,3 +197,15 @@ test('datetime handles very early years and refuses nonsense offsets', async () 
   assert.equal((await call('datetime', { operation: 'now', time: '2026-01-01T00:00+25:00' })).status, 'error');
   assert.equal((await call('datetime', { operation: 'now', time: '2026-01-01T00:00+05:99' })).status, 'error');
 });
+
+test('calculate refuses integers it cannot hold exactly; datetime refuses +14:30; edit_file approvals show the whole edit', async () => {
+  assert.throws(() => evaluate('9007199254740993 - 9007199254740992'), /too large to calculate exactly/);
+  assert.equal(evaluate('9007199254740991 - 1'), 9007199254740990);
+  assert.equal(evaluate('1e300 / 1e299'), 10, 'scientific notation is an explicit approximation');
+  const { call } = setup(datetimeTool({ defaultTimeZone: 'UTC', now: () => 0 }));
+  assert.equal((await call('datetime', { operation: 'now', time: '2026-01-01T00:00+14:30' })).status, 'error');
+  assert.equal((await call('datetime', { operation: 'now', time: '2026-01-01T00:00+14:00' })).status, 'ok');
+  const long = 'x'.repeat(500);
+  const summary = editFileTool.summarize!({ path: 'a.txt', edits: [{ old_string: 'a', new_string: `${long}END`, replace_all: false }] }, { sessionId: 's', callId: 'c', workspace: '/w', memoryNamespace: 'default', signal: new AbortController().signal });
+  assert.ok(summary.includes(`${long}END`));
+});

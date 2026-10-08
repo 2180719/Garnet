@@ -238,7 +238,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     registry.register(
       visionTool({
         media: mediaStore,
-        resolve: (providerName, modelName) => resolveModel(config, secret, live, providerName, modelName, model),
+        resolve: (providerName, modelName) => resolveModel(config, secret, { name: live.name, model: live.model, adapter: model }, providerName, modelName),
         providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name, vision: p.model.vision ?? (p.model.provider === 'anthropic' || p.model.provider === 'gemini') })),
         refuse: () => refuse(),
         recordSpend: (usage) => stats.recordSpend(usage),
@@ -301,6 +301,8 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   };
   /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
   const makeAgent = (policy: Policy, budget: Budget, own: { model?: ModelAdapter; maxOutputTokens?: number; depth?: number } = {}): Agent => {
+    // What "the current model" means for tasks this agent starts: the live provider, or for a subagent the one it runs on.
+    const base = (): ModelBase => (own.model ? { name: SETTINGS.get(own.model)?.name ?? live.name, model: SETTINGS.get(own.model)?.model ?? live.model, adapter: own.model } : { name: live.name, model: live.model, adapter: model });
     const depth = own.depth ?? 0;
     return new Agent({
       store,
@@ -339,11 +341,11 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
               depth,
               maxDepth: config.delegation.maxDepth,
               providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name })),
-              resolve: (providerName, modelName) => resolveModel(config, secret, live, providerName, modelName, model),
+              resolve: (providerName, modelName) => resolveModel(config, secret, base(), providerName, modelName),
               makeChild: (resolved, limits) => {
                 const d = config.delegation;
                 const childBudget: Budget = { ...budget, maxWallMs: Math.min(budget.maxWallMs, limits.maxWallMs), maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
-                return makeAgent(policy, childBudget, { model: resolved.adapter, maxOutputTokens: findProvider(config, resolved.provider)?.model.maxOutputTokens ?? live.model.maxOutputTokens, depth: depth + 1 });
+                return makeAgent(policy, childBudget, { model: resolved.adapter, maxOutputTokens: SETTINGS.get(resolved.adapter)?.model.maxOutputTokens ?? live.model.maxOutputTokens, depth: depth + 1 });
               },
             }),
           }
@@ -403,18 +405,26 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   };
 }
 
+/** A provider's name and settings, and the adapter built from them: what a task is running on now. */
+type ModelBase = { name: string; model: ModelConfig; adapter: ModelAdapter };
+
+/** Which provider and settings an adapter made by `resolveModel` was built from, so a subagent's own delegations default to its model. */
+const SETTINGS = new WeakMap<ModelAdapter, { name: string; model: ModelConfig }>();
+
 /**
- * The model for a side task (a subagent, an image question). A named provider uses its own settings (and `modelName` overrides its model); with
- * only a model name, the live provider's settings are kept. With neither, the subagent shares the live model.
- * `shared` is the session's own model (also what tests and `--fake` inject), used as is when nothing is specified.
+ * The model for a side task (a subagent, an image question), relative to `base`, what the asking task runs on. A named
+ * provider uses its own settings (and `modelName` overrides its model); with only a model name, `base`'s provider is
+ * kept. With neither, the task shares `base`'s adapter (also what tests and `--fake` inject).
  */
-function resolveModel(config: GarnetConfig, secret: SecretLookup, live: NamedProvider, providerName: string | undefined, modelName: string | undefined, shared: ModelAdapter): ResolvedSubagentModel {
+function resolveModel(config: GarnetConfig, secret: SecretLookup, base: ModelBase, providerName: string | undefined, modelName: string | undefined): ResolvedSubagentModel {
   const known = listProviders(config).map((p) => p.name).join(', ');
-  const target = providerName === undefined ? live : findProvider(config, providerName);
+  const target = providerName === undefined ? { name: base.name, model: base.model } : findProvider(config, providerName);
   if (!target) throw new GarnetError('invalid_input', `No provider named "${providerName}" (known: ${known}).`);
   const settings: ModelConfig = modelName ? { ...target.model, name: modelName } : target.model;
-  if (providerName === undefined && modelName === undefined) return { adapter: shared, provider: target.name, model: settings.name };
-  return { adapter: createModel(config, secret, settings), provider: target.name, model: settings.name }; // throws when the key is missing
+  if (providerName === undefined && modelName === undefined) return { adapter: base.adapter, provider: target.name, model: settings.name };
+  const adapter = createModel(config, secret, settings); // throws when the key is missing
+  SETTINGS.set(adapter, { name: target.name, model: settings });
+  return { adapter, provider: target.name, model: settings.name };
 }
 
 /** The owner's time zone: `timezone` in config, else the host's. */

@@ -10,7 +10,7 @@ export type VisionModel = { adapter: ModelAdapter; provider: string; model: stri
 
 export type VisionDeps = {
   media: MediaStore;
-  /** Resolves the model to ask: a named provider and/or model, or (both undefined) the session's own. Throws a `GarnetError` for an unknown provider or a missing key. */
+  /** Resolves the model to ask: a named provider and/or model, or (both undefined) the main model in use. Throws a `GarnetError` for an unknown provider or a missing key. */
   resolve: (provider: string | undefined, model: string | undefined) => VisionModel;
   /** Configured providers and whether each reads images, for error messages. */
   providers: () => { name: string; model: string; vision: boolean }[];

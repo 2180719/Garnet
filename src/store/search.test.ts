@@ -85,3 +85,14 @@ test('searchableSessions: a chat sees its own sessions only; non-chat sessions s
   assert.ok(!gateway.searchableSessions(cli1.id).includes(sub.id), 'subagent sessions are not searched');
   assert.deepEqual(gateway.searchableSessions(sessions.rootOf(sub.id)).sort(), [chatOld.id, chatNew.id].sort(), 'a subagent searches as its chat does');
 });
+
+test('an API key\'s or a job\'s session searches only itself; the terminal never reaches them', () => {
+  const { sessions, gateway } = setup();
+  const api1 = sessions.createSession();
+  const api2 = sessions.createSession();
+  const cli = sessions.createSession();
+  gateway.bindConversation('api:key1', api1.id);
+  gateway.bindConversation('api:key2', api2.id);
+  assert.deepEqual(gateway.searchableSessions(api1.id), [api1.id]);
+  assert.deepEqual(gateway.searchableSessions(cli.id), [cli.id], 'bound sessions are not in the terminal\'s pool');
+});

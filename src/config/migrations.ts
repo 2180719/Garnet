@@ -14,6 +14,8 @@ const migrations: Record<number, Migration> = {
   1: (raw) => ({ ...raw, version: 2 }),
   // 3 added named providers: the single `model` block stays as the provider called "default".
   2: (raw) => ({ ...raw, version: 3, providers: raw.providers ?? {}, activeProvider: raw.activeProvider ?? 'default' }),
+  // 4 added `delegation` (subagents) and `connectors.http`, both with defaults, so nothing needs rewriting.
+  3: (raw) => ({ ...raw, version: 4 }),
 };
 
 export function migrate(raw: unknown): unknown {

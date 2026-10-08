@@ -51,7 +51,8 @@ export const editFileTool: ToolDefinition<EditInput> = {
   capability: 'fs.write',
   idempotent: false, // a second run finds nothing to replace and fails, which is safe
   targets: (i, ctx) => [resolveInWorkspace(ctx.workspace, i.path)],
-  summarize: (i) => `Edit ${i.path}: ${i.edits.length} replacement(s)\n${i.edits.map((e) => `- ${JSON.stringify(e.old_string.slice(0, 200))} -> ${JSON.stringify(e.new_string.slice(0, 200))}${e.replace_all ? ' (all)' : ''}`).join('\n')}`,
+  // Shown in full: the approval is the owner's only view of what will be written.
+  summarize: (i) => `Edit ${i.path}: ${i.edits.length} replacement(s)\n${i.edits.map((e) => `- ${JSON.stringify(e.old_string)} -> ${JSON.stringify(e.new_string)}${e.replace_all ? ' (all)' : ''}`).join('\n')}`,
   async run({ path, edits }, ctx) {
     // The final component is checked before resolving: realpath would follow a symlink and hide it.
     const logical = resolveInWorkspace(ctx.workspace, path);
