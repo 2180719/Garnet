@@ -11,14 +11,14 @@ import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, GeminiModel, OpenAICompatibleModel, SwitchableModel, onboardingScript } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue, sessionTaint, subagentFactory, type ResolvedSubagentModel } from './runtime/index.ts';
-import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, StatsStore, type Db } from './store/index.ts';
+import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SearchIndex, SessionStore, StatsStore, type Db } from './store/index.ts';
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { ONBOARDING_TITLE, bootstrapPrompt, profileTool } from './onboarding/index.ts';
 import { BuiltinSkills, SkillStore, skillTools } from './skills/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
-import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, calculateTool, delegateTaskTool, clarifyTool, datetimeTool, editFileTool, execTool, fileTools, readArtifactTool, searchBackend, searchFilesTool, todoListTool, webFetchTool, webSearchTool } from './tools/index.ts';
+import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, calculateTool, delegateTaskTool, clarifyTool, datetimeTool, editFileTool, executeCodeTool, execTool, fileTools, readArtifactTool, searchBackend, searchFilesTool, sessionSearchTool, todoListTool, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, requiresIsolation, type Sandbox, type SandboxOptions } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
@@ -183,6 +183,9 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   const onboarding = Boolean(options.onboarding) && config.permissions['memory.write'] !== 'deny';
   if (onboarding) registry.register(profileTool(paths.home));
   if (config.delegation.enabled) registry.register(delegateTaskTool);
+  // Derived from the event log; a chat searches only its own earlier sessions (see GatewayStore.searchableSessions).
+  const searchIndex = new SearchIndex(db, store);
+  registry.register(sessionSearchTool({ search: (sessionId, query, opts) => searchIndex.search(gatewayStore.searchableSessions(sessionId), query, opts) }));
   // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
   if (config.permissions['schedule.edit'] !== 'deny') {
     const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
@@ -235,6 +238,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   if (config.permissions.exec !== 'deny') {
     sandbox = createSandbox(config.sandbox.backend, sandboxOptions(config, paths.workspace, secret));
     registry.register(execTool(sandbox));
+    registry.register(executeCodeTool(sandbox));
   }
   // web_fetch and web_search exist only when net.fetch is not denied. They run in-process (the sandbox has no network).
   const trustedEndpoints = registerWebTools(registry, config, secret);

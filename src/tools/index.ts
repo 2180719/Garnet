@@ -16,3 +16,5 @@ export { calculateTool, evaluate } from './builtin/calculate.ts';
 export { datetimeTool, parseInstant, formatIn } from './builtin/datetime.ts';
 export { todoListTool, clarifyTool } from './builtin/planning.ts';
 export { delegateTaskTool } from './builtin/delegate.ts';
+export { sessionSearchTool, type SessionHit, type SessionSearchDeps } from './builtin/session-search.ts';
+export { executeCodeTool } from './builtin/code.ts';

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../../test/helpers.ts';
 import { defaultConfig } from '../../config/index.ts';
 import type { ToolDefinition } from '../../contracts/index.ts';
 import { Policy } from '../../policy/index.ts';
-import { ToolExecutor, ToolRegistry, calculateTool, clarifyTool, datetimeTool, editFileTool, evaluate, globToRegExp, searchFilesTool, todoListTool } from '../index.ts';
+import type { RunResult, Sandbox } from '../../sandbox/index.ts';
+import { ToolExecutor, ToolRegistry, calculateTool, clarifyTool, datetimeTool, editFileTool, evaluate, executeCodeTool, globToRegExp, searchFilesTool, sessionSearchTool, todoListTool } from '../index.ts';
 
 function setup(...tools: ToolDefinition[]) {
   const workspace = tempDir();
@@ -121,4 +122,45 @@ test('todo_list renders the list and rejects two in-progress items; clarify numb
   const q = await call('clarify', { question: 'Which one?', options: ['red', 'blue'] });
   assert.match(q.content, /Which one\?\n1\. red\n2\. blue/);
   assert.equal((await call('clarify', { question: 'x', options: ['only'] })).status, 'error');
+});
+
+test('session_search formats hits, marks results from tainted sessions untrusted, and reports an unavailable index', async () => {
+  const hit = { sessionId: 'ses_a', title: 'Trip', at: '2026-09-01T10:00:00.000Z', role: 'user' as const, snippet: 'book [flights]\nnow', tainted: false };
+  let result: typeof hit[] | null = [hit];
+  const { call } = setup(sessionSearchTool({ search: () => result }));
+  const ok = await call('session_search', { query: 'flights' });
+  assert.equal(ok.status, 'ok');
+  assert.equal(ok.content, '- 2026-09-01 user in "Trip": book [flights] now');
+  assert.equal((ok as { untrusted?: unknown }).untrusted, undefined);
+  result = [{ ...hit, tainted: true }];
+  assert.ok((await call('session_search', { query: 'flights' }) as { untrusted?: unknown }).untrusted, 'a tainted past session taints this one');
+  result = [];
+  assert.equal((await call('session_search', { query: 'x' })).content, 'No matches in past conversations.');
+  result = null;
+  assert.equal((await call('session_search', { query: 'x' })).status, 'error');
+});
+
+test('execute_code feeds the script to the interpreter on stdin and explains a missing interpreter', async () => {
+  const workspace = tempDir();
+  const runs: { command: string; stdin?: string | undefined; timeoutMs: number }[] = [];
+  let next: Partial<RunResult> = {};
+  const sandbox: Sandbox = {
+    kind: 'docker', isolated: true, networked: false, workspace: realpathSync(workspace),
+    check: async () => ({ ok: true, detail: '' }),
+    run: async (req) => {
+      runs.push({ command: req.command, stdin: req.stdin, timeoutMs: req.timeoutMs });
+      return { exitCode: 0, stdout: '42\n', stderr: '', timedOut: false, cancelled: false, truncated: false, ...next };
+    },
+  };
+  const registry = new ToolRegistry().register(executeCodeTool(sandbox));
+  const executor = new ToolExecutor({ registry, policy: new Policy({ ...defaultConfig().permissions, exec: 'allow' }), approver: async () => 'denied' });
+  const call = (input: unknown) => executor.execute({ type: 'tool_call', id: 'c', name: 'execute_code', input }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal });
+  const ok = await call({ language: 'python', code: 'print(6*7)', timeout_seconds: 5 });
+  assert.equal(ok.status, 'ok');
+  assert.match(ok.content, /^exit code 0\n--- stdout ---\n42/);
+  assert.deepEqual(runs[0], { command: 'python3 -', stdin: 'print(6*7)', timeoutMs: 5000 });
+  next = { exitCode: 127, stderr: 'sh: 1: node: not found\n' };
+  assert.match((await call({ language: 'node', code: 'x' })).content, /node is not installed in the sandbox/);
+  const denied = await new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'denied' }).execute({ type: 'tool_call', id: 'd', name: 'execute_code', input: { language: 'sh', code: 'ls' } }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal });
+  assert.equal(denied.status === 'error' && denied.category, 'denied', 'exec stays denied by default');
 });
