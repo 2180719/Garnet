@@ -1,7 +1,7 @@
-import { createReadStream } from 'node:fs';
-import { lstat, readdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { createInterface } from 'node:readline';
+import { createContext, Script } from 'node:vm';
 import { z } from 'zod';
 import { GarnetError, type ToolDefinition } from '../../contracts/index.ts';
 import { resolveInWorkspace } from '../../policy/index.ts';
@@ -9,8 +9,28 @@ import { realInWorkspace } from './files.ts';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
 const MAX_FILE_BYTES = 1_000_000;
-/** Lines are cut before matching so a pathological pattern cannot spend long on one huge line. */
 const MAX_LINE_CHARS = 1000;
+/** Longest one file's matching may run. A regex with catastrophic backtracking is cut off here instead of freezing the process. */
+const MATCH_TIMEOUT_MS = 1000;
+const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+const MATCHER = new Script('(() => { const hits = []; for (let i = 0; i < lines.length; i++) if (re.test(lines[i].slice(0, max))) hits.push(i); return hits; })()');
+
+/**
+ * Indexes of the lines `re` matches. Runs in a throwaway `vm` context with a timeout, because a V8 regex cannot be
+ * interrupted from JavaScript and a pattern like `^(a+)+$` would otherwise block the whole service. One call per
+ * file (a call costs about 0.1 ms), so the timeout bounds each file, not each line.
+ */
+export function matchLines(re: RegExp, lines: readonly string[]): number[] {
+  const context = createContext({ re: new RegExp(re.source, re.flags), lines, max: MAX_LINE_CHARS });
+  try {
+    return MATCHER.runInContext(context, { timeout: MATCH_TIMEOUT_MS }) as number[];
+  } catch (e) {
+    if ((e as { code?: string }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      throw new GarnetError('invalid_input', `The pattern took too long to match (over ${MATCH_TIMEOUT_MS} ms on one file). Use a simpler pattern without nested repetition such as (a+)+.`);
+    }
+    throw e;
+  }
+}
 const MAX_FILES_SCANNED = 5000;
 
 /** `**` crosses directories, `*` and `?` do not; everything else is literal. Matches against the path relative to the search root. */
@@ -73,21 +93,21 @@ export const searchFilesTool: ToolDefinition<SearchInput> = {
     const full = () => out.length >= max_results;
 
     const scanFile = async (file: string): Promise<void> => {
-      const info = await lstat(file).catch(() => null);
-      if (!info?.isFile() || info.size > MAX_FILE_BYTES) return;
-      const input = createReadStream(file, { encoding: 'utf8', signal: ctx.signal });
-      let n = 0;
+      // O_NOFOLLOW and fstat on the open handle: a file swapped for a symlink after the directory walk is not read.
+      const handle = await open(file, constants.O_RDONLY | O_NOFOLLOW).catch(() => null);
+      if (!handle) return;
       try {
-        for await (const line of createInterface({ input, crlfDelay: Infinity })) {
-          if (line.includes('\u0000')) return; // binary
-          n += 1;
-          if (regex!.test(line.slice(0, MAX_LINE_CHARS))) {
-            out.push(`${relative(base, file)}:${n}: ${line.slice(0, 300)}`);
-            if (full()) return;
-          }
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > MAX_FILE_BYTES) return;
+        const text = await handle.readFile('utf8');
+        if (text.includes('\u0000')) return; // binary
+        const lines = text.split(/\r?\n/);
+        for (const i of matchLines(regex!, lines)) {
+          out.push(`${relative(base, file)}:${i + 1}: ${lines[i]!.slice(0, 300)}`);
+          if (full()) return;
         }
       } finally {
-        input.destroy();
+        await handle.close();
       }
     };
 
@@ -95,6 +115,7 @@ export const searchFilesTool: ToolDefinition<SearchInput> = {
       const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
       for (const e of entries) {
         if (full() || stopped) return;
+        ctx.signal.throwIfAborted();
         const abs = join(dir, e.name);
         if (e.isDirectory()) {
           if (!SKIP_DIRS.has(e.name)) await walk(abs);

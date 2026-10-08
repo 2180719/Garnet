@@ -53,7 +53,8 @@ export type SubagentOutcome = {
 export type SubagentRunner = {
   /** Configured providers a subagent may use, for the tool description and error messages. */
   providers: () => { name: string; model: string }[];
-  run: (request: SubagentRequest) => Promise<SubagentOutcome>;
+  /** `signal` is the tool call's own (it also fires on the call's timeout); the subagent stops on it as well as on the session's. */
+  run: (request: SubagentRequest, signal?: AbortSignal) => Promise<SubagentOutcome>;
 };
 
 /**

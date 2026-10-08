@@ -107,6 +107,14 @@ test('subagents nest at most maxDepth levels', async () => {
   assert.match(toolResult(t.parent, 1).content, /l1 done/);
 });
 
+test('a subagent session is linked to its parent, so it is scoped as the parent is', async () => {
+  const t = setup([{ toolCalls: [{ name: 'delegate_task', input: { task: 'x' } }] }, { text: 'done' }], { 'default/main': [{ text: 'ok' }] });
+  await t.run('go');
+  const child = t.store.listSessions().find((s) => s.title?.startsWith('subagent:'))!;
+  assert.equal(t.store.rootOf(child.id), t.session.id);
+  assert.equal(t.store.rootOf(t.session.id), t.session.id);
+});
+
 test('what a subagent reads taints the parent; a clean subagent leaves it clean', async () => {
   const dirty = setup(
     [{ toolCalls: [{ name: 'delegate_task', input: { task: 'look it up' } }] }, { text: 'done' }],
@@ -132,4 +140,6 @@ test('a subagent starts with its parent\'s taint, and does not report it back as
   const inherited = t.store.events(child.id).filter((e) => e.type === 'tainted' && e.inherited);
   assert.equal(inherited.length, 1);
   assert.equal(sessionTaint(t.store.events(t.session.id)).sources.length, 1, 'no second source for inherited taint');
+  const task = t.store.events(child.id).find((e) => e.type === 'user_message');
+  assert.ok(task?.type === 'user_message' && task.source === 'subagent', 'the task text is marked as not the owner\'s');
 });

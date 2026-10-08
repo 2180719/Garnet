@@ -37,17 +37,32 @@ export function formatIn(ms: number, tz: string): string {
 export function parseInstant(text: string, tz: string): number {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(text.trim());
   if (!m) throw new GarnetError('invalid_input', `Could not read "${text}". Use ISO form like 2026-10-08, 2026-10-08T14:30 or 2026-10-08T14:30:00+01:00.`);
-  const wall = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] ?? 0), Number(m[5] ?? 0), Number(m[6] ?? 0));
-  if (Number.isNaN(wall)) throw new GarnetError('invalid_input', `"${text}" is not a real date.`);
+  const [y, mo, d, h, mi, sec] = [m[1], m[2], m[3], m[4] ?? '0', m[5] ?? '0', m[6] ?? '0'].map(Number) as [number, number, number, number, number, number];
+  // setUTCFullYear keeps years below 100 as written; the round trip rejects 2026-02-31, month 13 and hour 25.
+  const date = new Date(0);
+  date.setUTCFullYear(y, mo - 1, d);
+  date.setUTCHours(h, mi, sec, 0);
+  const wall = date.getTime();
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d || date.getUTCHours() !== h || date.getUTCMinutes() !== mi || date.getUTCSeconds() !== sec) {
+    throw new GarnetError('invalid_input', `"${text}" is not a real date and time.`);
+  }
   if (m[7]) {
     if (m[7].toUpperCase() === 'Z') return wall;
     const sign = m[7][0] === '-' ? -1 : 1;
     const digits = m[7].slice(1).replace(':', '');
     return wall - sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2))) * MINUTE;
   }
-  let guess = wall;
-  for (let i = 0; i < 2; i++) guess = wall - partsIn(guess, tz).offsetMin * MINUTE;
-  return guess;
+  // A wall time with no offset: try the offsets in force a day before and after. If both fit, the clocks went back
+  // and the time happens twice: take the first. If neither fits, the clocks skipped it: use the offset from before the
+  // change, which lands just after the gap (02:30 in a spring-forward gap becomes 03:30).
+  const before = wall - partsIn(wall - 86_400_000, tz).offsetMin * MINUTE;
+  const after = wall - partsIn(wall + 86_400_000, tz).offsetMin * MINUTE;
+  const fits = (t: number) => {
+    const p = partsIn(t, tz);
+    return p.y === y && p.mo === mo && p.d === d && p.h === h && p.mi === mi;
+  };
+  const valid = [before, after].filter(fits);
+  return valid.length ? Math.min(...valid) : before;
 }
 
 function humanDuration(ms: number): string {

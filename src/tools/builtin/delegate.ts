@@ -14,7 +14,7 @@ export const delegateTaskTool: ToolDefinition<DelegateInput> = {
   name: 'delegate_task',
   version: 1,
   description:
-    'Give a self-contained task to a subagent and get back its final report. Use it for side work that would clutter this conversation (research, a long search, a second opinion) or that suits another model. The subagent knows nothing you have not put in `task`. Optionally pick `provider` (a configured provider name) and/or `model`; omit both to use the current model. Subagents can delegate once more, no further.',
+    'Give a self-contained task to a subagent and get back its final report. Use it for side work that would clutter this conversation (research, a long search, a second opinion) or that suits another model. The subagent knows nothing you have not put in `task`. Optionally pick `provider` (a configured provider name) and/or `model`; omit both to use the current model. Subagents may delegate further only within a small depth limit.',
   input: z.object({
     task: z.string().min(1).max(20_000).describe('Everything the subagent needs: the goal, relevant details, and the form of answer you want.'),
     provider: z.string().min(1).max(64).optional().describe('Name of a configured provider (e.g. "default", "local"). With no model, its own model is used.'),
@@ -28,7 +28,7 @@ export const delegateTaskTool: ToolDefinition<DelegateInput> = {
   maxOutputChars: 20_000,
   async run(input, ctx): Promise<ToolOutput> {
     if (!ctx.subagents) throw new GarnetError('denied', 'Delegation is not available in this session.');
-    const outcome = await ctx.subagents.run(input);
+    const outcome = await ctx.subagents.run(input, ctx.signal);
     const where = `${outcome.provider}/${outcome.model}`;
     const stats = `${outcome.modelCalls} model call(s), ${outcome.toolCalls} tool call(s)`;
     const untrusted = outcome.newTaint.length > 0 ? { untrusted: { source: `subagent on ${where} read untrusted content: ${outcome.newTaint.join('; ').slice(0, 300)}` } } : {};

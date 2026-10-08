@@ -164,3 +164,29 @@ test('execute_code feeds the script to the interpreter on stdin and explains a m
   const denied = await new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'denied' }).execute({ type: 'tool_call', id: 'd', name: 'execute_code', input: { language: 'sh', code: 'ls' } }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal });
   assert.equal(denied.status === 'error' && denied.category, 'denied', 'exec stays denied by default');
 });
+
+test('search_files cuts off a catastrophic regex instead of freezing, and edit_file refuses a symlink inside the workspace', async () => {
+  const { workspace, call } = setup(searchFilesTool, editFileTool);
+  writeFileSync(join(workspace, 'evil.txt'), `${'a'.repeat(40)}!\n`);
+  const started = Date.now();
+  const r = await call('search_files', { pattern: '^(a+)+$' });
+  assert.equal(r.status, 'error');
+  assert.match(r.content, /took too long to match/);
+  assert.ok(Date.now() - started < 5000, 'returned promptly');
+  assert.equal((await call('search_files', { pattern: '^a+!$' })).status, 'ok', 'ordinary patterns still work afterwards');
+  writeFileSync(join(workspace, 'target.txt'), 'one');
+  symlinkSync(join(workspace, 'target.txt'), join(workspace, 'link.txt'));
+  const link = await call('edit_file', { path: 'link.txt', edits: [{ old_string: 'one', new_string: 'two' }] });
+  assert.equal(link.status, 'error');
+  assert.match(link.content, /symlink/);
+  assert.equal(readFileSync(join(workspace, 'target.txt'), 'utf8'), 'one');
+});
+
+test('datetime rejects impossible dates and resolves clock changes predictably', async () => {
+  const { call } = setup(datetimeTool({ defaultTimeZone: 'UTC', now: () => 0 }));
+  for (const time of ['2026-02-31', '2026-13-01', '2026-10-08T25:00']) assert.equal((await call('datetime', { operation: 'now', time })).status, 'error', time);
+  const at = async (time: string, timezone: string) => (await call('datetime', { operation: 'now', time, timezone })).content.split('\n')[0];
+  assert.match((await at('2026-03-08T02:30', 'America/New_York'))!, /^2026-03-08T03:30:00-04:00/, 'a skipped time lands after the gap');
+  assert.match((await at('2026-11-01T01:30', 'America/New_York'))!, /^2026-11-01T01:30:00-04:00/, 'a repeated time is the first one');
+  assert.match((await at('2026-03-29T02:30', 'Europe/Berlin'))!, /^2026-03-29T03:30:00\+02:00/);
+});

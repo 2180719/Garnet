@@ -26,7 +26,7 @@ type VisionInput = { path?: string | undefined; attachment?: string | undefined;
  * `vision_analyze`: one question about one image, answered by a model that can see it. The image is a workspace file
  * or a stored attachment (the id shown in the conversation). Useful when the main model is text-only, or for a
  * second look from a different model. It only reads, so it needs `fs.read` (workspace files are containment-checked;
- * stored attachments are the conversation's own). The answer is model text about the image and is not marked
+ * stored attachments are found by their content-hash id, which only the conversation that received them knows). The answer is model text about the image and is not marked
  * untrusted: a chat image already taints the session when it arrives.
  */
 export function visionTool(deps: VisionDeps): ToolDefinition<VisionInput> {

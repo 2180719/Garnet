@@ -60,15 +60,16 @@ export class SearchIndex {
     const insert = this.db.prepare('INSERT INTO search_fts (session_id, seq, at, role, text) VALUES (?, ?, ?, ?, ?)');
     const save = this.db.prepare('INSERT INTO search_progress (session_id, last_seq) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET last_seq = excluded.last_seq');
     for (const id of sessionIds) {
-      const last = (progress.get(id) as { last_seq: number } | undefined)?.last_seq ?? 0;
-      if (this.sessions.lastSeq(id) <= last) continue;
-      const events = this.sessions.events(id, last);
+      if (this.sessions.lastSeq(id) <= ((progress.get(id) as { last_seq: number } | undefined)?.last_seq ?? 0)) continue;
+      // Read the position inside the transaction, so two processes on one database cannot both index the same events.
       transaction(this.db, () => {
+        const last = (progress.get(id) as { last_seq: number } | undefined)?.last_seq ?? 0;
+        const events = this.sessions.events(id, last);
         for (const e of events) {
           const row = indexable(e);
           if (row) insert.run(id, e.seq, e.at, row.role, row.text);
         }
-        save.run(id, events.at(-1)?.seq ?? last);
+        if (events.length) save.run(id, events.at(-1)!.seq);
       });
     }
   }

@@ -53,10 +53,12 @@ export const editFileTool: ToolDefinition<EditInput> = {
   targets: (i, ctx) => [resolveInWorkspace(ctx.workspace, i.path)],
   summarize: (i) => `Edit ${i.path}: ${i.edits.length} replacement(s)\n${i.edits.map((e) => `- ${JSON.stringify(e.old_string.slice(0, 200))} -> ${JSON.stringify(e.new_string.slice(0, 200))}${e.replace_all ? ' (all)' : ''}`).join('\n')}`,
   async run({ path, edits }, ctx) {
+    // The final component is checked before resolving: realpath would follow a symlink and hide it.
+    const logical = resolveInWorkspace(ctx.workspace, path);
+    if ((await lstat(logical).catch(() => null))?.isSymbolicLink()) throw new GarnetError('denied', `"${path}" is a symlink; edit_file does not write through symlinks.`);
     const file = await realInWorkspace(ctx.workspace, path);
     const info = await lstat(file).catch(() => null);
     if (!info) throw new GarnetError('invalid_input', `File "${path}" does not exist. Use write_file to create it.`);
-    if (info.isSymbolicLink()) throw new GarnetError('denied', `"${path}" is a symlink; edit_file does not write through symlinks.`);
     if (info.isDirectory()) throw new GarnetError('invalid_input', `"${path}" is a directory.`);
     if (info.size > MAX_FILE_BYTES) throw new GarnetError('invalid_input', `"${path}" is larger than ${MAX_FILE_BYTES} bytes; edit_file will not load it.`);
     const handle = await open(file, constants.O_RDWR | O_NOFOLLOW);

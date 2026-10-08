@@ -27,7 +27,7 @@ export function sessionSearchTool(deps: SessionSearchDeps): ToolDefinition<{ que
   return {
     name: 'session_search',
     version: 1,
-    description: 'Search past conversations (this chat\'s earlier sessions) for words you or the user used. Every word must appear; matches by stem. Returns short snippets with date and who said it. Use it when asked "what did we decide about X" or when earlier context may exist; check memory first for lasting facts.',
+    description: 'Search earlier conversations in this chat (or, in the terminal, earlier terminal sessions) for words you or the user used. Every word must appear; matches by stem. Returns short snippets with date and who said it. Use it when asked "what did we decide about X" or when earlier context may exist; check memory first for lasting facts.',
     input: z.object({
       query: z.string().min(1).max(200).describe('Words to look for, e.g. "flight lisbon".'),
       limit: z.number().int().min(1).max(20).default(8),

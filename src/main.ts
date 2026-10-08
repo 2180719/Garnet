@@ -9,7 +9,7 @@ import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, scopesForConversation, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, GeminiModel, OpenAICompatibleModel, SwitchableModel, onboardingScript } from './models/index.ts';
-import { Policy, type Approver } from './policy/index.ts';
+import { denyAll, Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue, sessionTaint, subagentFactory, type ResolvedSubagentModel } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SearchIndex, SessionStore, StatsStore, type Db } from './store/index.ts';
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
@@ -175,7 +175,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   // A session's optional built-ins: chosen from config by its conversation's scopes when its context is first
   // frozen (see Agent.selectExtras), then read back from that record, so they never change mid-session.
   const connectorOf = new Map<string, ConnectorName>();
-  const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(sessionId) ?? null, config.routes, [config.skills, config.connectors]), [...connectorOf.values()]);
+  const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(store.rootOf(sessionId)) ?? null, config.routes, [config.skills, config.connectors]), [...connectorOf.values()]);
   const extrasFor = (sessionId: string): ActiveExtras => frozenContext(store.events(sessionId))?.extras ?? selectExtras(sessionId);
   const builtinSkillFor = (name: string, sessionId: string) => (extrasFor(sessionId).skills.includes(name) ? builtinSkills.get(name) : undefined);
   for (const tool of [...fileTools, editFileTool, searchFilesTool, todoListTool, clarifyTool, calculateTool, datetimeTool({ defaultTimeZone: ownerTimeZone(config) }), memoryTool(memory), ...skillTools(skills, { builtin: builtinSkillFor }), readArtifactTool(artifacts)]) registry.register(tool);
@@ -185,7 +185,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   if (config.delegation.enabled) registry.register(delegateTaskTool);
   // Derived from the event log; a chat searches only its own earlier sessions (see GatewayStore.searchableSessions).
   const searchIndex = new SearchIndex(db, store);
-  registry.register(sessionSearchTool({ search: (sessionId, query, opts) => searchIndex.search(gatewayStore.searchableSessions(sessionId), query, opts) }));
+  registry.register(sessionSearchTool({ search: (sessionId, query, opts) => searchIndex.search(gatewayStore.searchableSessions(store.rootOf(sessionId)), query, opts) }));
   // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
   if (config.permissions['schedule.edit'] !== 'deny') {
     const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
@@ -306,7 +306,8 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       store,
       model: own.model ?? model,
       registry,
-      executor: new ToolExecutor({ registry, policy, approver, artifacts }),
+      // A subagent cannot wait for a chat approval (its session is not a chat), so there a needed approval is a refusal.
+      executor: new ToolExecutor({ registry, policy, approver: depth > 0 && !options.approver ? denyAll : approver, artifacts }),
       budget,
       refuse,
       recordSpend: (usage) => stats.recordSpend(usage),
@@ -339,9 +340,9 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
               maxDepth: config.delegation.maxDepth,
               providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name })),
               resolve: (providerName, modelName) => resolveModel(config, secret, live, providerName, modelName, model),
-              makeChild: (resolved) => {
+              makeChild: (resolved, limits) => {
                 const d = config.delegation;
-                const childBudget: Budget = { ...budget, maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
+                const childBudget: Budget = { ...budget, maxWallMs: Math.min(budget.maxWallMs, limits.maxWallMs), maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
                 return makeAgent(policy, childBudget, { model: resolved.adapter, maxOutputTokens: findProvider(config, resolved.provider)?.model.maxOutputTokens ?? live.model.maxOutputTokens, depth: depth + 1 });
               },
             }),

@@ -81,4 +81,7 @@ test('searchableSessions: a chat sees its own sessions only; non-chat sessions s
   link('c2', 'm3', other.id);
   assert.deepEqual(gateway.searchableSessions(chatNew.id).sort(), [chatOld.id, chatNew.id].sort());
   assert.deepEqual(gateway.searchableSessions(cli1.id).sort(), [cli1.id, cli2.id].sort(), 'terminal history never includes chats');
+  const sub = sessions.createSession('subagent: x', undefined, chatNew.id);
+  assert.ok(!gateway.searchableSessions(cli1.id).includes(sub.id), 'subagent sessions are not searched');
+  assert.deepEqual(gateway.searchableSessions(sessions.rootOf(sub.id)).sort(), [chatOld.id, chatNew.id].sort(), 'a subagent searches as its chat does');
 });
