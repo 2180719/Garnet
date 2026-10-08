@@ -303,12 +303,15 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
 
   // A provider keeps the key name it already has. A new named provider gets one of its own, so two custom providers never share a key.
   const existing = findProvider(st.config, name)?.model;
-  const keyDefault = (fallback: string) =>
-    existing?.apiKeyEnv && providerOf(existing) === provider && existing.apiKeyEnv !== 'ANTHROPIC_API_KEY'
-      ? existing.apiKeyEnv
-      : name === DEFAULT_PROVIDER
-        ? fallback
-        : providerKeyEnv(st.config, name);
+  const keyDefault = (fallback: string) => {
+    if (existing && providerOf(existing) === provider) {
+      // A named provider keeps the key it effectively reads, even when it never set one. The legacy default block
+      // must not carry an implicit or Anthropic key over to another host.
+      if (name !== DEFAULT_PROVIDER) return keyEnvOf(existing);
+      if (existing.apiKeyEnv && existing.apiKeyEnv !== 'ANTHROPIC_API_KEY') return existing.apiKeyEnv;
+    }
+    return name === DEFAULT_PROVIDER ? fallback : providerKeyEnv(st.config, name);
+  };
 
   switch (provider) {
     case 'fake':

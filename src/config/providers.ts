@@ -24,9 +24,10 @@ const WELL_KNOWN_KEY_ENV = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_K
  * in those cases it is prefixed with `GARNET_`.
  */
 export function providerKeyEnv(config: GarnetConfig, name: string): string {
-  const base = `${name.toUpperCase().replaceAll('-', '_')}_API_KEY`;
+  let key = `${name.toUpperCase().replaceAll('-', '_')}_API_KEY`;
   const taken = new Set([...WELL_KNOWN_KEY_ENV, ...listProviders(config).filter((p) => p.name !== name).map((p) => keyEnvOf(p.model))]);
-  return /^[0-9]/.test(base) || taken.has(base) ? `GARNET_${base}` : base;
+  while (/^[0-9]/.test(key) || taken.has(key)) key = `GARNET_${key}`;
+  return key;
 }
 
 /** Every provider: `default` (the `model` block) first, then `providers` in file order. */

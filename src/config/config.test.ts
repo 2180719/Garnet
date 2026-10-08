@@ -232,4 +232,6 @@ test('providerKeyEnv derives a valid, distinct secret name that never hits a wel
   assert.equal(providerKeyEnv(c, 'local-model'), 'GARNET_LOCAL_MODEL_API_KEY');
   const withKey = parseConfig({ version: CONFIG_VERSION, providers: { other: { provider: 'openai-compatible', baseUrl: 'https://x.example/v1', name: 'm', apiKeyEnv: 'MY_LAPTOP_API_KEY' } } });
   assert.equal(providerKeyEnv(withKey, 'my-laptop'), 'GARNET_MY_LAPTOP_API_KEY');
+  const both = parseConfig({ version: CONFIG_VERSION, providers: { 'garnet-anthropic': { provider: 'openai-compatible', baseUrl: 'https://x.example/v1', name: 'm', apiKeyEnv: 'GARNET_ANTHROPIC_API_KEY' } } });
+  assert.equal(providerKeyEnv(both, 'anthropic'), 'GARNET_GARNET_ANTHROPIC_API_KEY', 'the prefixed name is rechecked');
 });

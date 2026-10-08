@@ -965,3 +965,15 @@ test('custom providers never share a key name: each new one derives its own', as
   assert.equal(c.providers['work-a']!.apiKeyEnv, 'WORK_A_API_KEY');
   assert.equal(c.providers['work-b']!.apiKeyEnv, 'WORK_B_API_KEY');
 });
+
+test('re-running setup on a named provider that never set apiKeyEnv keeps the key it reads', async () => {
+  const home = tempDir();
+  const first = harness({ home });
+  assert.equal(await first.run({ provider: 'openai-compatible', model: 'm1', 'base-url': 'https://a.example/v1', 'provider-name': 'legacy', telegram: false, discord: false, signal: false }).done, 0);
+  const c = first.config();
+  delete c.providers.legacy!.apiKeyEnv;
+  writeFileSync(join(home, 'config.json'), JSON.stringify(c));
+  const again = harness({ home });
+  assert.equal(await again.run({ section: ['model', 'done'], provider: 'openai-compatible', model: 'm1', 'base-url': 'https://a.example/v1', 'provider-name': 'legacy' }).done, 0);
+  assert.equal(again.config().providers.legacy!.apiKeyEnv, 'ANTHROPIC_API_KEY');
+});
