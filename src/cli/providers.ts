@@ -17,23 +17,36 @@ import {
 } from '../config/index.ts';
 import { GarnetError, errorMessage } from '../contracts/index.ts';
 import { DEFAULT_GEMINI_MODEL, GEMINI_BASE_URL } from '../models/index.ts';
+import { priceLine } from '../catalog/index.ts';
 import type { Io } from './main.ts';
+import { lookupModels, modelRows } from './models.ts';
+import type { FetchFn } from './setup/checks.ts';
 
 export const PROVIDERS_USAGE = `Usage: garnet providers <command>
 
   list                          Named providers; * marks the one in use
-  add <name> --provider <kind> --model <id> [--base-url <url>] [--key-env <NAME>] [--use]
+  add <name> --provider <kind> --model <id> [--base-url <url>] [--key-env <NAME>] [--use] [--offline]
                                 kind: anthropic | gemini | openai-compatible (needs --base-url)
   use <name> [<model>]          Make a provider (and optionally another model id) the one in use
   rm <name>                     Remove a provider (not "default", not the one in use)
 
+Adding a provider looks up its current models and prices (the provider's own list when its key is
+stored, openrouter.ai for prices); --offline skips that and uses the cache or bundled list.
 Names are lowercase letters, digits and dashes. "default" is the top-level \`model\` block.
 Keys are never stored here: --key-env names the variable or stored secret (garnet secrets set NAME).
 Changes are written to config.json and take effect on the next start (restart the service); in a
 running terminal chat, /provider swaps for the rest of that chat without touching the file.
 `;
 
-type Opts = { home?: string };
+type Opts = { home?: string; fetch?: FetchFn; env?: NodeJS.ProcessEnv };
+
+/** After an add: whether the model exists, what it costs, and a few current alternatives. */
+async function reportModels(model: ModelConfig, io: Io, o: Parameters<typeof lookupModels>[1]): Promise<void> {
+  const lookup = await lookupModels(model, o);
+  io.out(`${priceLine(lookup.catalog, model, model.name)}\n`);
+  if (lookup.live && !lookup.live.includes(model.name)) io.out(`Warning: the provider does not list "${model.name}". Models it lists:\n${modelRows(model, lookup, 8).slice(0, 8).join('\n')}\n`);
+  for (const n of lookup.notes) io.out(`Note: ${n}.\n`);
+}
 
 /** Parses the whole config again, so a bad edit is refused before anything is written. */
 function save(home: string, next: GarnetConfig): GarnetConfig {
@@ -47,7 +60,7 @@ export function describeProvider(m: ModelConfig): string {
   return `${m.provider} · ${m.name}${where && m.provider !== 'anthropic' ? ` · ${where}` : ''}${m.provider === 'fake' ? '' : ` · key ${keyEnvOf(m)}`}`;
 }
 
-export function providers(args: string[], io: Io, opts: Opts = {}): number {
+export async function providers(args: string[], io: Io, opts: Opts = {}): Promise<number> {
   const [sub = 'list', ...rest] = args;
   if (sub === 'help' || sub === '--help' || sub === '-h') {
     io.out(PROVIDERS_USAGE);
@@ -65,7 +78,7 @@ export function providers(args: string[], io: Io, opts: Opts = {}): number {
         const { values, positionals } = parseArgs({
           args: rest,
           allowPositionals: true,
-          options: { provider: { type: 'string' }, model: { type: 'string' }, 'base-url': { type: 'string' }, 'key-env': { type: 'string' }, use: { type: 'boolean' } },
+          options: { provider: { type: 'string' }, model: { type: 'string' }, 'base-url': { type: 'string' }, 'key-env': { type: 'string' }, use: { type: 'boolean' }, offline: { type: 'boolean' } },
         });
         const name = positionals[0];
         if (!name || positionals.length > 1) throw new GarnetError('invalid_input', 'Usage: garnet providers add <name> --provider <kind> --model <id> [--base-url <url>] [--key-env <NAME>] [--use]');
@@ -83,6 +96,7 @@ export function providers(args: string[], io: Io, opts: Opts = {}): number {
         const added = listProviders(saved).find((p) => p.name === name)!;
         io.out(`Added provider "${name}": ${describeProvider(added.model)}${values.use ? ' (now in use)' : ''}.\n`);
         if (!added.model.apiKeyEnv && kind !== 'fake') io.out(`Its key is read from ${keyEnvOf(added.model)}; store it with \`garnet secrets set ${keyEnvOf(added.model)}\`.\n`);
+        if (kind !== 'fake') await reportModels(added.model, io, { home: paths.home, env: opts.env, fetch: opts.fetch, offline: values.offline });
         return 0;
       }
       case 'use': {

@@ -26,7 +26,8 @@ import {
   type GarnetConfig,
   type ModelConfig,
 } from '../../config/index.ts';
-import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV, GEMINI_MODELS } from '../../models/index.ts';
+import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV } from '../../models/index.ts';
+import { loadCatalog, priceLine, refreshCatalog, suggestModels, type Catalog } from '../../catalog/index.ts';
 import { GarnetError, errorMessage } from '../../contracts/index.ts';
 import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, unlockFrom, writePrivateFile, type KdfParams } from '../../secrets/index.ts';
 import type { ServiceResult } from '../../service/index.ts';
@@ -283,6 +284,11 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
   if (!same) delete m.baseUrl;
   if (same && cur.contextWindow) m.contextWindow = cur.contextWindow;
 
+  const catalog = loadCatalog(deps.home);
+  const known = (kind: ModelConfig['provider'], baseUrl?: string): string => {
+    const found = suggestModels(catalog, { provider: kind, baseUrl }, 6);
+    return found.length ? ` Recent: ${found.map((f) => f.name).join(', ')}.` : '';
+  };
   const askModel = (help: string, def?: string) =>
     p.text({ id: 'model', message: 'Model ID', help, ...(def ? { default: def } : {}), validate: required('a model ID') });
   const askKeyEnv = async (def: string) => (p.interactive ? def : await p.text({ id: 'key-env', message: 'Name of the variable or secret that holds the key', default: def, validate: validEnvName }));
@@ -293,12 +299,12 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
       break;
     case 'anthropic':
       m.provider = 'anthropic';
-      m.name = await askModel('Press Enter for the default.', same ? cur.name : defaults.name);
+      m.name = await askModel(`Press Enter for the default.${known('anthropic')}`, same ? cur.name : defaults.name);
       m.apiKeyEnv = await askKeyEnv(same ? keyEnvOf(cur) : 'ANTHROPIC_API_KEY');
       break;
     case 'gemini':
       m.provider = 'gemini';
-      m.name = await askModel(`Known IDs: ${GEMINI_MODELS.map((g) => g.id).join(', ')}.`, same ? cur.name : DEFAULT_GEMINI_MODEL);
+      m.name = await askModel(`Recent IDs from Google's catalog:${known('gemini')}`, same ? cur.name : DEFAULT_GEMINI_MODEL);
       m.apiKeyEnv = await askKeyEnv(same ? keyEnvOf(cur) : GEMINI_API_KEY_ENV);
       break;
     case 'openrouter':
@@ -351,14 +357,22 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
     local: null,
   }[provider];
   const host = new URL(m.baseUrl ?? 'https://api.anthropic.com').host;
-  await checked(p, io, deps, st, {
+  const result = await checked(p, io, deps, st, {
     what: 'model',
-    consentHelp: `One request to ${host} that lists models; it uses no tokens.`,
+    consentHelp: `One request to ${host} that lists models, and one to openrouter.ai for current model prices; neither uses tokens.`,
     enter: async (fresh) => (keySpec ? secretStep(p, io, deps, st, { id: 'key', name: keyEnvOf(m), ...keySpec }, fresh) : undefined),
     check: (key) => checkModel(m, key, deps.fetch),
     canRetry: keySpec !== null,
     needsValue: keySpec?.required ?? false,
   });
+  // A checked setup also refreshes prices (the owner agreed to live requests); otherwise the cache or bundled snapshot answers.
+  let prices: Catalog = catalog;
+  if (result?.ok) {
+    const fresh = await refreshCatalog(deps.home, deps.fetch, deps.now);
+    prices = fresh.catalog;
+    if (!fresh.ok) io.out(`  ${deps.style.warn('!')} ${fresh.detail}; using the ${fresh.catalog.source} from ${fresh.catalog.fetchedAt.slice(0, 10)}.\n`);
+  }
+  io.out(`  ${deps.style.muted(priceLine(prices, m, m.name))}\n`);
 }
 
 // ---------- secrets ----------

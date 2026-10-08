@@ -134,7 +134,7 @@ const modelSchema = z
         cacheWrite: z.number().min(0).optional().describe('USD per million cache-write tokens.'),
       })
       .optional()
-      .describe('USD per million tokens, to show dollar cost. Built in for current Anthropic models; set it for any other model. Without a price the cost shows "?", never $0.'),
+      .describe('USD per million tokens, to show dollar cost. Overrides the model catalog (src/catalog: current Anthropic, Gemini and OpenAI prices, refreshed when a provider is added); set it for models the catalog does not cover, such as local servers. Without a price the cost shows "?", never $0.'),
   });
 
 export type ModelConfig = z.infer<typeof modelSchema>;
@@ -202,7 +202,7 @@ export const configSchema = z
         maxTokens: z.number().int().positive().default(500_000).describe('Total tokens allowed per task.'),
         maxToolCalls: z.number().int().positive().default(50).describe('Tool calls allowed per task.'),
         maxWallMs: z.number().int().positive().default(15 * 60_000).describe('Wall-clock limit per task.'),
-        dailyUsd: z.number().positive().optional().describe('Daily spending cap in USD (the owner\'s calendar day, see `timezone`). Once today\'s known cost reaches it, new chat turns and agent jobs are refused and a running task stops before its next model call, until tomorrow; if pricing is missing or a task today has an unknown cost, new ones are refused too (never counted as $0); script and reminder jobs are unaffected. Needs pricing (built in for current Anthropic models, or model.pricing). Off by default.'),
+        dailyUsd: z.number().positive().optional().describe('Daily spending cap in USD (the owner\'s calendar day, see `timezone`). Once today\'s known cost reaches it, new chat turns and agent jobs are refused and a running task stops before its next model call, until tomorrow; if pricing is missing or a task today has an unknown cost, new ones are refused too (never counted as $0); script and reminder jobs are unaffected. Needs pricing (from the model catalog, or model.pricing). Off by default.'),
       })
       .prefault({})
       .describe('Per-task resource limits.'),
