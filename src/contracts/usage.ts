@@ -1,3 +1,5 @@
+import type { TaskRecord } from './session.ts';
+
 // Token usage. `null` means the provider did not report a value; it is never
 // silently treated as zero.
 
@@ -32,4 +34,9 @@ export function billedTokens(u: Usage): number {
   return (
     (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0) + (u.outputTokens ?? 0)
   );
+}
+
+/** Every token a task is accountable for: its own model calls plus delegated and side-model work (`TaskRecord.delegatedUsage`). */
+export function taskTokens(task: Pick<TaskRecord, 'usage' | 'delegatedUsage'>): number {
+  return billedTokens(task.usage) + (task.delegatedUsage ? billedTokens(task.delegatedUsage) : 0);
 }

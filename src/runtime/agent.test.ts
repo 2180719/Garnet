@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { z } from 'zod';
 import { tempDir } from '../../test/helpers.ts';
 import { defaultConfig } from '../config/index.ts';
-import type { Budget, Usage } from '../contracts/index.ts';
+import type { Budget, ModelAdapter, ModelEvent, ToolDefinition, Usage } from '../contracts/index.ts';
 import { FakeModel, type FakeScript } from '../models/index.ts';
 import { Policy, type Approver } from '../policy/index.ts';
 import { openDb, SessionStore } from '../store/index.ts';
@@ -332,4 +333,75 @@ test('time spent waiting for an interactive approval does not count against the 
   const task = await t.run('save a.md');
   assert.equal(task.status, 'completed', task.reason ?? '');
   assert.equal(readFileSync(join(t.workspace, 'a.md'), 'utf8'), 'x');
+});
+
+/** A model that takes `ms` to answer. `honorsSignal: false` ignores cancellation, like a misbehaving adapter. */
+function slowModel(ms: number, text: string, honorsSignal = true): ModelAdapter {
+  const fast = new FakeModel([{ text }]);
+  return {
+    id: 'slow',
+    capabilities: fast.capabilities,
+    async *stream(request): AsyncIterable<ModelEvent> {
+      const waited = await new Promise<'done' | 'aborted'>((resolve) => {
+        const timer = setTimeout(() => resolve('done'), ms);
+        if (honorsSignal) request.signal?.addEventListener('abort', () => (clearTimeout(timer), resolve('aborted')), { once: true });
+      });
+      if (waited === 'aborted') {
+        yield { type: 'error', category: 'cancelled', message: 'aborted' };
+        return;
+      }
+      yield* fast.stream(request);
+    },
+  };
+}
+
+function slowSetup(model: ModelAdapter, maxWallMs: number, extraTools: ToolDefinition[] = []) {
+  const store = new SessionStore(openDb(':memory:'));
+  const registry = new ToolRegistry();
+  for (const tool of extraTools) registry.register(tool);
+  const executor = new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'approved' });
+  const agent = new Agent({ store, model, registry, executor, workspace: tempDir(), maxOutputTokens: 1000, budget: { ...defaultConfig().budgets, maxWallMs }, sleep: async () => {} });
+  return { store, run: (text: string, signal?: AbortSignal) => agent.run(store.createSession().id, text, signal ? { signal } : {}) };
+}
+
+test('the wall-clock limit aborts a model call that is still running', async () => {
+  const t = slowSetup(slowModel(5000, 'late'), 20);
+  const started = Date.now();
+  const task = await t.run('go');
+  assert.ok(Date.now() - started < 2000, 'cut off at the deadline, not after the provider answered');
+  assert.equal(task.status, 'budget_exhausted');
+  assert.match(task.reason ?? '', /time limit/);
+});
+
+test('an answer that arrives after the deadline is not reported as completed', async () => {
+  const t = slowSetup(slowModel(60, 'late', false), 20);
+  const task = await t.run('go');
+  assert.equal(task.status, 'budget_exhausted');
+  assert.match(task.reason ?? '', /time limit/);
+});
+
+test('caller cancellation still wins over the deadline', async () => {
+  const t = slowSetup(slowModel(5000, 'late'), 10_000);
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 10);
+  assert.equal((await t.run('go', ac.signal)).status, 'cancelled');
+});
+
+test('the wall-clock limit also stops a running tool', async () => {
+  let sawAbort = false;
+  const hang: ToolDefinition = {
+    name: 'hang', version: 1, description: 'never returns', input: z.object({}), capability: 'fs.read', idempotent: true,
+    async run(_input, ctx) {
+      const keepAlive = setInterval(() => {}, 1000); // abort timers do not keep the process alive; a real tool holds a socket
+      await new Promise((resolve) => ctx.signal.addEventListener('abort', () => ((sawAbort = true), clearInterval(keepAlive), resolve(null)), { once: true }));
+      return { content: 'stopped' };
+    },
+  };
+  const t = slowSetup(new FakeModel([{ toolCalls: [{ name: 'hang', input: {} }] }, { text: 'never' }]), 30, [hang]);
+  const started = Date.now();
+  const task = await t.run('go');
+  assert.ok(Date.now() - started < 2000);
+  assert.ok(sawAbort);
+  assert.equal(task.status, 'budget_exhausted');
+  assert.match(task.reason ?? '', /time limit/);
 });

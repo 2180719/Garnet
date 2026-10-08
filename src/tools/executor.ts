@@ -140,7 +140,9 @@ export class ToolExecutor {
 
     if (ctx.signal.aborted) return fail('cancelled', 'Cancelled before the tool started.');
     const timeout = AbortSignal.timeout(tool.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const signal = AbortSignal.any([ctx.signal, timeout]);
+    // The task's wall-clock deadline also bounds the tool. Time spent waiting on the owner does not count against it.
+    const deadline = ctx.deadline === undefined ? null : AbortSignal.timeout(Math.max(0, ctx.deadline + approvalWaitMs - Date.now()));
+    const signal = AbortSignal.any([ctx.signal, timeout, ...(deadline ? [deadline] : [])]);
     // From here the tool has run: an untrusted tool's result taints the session even when it failed
     // (an error page or a server's error message is outside content too).
     const defaultMark = tool.untrustedOutput ? { untrusted: { source: tool.name } } : {};
@@ -148,6 +150,7 @@ export class ToolExecutor {
     try {
       output = await raceAbort(tool.run(input, { ...fullCtx, signal }), signal);
     } catch (e) {
+      if (deadline?.aborted && !timeout.aborted && !ctx.signal.aborted) return { ...fail('budget_exhausted', `${tool.name} was stopped: the task reached its time limit.`), ...defaultMark };
       if (timeout.aborted && !ctx.signal.aborted) return { ...fail('timeout', `${tool.name} timed out.`), ...defaultMark };
       if (ctx.signal.aborted) return { ...fail('cancelled', `${tool.name} was cancelled.`), ...defaultMark };
       return { ...fail(isGarnetError(e) ? e.category : 'tool_failed', errorMessage(e)), ...defaultMark };

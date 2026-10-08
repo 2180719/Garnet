@@ -12,7 +12,9 @@ function task(status: TaskRecord['status'] = 'completed', tokens = 1000): TaskRe
   return { id: 't', sessionId: 's', status, usage: { inputTokens: tokens, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null }, modelCalls: 1, toolCalls: 0, startedAt: '', endedAt: '', reason: status === 'failed' ? 'boom' : null };
 }
 
-function setup(jobs: object[], opts: { reply?: string; status?: TaskRecord['status']; check?: () => string; db?: ReturnType<typeof openDb>; timeZone?: string } = {}) {
+const NONE = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null };
+
+function setup(jobs: object[], opts: { reply?: string; delegated?: number; status?: TaskRecord['status']; check?: () => string; db?: ReturnType<typeof openDb>; timeZone?: string } = {}) {
   let now = new Date('2026-10-05T10:00:10Z');
   const db = opts.db ?? openDb(':memory:');
   const store = new JobStore(db);
@@ -22,7 +24,7 @@ function setup(jobs: object[], opts: { reply?: string; status?: TaskRecord['stat
     jobs: jobsFrom(jobs), store, workspace: tempDir(), tickSeconds: 30, now: () => now,
     run: async (job, text) => {
       runs.push(text);
-      return { task: task(opts.status), text: opts.reply ?? NOTHING };
+      return { task: { ...task(opts.status), ...(opts.delegated ? { delegatedUsage: { ...NONE, inputTokens: opts.delegated } } : {}) }, text: opts.reply ?? NOTHING };
     },
     notify: (_job, text) => notes.push(text),
     ...(opts.timeZone ? { timeZone: opts.timeZone } : {}),
@@ -94,6 +96,17 @@ test('unchanged pre-checks and exhausted budgets skip the model', async () => {
   t.advance(30 * 60_000);
   await t.tick(); // 2000 >= 1500 -> skipped
   assert.equal(t.runs.length, 2);
+  assert.equal(t.store.runs('hb')[0]?.status, 'skipped_budget');
+});
+
+test('tokens spent by subagents count toward the job daily limit', async () => {
+  const t = setup([heartbeat({ budget: { maxTokensPerDay: 1500 } })], { reply: 'hello', delegated: 900 });
+  await t.tick();
+  t.advance(30 * 60_000);
+  await t.tick(); // runs: 1000 own + 900 delegated
+  t.advance(30 * 60_000);
+  await t.tick(); // 1900 >= 1500 -> skipped (it would not be if only the 1000 own tokens counted)
+  assert.equal(t.runs.length, 1);
   assert.equal(t.store.runs('hb')[0]?.status, 'skipped_budget');
 });
 

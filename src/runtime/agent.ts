@@ -1,6 +1,6 @@
 import {
   addUsage,
-  billedTokens,
+  taskTokens,
   type ActiveExtras,
   errorMessage,
   nowIso,
@@ -15,7 +15,6 @@ import {
   type ModelAdapter,
   type ModelEvent,
   type ModelRequest,
-  type SessionTaint,
   type SubagentRunner,
   type StopReason,
   type TaskRecord,
@@ -28,6 +27,7 @@ import {
 import { extractSummary, frozenContext, messagesFromEvents, planCompaction, prepareAttachments, systemPrompt, type FrozenContext } from '../context/index.ts';
 import type { SessionStore } from '../store/index.ts';
 import type { ToolExecutor, ToolRegistry } from '../tools/index.ts';
+import type { SubagentParent } from './subagents.ts';
 import { sessionTaint } from './taint.ts';
 
 /** Live progress for interactive surfaces. The event log remains the record. */
@@ -97,7 +97,7 @@ export type AgentDeps = {
    * Gives a tool call a runner for starting subagents, bound to the calling session (its cancellation signal and
    * taint). Absent when delegation is off; `ToolContext.subagents` is then unset and `delegate_task` refuses.
    */
-  subagents?: (parent: { sessionId: string; signal: AbortSignal; taint: SessionTaint; remainingMs: number }) => SubagentRunner;
+  subagents?: (parent: SubagentParent) => SubagentRunner;
 };
 
 export type CompactionOutcome = {
@@ -195,7 +195,7 @@ export class Agent {
     finish: (status: TaskStatus, reason?: string | null) => TaskRecord,
   ): Promise<TaskRecord> {
     const { store } = this.deps;
-    // Time spent waiting on the owner's approval is not the task's time: `started` moves forward by it.
+    // Time spent waiting on the owner's approval is not the task's time: the deadline moves forward by it.
     let deadline = started + this.deps.budget.maxWallMs;
     // The system prompt and tool set are frozen per session (context_frozen)
     // so the provider cache and prefix-bound blocks (signed thinking) remain
@@ -205,7 +205,7 @@ export class Agent {
 
     for (;;) {
       if (signal.aborted) return finish('cancelled', 'Cancelled by the owner.');
-      const exhausted = this.budgetProblem(task, started);
+      const exhausted = this.budgetProblem(task, deadline);
       if (exhausted) return finish('budget_exhausted', exhausted);
 
       const messages = this.view(messagesFromEvents(store.events(sessionId), { timeZone: this.deps.timeZone }));
@@ -216,7 +216,10 @@ export class Agent {
       if (turn.kind === 'error') {
         store.append(sessionId, { type: 'model_error', category: turn.category, message: turn.message });
         store.updateTask(task);
-        if (turn.category === 'cancelled' || signal.aborted) return finish('cancelled', 'Cancelled by the owner.');
+        if (signal.aborted) return finish('cancelled', 'Cancelled by the owner.');
+        // The call was cut off at the task's deadline: the same outcome as the check between turns.
+        if (turn.deadlineHit) return finish('budget_exhausted', this.timeLimitMessage());
+        if (turn.category === 'cancelled') return finish('cancelled', 'Cancelled by the owner.');
         return finish('failed', `Model error (${turn.category}): ${turn.message}`);
       }
 
@@ -231,6 +234,8 @@ export class Agent {
 
       const calls = toolCallsOf(turn.message);
       if (calls.length === 0) {
+        // A reply that arrived past the deadline is kept in the log but, like any other overrun, ends the task as exhausted.
+        if (Date.now() >= deadline) return finish('budget_exhausted', this.timeLimitMessage());
         return finish('completed', turn.stopReason === 'max_tokens' ? 'Stopped at the output token limit.' : null);
       }
 
@@ -245,6 +250,8 @@ export class Agent {
           // The call may be truncated or cut off mid-input; never execute it.
           const why = turn.stopReason === 'max_tokens' ? 'your output hit the token limit' : 'the response was declined';
           result = { status: 'error', category: 'invalid_input', content: `Not run: ${why} before this call was complete. Retry with a shorter call.`, durationMs: 0 };
+        } else if (Date.now() >= deadline) {
+          result = { status: 'error', category: 'budget_exhausted', content: 'Not run: the task reached its time limit.', durationMs: 0 };
         } else if (waiting) {
           result = { status: 'error', category: 'needs_approval', content: 'Skipped while an earlier operation awaits approval.', durationMs: 0 };
         } else if (task.toolCalls >= this.deps.budget.maxToolCalls) {
@@ -254,12 +261,15 @@ export class Agent {
           store.append(sessionId, { type: 'tool_started', call, operationId });
           emit({ type: 'tool_start', call });
           task.toolCalls += 1;
-          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name), taint, ...(this.deps.subagents ? { subagents: this.deps.subagents({ sessionId, signal, taint, remainingMs: Math.max(0, deadline - Date.now()) }) } : {}) });
+          // Tokens spent for this task outside its own model calls (subagents, side-model tools) are debited to it.
+          const charge = (usage: Usage) => {
+            task.delegatedUsage = addUsage(task.delegatedUsage ?? unknownUsage(), usage);
+            store.updateTask(task);
+          };
+          const subagents = this.deps.subagents?.({ sessionId, signal, taint, remainingMs: Math.max(0, deadline - Date.now()), remainingTokens: () => Math.max(0, this.deps.budget.maxTokens - taskTokens(task)), charge });
+          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name), taint, deadline, chargeUsage: charge, ...(subagents ? { subagents } : {}) });
           emit({ type: 'tool_end', call, result });
-          if (result.approvalWaitMs) {
-            started += result.approvalWaitMs;
-            deadline += result.approvalWaitMs;
-          }
+          if (result.approvalWaitMs) deadline += result.approvalWaitMs;
           if (result.status === 'error' && result.category === 'needs_approval') waiting = `Approval needed for ${call.name}.`;
         }
         store.append(sessionId, { type: 'tool_finished', callId: call.id, operationId, result });
@@ -389,11 +399,15 @@ export class Agent {
     });
   }
 
-  private budgetProblem(task: TaskRecord, started: number): string | null {
+  private timeLimitMessage(): string {
+    return `Reached the time limit of ${Math.round(this.deps.budget.maxWallMs / 1000)}s.`;
+  }
+
+  private budgetProblem(task: TaskRecord, deadline: number): string | null {
     const b = this.deps.budget;
     if (task.modelCalls >= b.maxModelCalls) return `Reached the limit of ${b.maxModelCalls} model calls.`;
-    if (billedTokens(task.usage) >= b.maxTokens) return `Reached the limit of ${b.maxTokens} tokens.`;
-    if (Date.now() - started >= b.maxWallMs) return `Reached the time limit of ${Math.round(b.maxWallMs / 1000)}s.`;
+    if (taskTokens(task) >= b.maxTokens) return `Reached the limit of ${b.maxTokens} tokens.`;
+    if (Date.now() >= deadline) return this.timeLimitMessage();
     // The daily spending cap, re-checked before every model call (the task row is saved after each one).
     return this.deps.refuse?.() ?? null;
   }
@@ -404,14 +418,15 @@ export class Agent {
    * `deadline` (the task's wall-clock limit): a long `retry-after` fails now
    * instead of holding the conversation's lane.
    */
-  private async callModel(
-    request: ModelRequest & { signal: AbortSignal },
-    emit: (e: RuntimeEvent) => void,
-    deadline: number,
-  ): Promise<
-    | { kind: 'done'; message: ChatMessage; stopReason: StopReason; usage: Usage }
-    | { kind: 'error'; category: ErrorCategory; message: string; usage: Usage | null }
-  > {
+  private async callModel(request: ModelRequest & { signal: AbortSignal }, emit: (e: RuntimeEvent) => void, deadline: number): Promise<ModelTurn> {
+    // The deadline also aborts the request in flight (and a retry wait), not only the retries that would pass it.
+    const timer = AbortSignal.timeout(Math.min(Math.max(0, deadline - Date.now()), MAX_TIMER_MS));
+    const turn = await this.attempts({ ...request, signal: AbortSignal.any([request.signal, timer]) }, emit, deadline);
+    if (turn.kind === 'error' && timer.aborted && !request.signal.aborted) return { ...turn, deadlineHit: true };
+    return turn;
+  }
+
+  private async attempts(request: ModelRequest & { signal: AbortSignal }, emit: (e: RuntimeEvent) => void, deadline: number): Promise<ModelTurn> {
     const maxRetries = this.deps.maxRetries ?? 3;
     const sleep = this.deps.sleep ?? abortableSleep;
     for (let attempt = 0; ; attempt++) {
@@ -450,6 +465,14 @@ export class Agent {
 }
 
 type ModelError = Extract<ModelEvent, { type: 'error' }>;
+
+type ModelTurn =
+  | { kind: 'done'; message: ChatMessage; stopReason: StopReason; usage: Usage }
+  /** `deadlineHit`: the call was cut off because the task's wall-clock limit passed (the caller did not cancel). */
+  | { kind: 'error'; category: ErrorCategory; message: string; usage: Usage | null; deadlineHit?: true };
+
+/** `AbortSignal.timeout` accepts at most 2^32-1 ms; a longer (or infinite) deadline is capped to it. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /**
  * Files the owner passes on (images, PDFs, documents) were usually written by

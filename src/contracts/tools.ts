@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { ErrorCategory } from './errors.ts';
 import type { TaskStatus } from './session.ts';
+import type { Usage } from './usage.ts';
 
 /** Capabilities a policy can allow, require approval for, or deny. */
 export type Capability =
@@ -29,6 +30,13 @@ export type ToolContext = {
    * to a subagent.
    */
   taint?: SessionTaint;
+  /**
+   * When the task must stop (epoch ms), not counting time spent waiting for an interactive approval; the executor
+   * adds its own approval wait before enforcing it. Unset: no task deadline (tests, tools run outside a task).
+   */
+  deadline?: number;
+  /** Charges tokens a tool spent on a side-model call (for example image analysis) to the task's token budget. */
+  chargeUsage?: (usage: Usage) => void;
   /** Starts a subagent for this session (present when delegation is enabled); bound to this session's permissions and taint. */
   subagents?: SubagentRunner;
 };
@@ -46,6 +54,8 @@ export type SubagentOutcome = {
   model: string;
   modelCalls: number;
   toolCalls: number;
+  /** Tokens the subagent used, including anything it delegated in turn. Already charged to the parent task. */
+  usage: Usage;
   /** Untrusted sources the subagent read beyond what its parent already had; empty when it stayed clean. */
   newTaint: readonly string[];
 };

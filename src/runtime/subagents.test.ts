@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { z } from 'zod';
 import { tempDir } from '../../test/helpers.ts';
 import { defaultConfig } from '../config/index.ts';
-import { GarnetError, type ModelAdapter, type ToolDefinition } from '../contracts/index.ts';
+import { GarnetError, taskTokens, type Budget, type ModelAdapter, type ToolDefinition } from '../contracts/index.ts';
 import { FakeModel, type FakeScript } from '../models/index.ts';
 import { Policy } from '../policy/index.ts';
 import { openDb, SessionStore } from '../store/index.ts';
@@ -24,7 +24,7 @@ const page: ToolDefinition = {
   },
 };
 
-function setup(parentScript: FakeScript, models: Record<string, FakeScript>, maxDepth = 2) {
+function setup(parentScript: FakeScript, models: Record<string, FakeScript>, maxDepth = 2, limits: Partial<Budget> = {}) {
   const workspace = tempDir();
   const store = new SessionStore(openDb(':memory:'));
   const registry = new ToolRegistry().register(delegateTaskTool).register(page);
@@ -32,9 +32,10 @@ function setup(parentScript: FakeScript, models: Record<string, FakeScript>, max
   const executor = new ToolExecutor({ registry, policy: new Policy(config.permissions), approver: async () => 'approved' });
   const adapters = new Map<string, FakeModel>();
   const resolved: { provider?: string | undefined; model?: string | undefined }[] = [];
-  const make = (depth: number, model: ModelAdapter): Agent =>
+  const budget: Budget = { ...config.budgets, ...limits };
+  const make = (depth: number, model: ModelAdapter, own: Budget = budget): Agent =>
     new Agent({
-      store, model, registry, executor, workspace, maxOutputTokens: 1000, budget: config.budgets, sleep: async () => {},
+      store, model, registry, executor, workspace, maxOutputTokens: 1000, budget: own, sleep: async () => {},
       subagents: subagentFactory({
         store,
         depth,
@@ -48,7 +49,7 @@ function setup(parentScript: FakeScript, models: Record<string, FakeScript>, max
           adapters.set(key, adapter);
           return { adapter, provider: provider ?? 'default', model: name ?? 'main' };
         },
-        makeChild: (r) => make(depth + 1, r.adapter),
+        makeChild: (r, l) => make(depth + 1, r.adapter, { ...own, maxTokens: Math.min(own.maxTokens, l.maxTokens) }),
       }),
     });
   const parent = new FakeModel(parentScript);
@@ -142,4 +143,56 @@ test('a subagent starts with its parent\'s taint, and does not report it back as
   assert.equal(sessionTaint(t.store.events(t.session.id)).sources.length, 1, 'no second source for inherited taint');
   const task = t.store.events(child.id).find((e) => e.type === 'user_message');
   assert.ok(task?.type === 'user_message' && task.source === 'subagent', 'the task text is marked as not the owner\'s');
+});
+
+const spend = (inputTokens: number) => ({ usage: { inputTokens, outputTokens: 0 } });
+
+test('children are charged to the parent task: parent plus two children exceed its token cap', async () => {
+  const t = setup(
+    [
+      { toolCalls: [{ name: 'delegate_task', input: { task: 'a' } }], ...spend(120) },
+      { toolCalls: [{ name: 'delegate_task', input: { task: 'b' } }], ...spend(120) },
+      { text: 'never reached', ...spend(10) },
+    ],
+    { 'default/main': [{ text: 'a done', ...spend(450) }, { text: 'b done', ...spend(450) }] },
+    2,
+    { maxTokens: 1000 },
+  );
+  const task = await t.run('go');
+  assert.equal(task.usage.inputTokens, 240, 'usage stays the parent\'s own, so cost is not counted twice');
+  assert.equal(task.delegatedUsage?.inputTokens, 900);
+  assert.equal(taskTokens(task), 1140);
+  assert.equal(task.status, 'budget_exhausted', 'each call is under the cap, the total is not');
+  assert.equal(t.parent.requests.length, 2);
+});
+
+test('a child may spend only what its parent has left, and grandchildren count too', async () => {
+  const loop = Array.from({ length: 10 }, () => ({ toolCalls: [{ name: 'read_page', input: {} }], ...spend(300) }));
+  const t = setup(
+    [{ toolCalls: [{ name: 'delegate_task', input: { task: 'a' } }], ...spend(100) }, { text: 'done', ...spend(10) }],
+    { 'default/main': loop },
+    2,
+    { maxTokens: 800 },
+  );
+  const task = await t.run('go');
+  // 700 left for the child: it stops after its third call (900 >= 700), not after its tenth.
+  assert.equal(t.adapters.get('default/main')!.requests.length, 3);
+  assert.equal(task.delegatedUsage?.inputTokens, 900);
+  assert.equal(task.status, 'budget_exhausted');
+});
+
+test('delegated usage includes what a subagent delegated in turn', async () => {
+  const t = setup(
+    [{ toolCalls: [{ name: 'delegate_task', input: { task: 'child' } }], ...spend(10) }, { text: 'done', ...spend(10) }],
+    {
+      'default/main': [{ toolCalls: [{ name: 'delegate_task', input: { task: 'grandchild' } }], ...spend(100) }, { text: 'c done', ...spend(100) }],
+      'local/small': [],
+    },
+    2,
+    { maxTokens: 100_000 },
+  );
+  // The grandchild resolves to the same default adapter, so its script continues from the child's; it answers with the echo (100 + 20).
+  const task = await t.run('go');
+  assert.equal(task.status, 'completed');
+  assert.ok((task.delegatedUsage?.inputTokens ?? 0) >= 300, `got ${task.delegatedUsage?.inputTokens}`);
 });
