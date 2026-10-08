@@ -6,6 +6,10 @@
 - The task time limit (`maxWallMs`) now also aborts a model call or tool that is still running, not only the next turn; a complete reply that finishes just past the deadline stays `completed`. Time spent waiting on an interactive approval (including a subagent's) stops the clock. Known limits: the scheduler's own outer timer for a job is separate, and a side-effect tool cut off at the deadline may already have acted (its result is an error either way).
 - Tokens used by `delegate_task` subagents and by `vision_analyze` count against the task's token budget and the scheduler's per-run and daily job limits (`TaskRecord.delegatedUsage`, not stored, so costs are not double counted); a subagent's tokens are charged as each of its model calls completes, so a cut-off child still counts.
 
+### Scheduler hardening
+- Built-in job pre-checks now obey the job's effective permissions: `url_changed` needs `net.fetch` and uses the SSRF-guarded web client (size, time and redirect limits from `web.fetch`); `file_changed` needs `fs.read` and reads at most 5 MiB (plus the file size in the hash). A refused check fails the run with a clear note instead of fetching or reading anyway.
+- Output and failure text of script-only jobs are marked untrusted when the sandbox can reach the network, as for `run_command`, so the chat that receives the notification is contained.
+
 ### Security fixes (from the Codex review)
 - `jobs` is protected from the admin API (`PUT /api/config`): a script job's command runs on the sandbox without an approval, so adding one over a leaked admin key ran host code after a restart with no approval prompt. Edit jobs with `garnet` commands or config.json.
 - A tool call that sends model-composed headers or a body (`http_request`) no longer gets the containment exemption for owner-written or already-seen URLs: in a conversation that read untrusted content it asks, like any other outbound data. Plain URL fetches are unchanged.
