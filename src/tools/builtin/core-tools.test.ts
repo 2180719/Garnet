@@ -190,3 +190,10 @@ test('datetime rejects impossible dates and resolves clock changes predictably',
   assert.match((await at('2026-11-01T01:30', 'America/New_York'))!, /^2026-11-01T01:30:00-04:00/, 'a repeated time is the first one');
   assert.match((await at('2026-03-29T02:30', 'Europe/Berlin'))!, /^2026-03-29T03:30:00\+02:00/);
 });
+
+test('datetime handles very early years and refuses nonsense offsets', async () => {
+  const { call } = setup(datetimeTool({ defaultTimeZone: 'UTC', now: () => 0 }));
+  assert.match((await call('datetime', { operation: 'now', time: '0050-06-01', timezone: 'UTC' })).content, /^0050-06-01T00:00:00\+00:00/);
+  assert.equal((await call('datetime', { operation: 'now', time: '2026-01-01T00:00+25:00' })).status, 'error');
+  assert.equal((await call('datetime', { operation: 'now', time: '2026-01-01T00:00+05:99' })).status, 'error');
+});

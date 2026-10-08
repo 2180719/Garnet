@@ -136,4 +136,4 @@ GET, and optionally POST, to any public web API: for services that have no conne
    ```
 3. The agent asks for it by name (`credential: "notion"`). It cannot set `Authorization`, `Cookie` or key headers itself, cannot send a credential to another host or over plain http, and a server that echoes the secret back has it replaced with `[redacted]`. Without `credential` the request is anonymous.
 
-`write: true` adds POST (JSON or text bodies). A POST needs `message.send` as well as `net.fetch`, so it asks by default and shows the whole request. `credentials` and `write` can only be changed by editing `config.json`. Responses are text or JSON only, always untrusted, and bodies over the fetch limit are cut off.
+`write: true` adds POST (JSON or text bodies). A POST needs `message.send` as well as `net.fetch`, so it asks by default and shows the whole request. `credentials` and `write` can only be changed by editing `config.json`. A POST is never redirected to another origin (that includes an http address that upgrades to https: call the https address). Responses are text or JSON only, always untrusted, and bodies over the fetch limit are cut off.

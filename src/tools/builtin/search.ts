@@ -12,24 +12,29 @@ const MAX_FILE_BYTES = 1_000_000;
 const MAX_LINE_CHARS = 1000;
 /** Longest one file's matching may run. A regex with catastrophic backtracking is cut off here instead of freezing the process. */
 const MATCH_TIMEOUT_MS = 1000;
-const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+// O_NONBLOCK so a file swapped for a FIFO after the directory walk cannot hang the open.
+const O_NOFOLLOW = (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 const MATCHER = new Script('(() => { const hits = []; for (let i = 0; i < lines.length; i++) if (re.test(lines[i].slice(0, max))) hits.push(i); return hits; })()');
 
 /**
- * Indexes of the lines `re` matches. Runs in a throwaway `vm` context with a timeout, because a V8 regex cannot be
- * interrupted from JavaScript and a pattern like `^(a+)+$` would otherwise block the whole service. One call per
- * file (a call costs about 0.1 ms), so the timeout bounds each file, not each line.
+ * A matcher for one search: a single throwaway `vm` context holding the pattern, reused for every file. It runs
+ * each file's lines with a timeout, because a V8 regex cannot be interrupted from JavaScript and a pattern like
+ * `^(a+)+$` would otherwise block the whole service. The cost is one `vm` call per file (a fraction of a millisecond),
+ * and the timeout bounds each file, not each line.
  */
-export function matchLines(re: RegExp, lines: readonly string[]): number[] {
-  const context = createContext({ re: new RegExp(re.source, re.flags), lines, max: MAX_LINE_CHARS });
-  try {
-    return MATCHER.runInContext(context, { timeout: MATCH_TIMEOUT_MS }) as number[];
-  } catch (e) {
-    if ((e as { code?: string }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
-      throw new GarnetError('invalid_input', `The pattern took too long to match (over ${MATCH_TIMEOUT_MS} ms on one file). Use a simpler pattern without nested repetition such as (a+)+.`);
+export function lineMatcher(re: RegExp): (lines: readonly string[]) => number[] {
+  const context = createContext({ re: new RegExp(re.source, re.flags), lines: [] as readonly string[], max: MAX_LINE_CHARS });
+  return (lines) => {
+    context.lines = lines;
+    try {
+      return MATCHER.runInContext(context, { timeout: MATCH_TIMEOUT_MS }) as number[];
+    } catch (e) {
+      if ((e as { code?: string }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+        throw new GarnetError('invalid_input', `The pattern took too long to match (over ${MATCH_TIMEOUT_MS} ms on one file). Use a simpler pattern without nested repetition such as (a+)+.`);
+      }
+      throw e;
     }
-    throw e;
-  }
+  };
 }
 const MAX_FILES_SCANNED = 5000;
 
@@ -81,6 +86,7 @@ export const searchFilesTool: ToolDefinition<SearchInput> = {
         throw new GarnetError('invalid_input', `pattern is not a valid regular expression: ${(e as Error).message}`);
       }
     }
+    const matchLines = regex ? lineMatcher(regex) : () => [];
     const globRe = glob ? globToRegExp(glob) : null;
     const root = await realInWorkspace(ctx.workspace, path);
     const rootInfo = await lstat(root).catch(() => null);
@@ -102,7 +108,7 @@ export const searchFilesTool: ToolDefinition<SearchInput> = {
         const text = await handle.readFile('utf8');
         if (text.includes('\u0000')) return; // binary
         const lines = text.split(/\r?\n/);
-        for (const i of matchLines(regex!, lines)) {
+        for (const i of matchLines(lines)) {
           out.push(`${relative(base, file)}:${i + 1}: ${lines[i]!.slice(0, 300)}`);
           if (full()) return;
         }

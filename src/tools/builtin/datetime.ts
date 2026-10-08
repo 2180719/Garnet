@@ -16,7 +16,10 @@ function checkZone(tz: string): string {
 function partsIn(ms: number, tz: string): { y: number; mo: number; d: number; h: number; mi: number; s: number; weekday: string; offsetMin: number } {
   const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'long' });
   const p = Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
-  const asUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second));
+  const wall = new Date(0);
+  wall.setUTCFullYear(Number(p.year), Number(p.month) - 1, Number(p.day)); // Date.UTC would read years 0-99 as 1900-1999
+  wall.setUTCHours(Number(p.hour), Number(p.minute), Number(p.second), 0);
+  const asUtc = wall.getTime();
   return { y: Number(p.year), mo: Number(p.month), d: Number(p.day), h: Number(p.hour), mi: Number(p.minute), s: Number(p.second), weekday: p.weekday!, offsetMin: Math.round((asUtc - Math.floor(ms / 1000) * 1000) / MINUTE) };
 }
 
@@ -32,7 +35,7 @@ export function formatIn(ms: number, tz: string): string {
 
 /**
  * Parses a timestamp. With an explicit offset or `Z` it is exact; without one the wall time is read in `tz`
- * (two passes of offset correction settle it across a DST change).
+ * (see below for clock changes).
  */
 export function parseInstant(text: string, tz: string): number {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(text.trim());
@@ -50,6 +53,7 @@ export function parseInstant(text: string, tz: string): number {
     if (m[7].toUpperCase() === 'Z') return wall;
     const sign = m[7][0] === '-' ? -1 : 1;
     const digits = m[7].slice(1).replace(':', '');
+    if (Number(digits.slice(0, 2)) > 14 || Number(digits.slice(2)) > 59) throw new GarnetError('invalid_input', `"${m[7]}" is not a valid UTC offset.`);
     return wall - sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2))) * MINUTE;
   }
   // A wall time with no offset: try the offsets in force a day before and after. If both fit, the clocks went back

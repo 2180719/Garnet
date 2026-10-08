@@ -142,6 +142,15 @@ test('send_message: "owner" is resolved before the approval and the approved cha
   await t.gateway.stop(0);
 });
 
+test('a subagent session acts for the chat its parent is in', async () => {
+  const t = await paired();
+  const child = t.sessions.createSession('subagent: x', undefined, t.adaSession);
+  assert.equal(t.directory.origin(child.id).chat?.chatId, 'dm-ada');
+  const grandchild = t.sessions.createSession('subagent: y', undefined, child.id);
+  assert.equal(t.directory.origin(grandchild.id).chat?.chatId, 'dm-ada');
+  await t.gateway.stop(0);
+});
+
 test('a chat that is not a paired private chat is never an origin to send to', async () => {
   const t = await paired();
   const key = 'fake:default:dm-ada';
