@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { open } from 'node:fs/promises';
+import { open, lstat } from 'node:fs/promises';
 import { nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
-import { billedTokens, errorMessage, isGarnetError, GarnetError, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
+import { billedTokens, errorMessage, isGarnetError, GarnetError, type SessionTaint, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
 import { resolveInWorkspace, type Policy } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
 import type { FetchResponse } from '../tools/index.ts';
@@ -21,6 +21,8 @@ const MAX_SCRIPT_MESSAGE = 3500;
 /** Most bytes of a watched file that a `file_changed` pre-check reads (the file's size is hashed too). */
 const MAX_CHECK_FILE_BYTES = 5 * 1024 * 1024;
 /** Untrusted-source name for output of a script that could reach the network (same wording as the command tools). */
+/** Untrusted-source prefix for text derived from a `url_changed` pre-check. */
+const PRECHECK_URL_SOURCE = 'url_changed pre-check';
 export const NETWORKED_SCRIPT_SOURCE = 'command with network access';
 
 export type RunJob = (job: JobConfig, text: string, signal: AbortSignal) => Promise<{ task: TaskRecord; text: string }>;
@@ -59,6 +61,11 @@ export type SchedulerDeps = {
    * there to answer. Without it the built-in pre-checks fail closed.
    */
   policyFor?: (job: JobConfig) => Policy;
+  /**
+   * Untrusted content the job's runs carry (inherited from its creator, or read by an earlier run). Pre-checks are
+   * checked with it like the agent's own tools, so a tainted job cannot fetch a model-composed URL without approval.
+   */
+  taintFor?: (job: JobConfig) => SessionTaint | undefined;
   /** Whether the script sandbox can reach the network: its output is then untrusted text (like a networked `run_command`). */
   scriptNetworked?: boolean;
   /** Time zone for jobs without their own `timezone` (the owner's). Defaults to the host zone. */
@@ -310,7 +317,9 @@ export class Scheduler {
       fresh.consecutiveFailures += 1;
       if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) {
         fresh.paused = true;
-        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${errorMessage(e)}. Resume with: garnet jobs resume ${job.id}`);
+        // A url_changed failure can quote remote text (redirect targets), so the notice is untrusted.
+        const remote = job.check?.type === 'url_changed' ? [`${PRECHECK_URL_SOURCE} ${job.check.url}`] : [];
+        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${errorMessage(e)}. Resume with: garnet jobs resume ${job.id}`, remote);
       }
       store.saveState(fresh);
       this.log('error', `job ${job.id}: ${errorMessage(e)}`);
@@ -415,7 +424,7 @@ export class Scheduler {
 
   private requireAllowed(job: JobConfig, capability: 'fs.read' | 'net.fetch', target: string): void {
     const policy = this.deps.policyFor?.(job);
-    const decision = policy?.check(capability, { targets: [target] });
+    const decision = policy?.check(capability, { targets: [target], taint: this.deps.taintFor?.(job) });
     if (decision?.verdict === 'allow') return;
     const why = decision ? (decision.verdict === 'ask' ? `${capability} needs approval, and a pre-check cannot ask` : decision.reason) : 'no policy is configured';
     throw new GarnetError('denied', `Pre-check for job "${job.id}" refused: ${why}. Grant ${capability} to the job (and allow it globally) or remove the check.`);
@@ -425,6 +434,8 @@ export class Scheduler {
 /** A file's size plus its first `MAX_CHECK_FILE_BYTES`, or a marker when it cannot be read (missing, a directory, ...). */
 async function readBounded(file: string): Promise<Buffer> {
   try {
+    // Only regular files: opening a FIFO or device for reading could block forever.
+    if (!(await lstat(file)).isFile()) return Buffer.from('<not a regular file>');
     const handle = await open(file, 'r');
     try {
       const { size } = await handle.stat();

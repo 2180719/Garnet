@@ -622,6 +622,11 @@ export function buildService(garnet: Garnet, rawLog: LogFn, channels: ChannelAda
     scriptNetworked: sandbox?.networked ?? false,
     // Pre-checks run under the job's effective policy and the SSRF-guarded client, like web_fetch.
     policyFor: (job) => garnet.ownerPolicy.intersect(new Policy(job.permissions)),
+    taintFor: (job) => {
+      const runSession = garnet.gatewayStore.conversation(`job:${job.id}`);
+      const sources = [...new Set([...garnet.jobBook.taintOf(job.id), ...(runSession ? sessionTaint(garnet.store.events(runSession)).sources : [])])];
+      return { sources, ownerUrls: new Set(), seenUrls: new Set() };
+    },
     fetcher: new WebFetcher({ maxBytes: config.web.fetch.maxBytes, timeoutMs: config.web.fetch.timeoutSeconds * 1000, maxRedirects: config.web.fetch.maxRedirects }),
     store: garnet.jobStore,
     workspace: garnet.paths.workspace,
