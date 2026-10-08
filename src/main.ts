@@ -17,7 +17,7 @@ import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { ONBOARDING_TITLE, bootstrapPrompt, profileTool } from './onboarding/index.ts';
 import { BuiltinSkills, SkillStore, skillTools } from './skills/index.ts';
-import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
+import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, visionTool, type Transcriber } from './media/index.ts';
 import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, calculateTool, delegateTaskTool, clarifyTool, datetimeTool, editFileTool, executeCodeTool, execTool, fileTools, readArtifactTool, searchBackend, searchFilesTool, sessionSearchTool, todoListTool, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, requiresIsolation, type Sandbox, type SandboxOptions } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
@@ -233,6 +233,18 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       }),
     );
   }
+  // vision_analyze needs the media store (attachments) and any model that can see images, the session's own or a named one.
+  if (mediaStore) {
+    registry.register(
+      visionTool({
+        media: mediaStore,
+        resolve: (providerName, modelName) => resolveModel(config, secret, live, providerName, modelName, model),
+        providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name, vision: p.model.vision ?? (p.model.provider === 'anthropic' || p.model.provider === 'gemini') })),
+        refuse: () => refuse(),
+        recordSpend: (usage) => stats.recordSpend(usage),
+      }),
+    );
+  }
   // run_command exists only when the owner opted into exec; the tool set is fixed per session.
   let sandbox: Sandbox | null = null;
   if (config.permissions.exec !== 'deny') {
@@ -326,7 +338,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
               depth,
               maxDepth: config.delegation.maxDepth,
               providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name })),
-              resolve: (providerName, modelName) => resolveSubagentModel(config, secret, live, providerName, modelName, model),
+              resolve: (providerName, modelName) => resolveModel(config, secret, live, providerName, modelName, model),
               makeChild: (resolved) => {
                 const d = config.delegation;
                 const childBudget: Budget = { ...budget, maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
@@ -391,11 +403,11 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
 }
 
 /**
- * The model a subagent runs on. A named provider uses its own settings (and `modelName` overrides its model); with
+ * The model for a side task (a subagent, an image question). A named provider uses its own settings (and `modelName` overrides its model); with
  * only a model name, the live provider's settings are kept. With neither, the subagent shares the live model.
  * `shared` is the session's own model (also what tests and `--fake` inject), used as is when nothing is specified.
  */
-function resolveSubagentModel(config: GarnetConfig, secret: SecretLookup, live: NamedProvider, providerName: string | undefined, modelName: string | undefined, shared: ModelAdapter): ResolvedSubagentModel {
+function resolveModel(config: GarnetConfig, secret: SecretLookup, live: NamedProvider, providerName: string | undefined, modelName: string | undefined, shared: ModelAdapter): ResolvedSubagentModel {
   const known = listProviders(config).map((p) => p.name).join(', ');
   const target = providerName === undefined ? live : findProvider(config, providerName);
   if (!target) throw new GarnetError('invalid_input', `No provider named "${providerName}" (known: ${known}).`);
