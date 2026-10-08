@@ -191,7 +191,8 @@ update_repo() {
   case $origin in
     https://github.com/2180719/Garnet|https://github.com/2180719/Garnet.git|git@github.com:2180719/Garnet|git@github.com:2180719/Garnet.git|ssh://git@github.com/2180719/Garnet|ssh://git@github.com/2180719/Garnet.git)
       if [ "$repo" = "$default_repo" ]; then
-        git -C "$dir" remote set-url origin "$repo" && origin=$repo
+        moved=$(printf '%s' "$origin" | sed 's#2180719/Garnet#garnet-foundation/Garnet#')
+        git -C "$dir" remote set-url origin "$moved" && origin=$moved
       fi ;;
   esac
   if [ "$origin" != "$repo" ]; then

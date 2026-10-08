@@ -394,6 +394,11 @@ class Updater {
     }
   }
 
+  /** Saves the new address of a remote that still names the old GitHub location. Only called once the checkout is known to be fine. */
+  async saveMovedRemote(t: Target): Promise<void> {
+    if (t.movedTo && (await this.git(['remote', 'set-url', t.remote, t.movedTo])).code === 0) this.ok(`The repository moved; ${t.remote} now points at ${t.movedTo}.`);
+  }
+
   async update(v: Flags, refuse: (f: Failure) => number): Promise<number> {
     this.step('Looking for updates');
     const t = await this.resolveTarget(v.ref);
@@ -401,6 +406,7 @@ class Updater {
     await this.report(t);
     if (t.relation === 'same') {
       this.ok(`Already up to date (${short(t.head)}).`);
+      await this.saveMovedRemote(t);
       return 0;
     }
     if (t.relation !== 'behind') return refuse(this.localCommitsFailure(t));
@@ -430,7 +436,7 @@ class Updater {
     const merged = await this.git(['merge', '--ff-only', '--quiet', t.target]);
     if (merged.code !== 0) return await failAndRollback('Could not fast-forward the checkout.', firstLines(merged.stderr, 4));
     this.ok('Code updated');
-    if (t.movedTo && (await this.git(['remote', 'set-url', t.remote, t.movedTo])).code === 0) this.ok(`The repository moved; ${t.remote} now points at ${t.movedTo}.`);
+    await this.saveMovedRemote(t);
 
     if (depsChanged || v.reinstall) {
       installAttempted = true;

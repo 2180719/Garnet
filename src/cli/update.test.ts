@@ -458,3 +458,14 @@ test('an update repoints a remote that names the old GitHub location only once i
   assert.equal(git(f.install, 'config', '--get', 'remote.origin.url'), newUrl);
   assert.match(h.out.out, /The repository moved/);
 });
+
+test('an already up to date install still repoints a remote that names the old GitHub location', async () => {
+  const f = fixture();
+  const newUrl = 'https://github.com/garnet-foundation/Garnet.git';
+  git(f.install, 'config', `url.${join(f.root, 'origin.git')}.insteadOf`, newUrl);
+  git(f.install, 'remote', 'set-url', 'origin', 'https://github.com/2180719/Garnet.git');
+  const h = harness(f);
+  assert.equal(await h.go(['-y']), 0);
+  assert.match(h.out.out, /Already up to date/);
+  assert.equal(git(f.install, 'config', '--get', 'remote.origin.url'), newUrl);
+});
