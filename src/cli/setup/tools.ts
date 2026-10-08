@@ -52,6 +52,9 @@ async function searchStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Prom
     auto: cur.backend,
   });
   const search = { ...cur, backend };
+  // Settings that belong to the backend we are leaving would only confuse later.
+  if (backend !== 'searxng') delete search.searxngUrl;
+  if (!SEARCH_BACKENDS.find((c) => c.value === backend)?.keyEnv) delete search.apiKeyEnv;
   const spec = SEARCH_BACKENDS.find((c) => c.value === backend);
   if (backend === 'searxng') {
     search.searxngUrl = await p.text({ id: 'searxng-url', message: 'Address of your SearXNG instance', help: 'For example http://127.0.0.1:8888', ...(cur.searxngUrl ? { default: cur.searxngUrl } : {}), validate: validUrl });

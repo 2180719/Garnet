@@ -42,7 +42,7 @@ export function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; response
         catalogCalls.push(url);
         return new Response(JSON.stringify(opts.catalog ?? { data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
-      calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
+      calls.push({ url, headers: Object.fromEntries(new Headers(init?.headers).entries()) });
       const r = (responses.shift() ?? (() => ({ status: 200, body: { data: [] } })))(url);
       return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch,

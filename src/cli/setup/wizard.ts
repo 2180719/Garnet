@@ -27,7 +27,7 @@ import {
 } from '../../config/index.ts';
 import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV, GEMINI_BASE_URL } from '../../models/index.ts';
 import { loadCatalog, priceLine, refreshCatalog, suggestModels, type Catalog } from '../../catalog/index.ts';
-import { errorMessage } from '../../contracts/index.ts';
+import { errorMessage, GarnetError } from '../../contracts/index.ts';
 import { KEY_FILE_ENV, openSecretStore, unlockFrom, writePrivateFile } from '../../secrets/index.ts';
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
@@ -95,7 +95,11 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
       }
       if (section === 'done') break;
       if (section === 'service') wantService = true;
-      else await runSection(section === 'import' ? { id: 'import', run: importStep } : SECTIONS.find((x) => x.id === section)!, p, io, deps, st);
+      else {
+        const spec = section === 'import' ? { id: 'import' as const, run: importStep } : SECTIONS.find((x) => x.id === section);
+        if (!spec) throw new GarnetError('invalid_input', `Unknown setup section "${section}".`);
+        await runSection(spec, p, io, deps, st);
+      }
     }
     if (!st.changed && !wantService) {
       io.out('No changes.\n');
