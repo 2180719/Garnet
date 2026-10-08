@@ -203,7 +203,7 @@ class Updater {
     if (!this.d.exists(join(dir, '.git'))) {
       return {
         fail: `${dir} is not a git checkout, so it cannot be updated in place.`,
-        hint: 'Reinstall with install.sh (it keeps your data in GARNET_HOME): curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh',
+        hint: 'Reinstall with install.sh (it keeps your data in GARNET_HOME): curl -fsSL https://raw.githubusercontent.com/garnet-foundation/Garnet/main/install.sh | sh',
       };
     }
     const status = await this.git(['status', '--porcelain', '--untracked-files=no']);

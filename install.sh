@@ -4,7 +4,7 @@
 # run updates in place. If ~/.local/bin is not on your PATH it offers (on a terminal,
 # default yes) to add one line to your shell's rc file; it edits nothing otherwise.
 #
-#   curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/garnet-foundation/Garnet/main/install.sh | sh
 #   sh install.sh --help
 #
 # Everything lives in two places you can delete: the install directory and the
@@ -22,7 +22,7 @@ Usage: install.sh [options]
   --name <name>      Command name (default: garnet; env GARNET_BIN_NAME). Use another name if
                      something else called `garnet` should keep its name.
   --ref <branch>     Branch to install (default: main; env GARNET_REF)
-  --repo <url>       Git repository (default: https://github.com/2180719/Garnet; env GARNET_REPO)
+  --repo <url>       Git repository (default: https://github.com/garnet-foundation/Garnet; env GARNET_REPO)
   --no-setup         Do not start `garnet setup` afterwards
   -h, --help         Show this help
 EOF
@@ -31,7 +31,8 @@ EOF
 # Wrapped in a function so a partial download never runs half a script.
 main() {
   # Each GARNET_* variable also reads its deprecated RUBY_* twin (from before the rename).
-  repo=${GARNET_REPO:-${RUBY_REPO:-https://github.com/2180719/Garnet}}
+  default_repo=https://github.com/garnet-foundation/Garnet
+  repo=${GARNET_REPO:-${RUBY_REPO:-$default_repo}}
   ref=${GARNET_REF:-${RUBY_REF:-main}}
   data_dir=${XDG_DATA_HOME:-$HOME/.local/share}
   dir=${GARNET_INSTALL_DIR:-${RUBY_INSTALL_DIR:-$data_dir/garnet}}
@@ -186,6 +187,13 @@ update_repo() {
     die "$dir has local changes; leaving it alone. Commit or stash them (or use a separate --dir), then run this again."
   fi
   origin=$(git -C "$dir" remote get-url origin 2>/dev/null || echo '')
+  # The repository moved from garnet-foundation/Garnet to garnet-foundation/Garnet: follow it.
+  case $origin in
+    */2180719/Garnet|*/2180719/Garnet.git)
+      if [ "$repo" = "$default_repo" ]; then
+        git -C "$dir" remote set-url origin "$repo" && origin=$repo
+      fi ;;
+  esac
   if [ "$origin" != "$repo" ]; then
     warn "$dir tracks $origin, not $repo. Updating from $origin."
   fi
