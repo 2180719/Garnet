@@ -438,6 +438,7 @@ test('a custom provider can be named: it is added next to the others and becomes
   assert.equal(c.activeProvider, 'laptop');
   assert.equal(c.providers.laptop!.baseUrl, 'http://127.0.0.1:11434/v1');
   assert.equal(c.providers.laptop!.name, 'qwen3:8b');
+  assert.equal(c.providers.laptop!.apiKeyEnv, 'LAPTOP_API_KEY', 'a named provider gets its own key name');
   assert.equal(c.model.provider, 'anthropic', 'the default block is untouched');
   assert.match(h.out(), /Model +laptop: local · qwen3:8b/);
   // A bad name is refused.
@@ -958,6 +959,29 @@ test('fullscreen wizard: a named custom provider and a Gemini choice work throug
     assert.ok(script.check(h.config()), JSON.stringify(h.config().providers));
     assert.ok(seen.some((s) => s.includes('Save these settings?') && script.review.test(s)), 'the review names the provider in use');
   }
+});
+
+test('custom providers never share a key name: each new one derives its own', async () => {
+  const home = tempDir();
+  const h = harness({ home });
+  assert.equal(await h.run({ provider: 'openai-compatible', model: 'm1', 'base-url': 'https://a.example/v1', 'provider-name': 'work-a', telegram: false, discord: false, signal: false }).done, 0);
+  const h2 = harness({ home });
+  assert.equal(await h2.run({ section: ['model', 'done'], provider: 'openai-compatible', model: 'm2', 'base-url': 'https://b.example/v1', 'provider-name': 'work-b', telegram: false, discord: false, signal: false }).done, 0);
+  const c = h2.config();
+  assert.equal(c.providers['work-a']!.apiKeyEnv, 'WORK_A_API_KEY');
+  assert.equal(c.providers['work-b']!.apiKeyEnv, 'WORK_B_API_KEY');
+});
+
+test('re-running setup on a named provider that never set apiKeyEnv keeps the key it reads', async () => {
+  const home = tempDir();
+  const first = harness({ home });
+  assert.equal(await first.run({ provider: 'openai-compatible', model: 'm1', 'base-url': 'https://a.example/v1', 'provider-name': 'legacy', telegram: false, discord: false, signal: false }).done, 0);
+  const c = first.config();
+  delete c.providers.legacy!.apiKeyEnv;
+  writeFileSync(join(home, 'config.json'), JSON.stringify(c));
+  const again = harness({ home });
+  assert.equal(await again.run({ section: ['model', 'done'], provider: 'openai-compatible', model: 'm1', 'base-url': 'https://a.example/v1', 'provider-name': 'legacy' }).done, 0);
+  assert.equal(again.config().providers.legacy!.apiKeyEnv, 'ANTHROPIC_API_KEY');
 });
 
 const OR_FIXTURE = {
