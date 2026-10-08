@@ -1,5 +1,5 @@
 // `garnet backup` and `garnet restore`: a plain directory you can inspect, copy or archive.
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { parseConfig, pathsFor } from '../config/index.ts';
 import { createGarnet, VERSION } from '../main.ts';
@@ -52,6 +52,12 @@ function present(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Copies `from` to `to` keeping symlinks as links. cpSync follows a top-level symlink, which fails when its relative target does not exist beside the backup. */
+function copyVerbatim(from: string, to: string): void {
+  if (lstatSync(from).isSymbolicLink()) symlinkSync(readlinkSync(from), to);
+  else cpSync(from, to, { recursive: true, verbatimSymlinks: true });
 }
 
 /**
@@ -141,7 +147,7 @@ export function restoreWith(args: string[], io: Io, deps: RestoreDeps): number {
   const staging = join(home, `.restore-staging-${stamp}`);
   // The workspace is staged beside its destination, so the final move is a same-filesystem rename even for an external location.
   const stagedWorkspace = `${workspace}.restore-staging-${stamp}`;
-  const hasWorkspace = existsSync(join(from, 'workspace'));
+  const hasWorkspace = present(join(from, 'workspace'));
   // A workspace inside home is kept in the aside directory; an external one next to itself (same filesystem, no copying into home).
   const asideFor = (path: string, label: string) => (isInside(home, path) ? join(aside, label) : `${path}.pre-restore-${stamp}`);
   if (hasWorkspace && !isInside(home, workspace) && present(workspace)) {
@@ -155,11 +161,11 @@ export function restoreWith(args: string[], io: Io, deps: RestoreDeps): number {
     for (const name of readdirSync(from)) {
       if (!RESTORABLE.has(name) || name === 'workspace' || (name === 'ruby.db' && dbFile === 'garnet.db')) continue;
       // A pre-rename backup's ruby.db is restored as garnet.db: that is the file the app opens first, and any ruby.db in this home is moved aside below.
-      cpSync(join(from, name), join(staging, name === 'ruby.db' ? 'garnet.db' : name), { recursive: true, verbatimSymlinks: true });
+      copyVerbatim(join(from, name), join(staging, name === 'ruby.db' ? 'garnet.db' : name));
     }
     if (hasWorkspace) {
       mkdirSync(dirname(workspace), { recursive: true });
-      cpSync(join(from, 'workspace'), stagedWorkspace, { recursive: true, verbatimSymlinks: true });
+      copyVerbatim(join(from, 'workspace'), stagedWorkspace);
     }
     if (!present(join(staging, 'garnet.db'))) throw new Error('the staged database is missing');
 

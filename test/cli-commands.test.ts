@@ -1,6 +1,6 @@
 // CLI argument handling for the owner commands (memory, skills, flags).
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { tempDir } from './helpers.ts';
@@ -135,6 +135,20 @@ test('restore refuses an unusable backup config before moving anything', () => w
   assert.match(r.err, /nothing was changed/);
   assert.match(readFileSync(join(home, 'config.json'), 'utf8'), /Live\./);
   assert.ok(!readdirSync(home).some((n) => n.startsWith('pre-restore-')));
+}));
+
+test('restore keeps a backed-up workspace that is a dangling relative symlink', () => withOwnHome(async (home) => {
+  mkdirSync(join(home, 'real-ws'), { recursive: true });
+  writeFileSync(join(home, 'real-ws', 'data.txt'), 'KEEP');
+  symlinkSync('real-ws', join(home, 'workspace'));
+  const target = join(tempDir(), 'bk-symlink-ws');
+  assert.equal((await run('backup', target)).code, 0);
+  rmSync(join(home, 'workspace'), { force: true });
+  mkdirSync(join(home, 'workspace'));
+  writeFileSync(join(home, 'workspace', 'live.txt'), 'LIVE');
+  const r = await run('restore', target);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(lstatSync(join(home, 'workspace')).isSymbolicLink(), 'the backed-up link, not nothing, is at the workspace path');
 }));
 
 /** Every file under `dir` (except the database, which opening Garnet touches) with its content, for before/after comparisons. */
