@@ -31,7 +31,8 @@ npm link            # optional: puts `garnet` on your PATH (otherwise use `npm r
 ## Set up
 
 ```sh
-garnet setup     # model and key, persona, where commands run, channels (a checklist), background service, pairing
+garnet setup     # model and key, persona, channels (a checklist), then tools, web search, connectors, voice notes, spending cap, background service, pairing
+garnet config    # browse and edit every setting (fullscreen; / searches, c shows what you changed)
 garnet doctor    # checks the install and setup, and says how to fix what it finds
 garnet chat      # talk to Garnet in the terminal, full screen (`--inline` keeps it in the scrollback; `--fake` needs no key)
 garnet wake      # first-run wake-up: Garnet introduces itself and sets itself up by talking (`--fake` works offline)

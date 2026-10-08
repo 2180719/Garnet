@@ -35,11 +35,26 @@ from the options below, the current config, or safe defaults; nothing optional
   --name <name>             What the assistant is called (default Garnet)
   --owner <name>            What it calls you
   --notes <text>            One line about how you like answers
+  --timezone <zone>         Your IANA time zone, e.g. Europe/London (empty keeps the host's)
   --channels <list>         Channels to connect, comma separated: telegram,discord,signal (none for none).
                             On a re-run the enabled ones are kept unless you leave them out.
   --telegram / --no-telegram, --telegram-token-env <NAME>   (adds or removes one channel)
   --discord / --no-discord, --discord-token-env <NAME>
   --signal / --no-signal, --signal-number <+E164>, --signal-url <url>
+  --extras <more|defaults>  Run the tools and extras questions (default: more); defaults skips them
+  --tools <list>            What Garnet may do, comma separated: web,files,memory,reminders,messages,commands
+                            (none for nothing). Ticked ones keep their setting or start at ask; the rest are denied.
+  --web-search <backend>    duckduckgo | brave | tavily | searxng | none (needs --tools web)
+  --searxng-url <url>       SearXNG address (--web-search searxng)
+  --connectors <list>       Connectors to turn on: calendar,github,weather (none for none)
+  --github-repos <list>     Repositories the GitHub connector may use (owner/name or owner/*)
+  --github-write / --no-github-write    Let the GitHub connector comment (each comment still asks)
+  --weather-location <place>, --weather-units <metric|imperial>
+  --skills <list>           Built-in skills to turn on: daily-briefing,github-triage,web-research (none for none)
+  --voice <service>         none | openai | groq | other: speech to text for voice notes (a command backend in config is kept)
+  --voice-url <url>, --voice-model <id>, --voice-key-env <NAME>   (--voice other)
+  --daily-limit <usd>       Daily spending cap in US dollars (empty for none)
+  --dashboard / --no-dashboard   Serve the web dashboard (turns on the API, loopback only)
   --sandbox <where>         docker | ssh | local: where commands run (default: keep the current one)
   --ssh-host <host>         ssh: remote host name or IP address
   --ssh-user <user>         ssh: remote account (use a dedicated, unprivileged one)
@@ -71,7 +86,24 @@ const FLAGS = {
   name: { type: 'string' },
   owner: { type: 'string' },
   notes: { type: 'string' },
+  timezone: { type: 'string' },
   channels: { type: 'string' },
+  extras: { type: 'string' },
+  tools: { type: 'string' },
+  'web-search': { type: 'string' },
+  'searxng-url': { type: 'string' },
+  connectors: { type: 'string' },
+  'github-repos': { type: 'string' },
+  'github-write': { type: 'boolean' },
+  'weather-location': { type: 'string' },
+  'weather-units': { type: 'string' },
+  skills: { type: 'string' },
+  voice: { type: 'string' },
+  'voice-url': { type: 'string' },
+  'voice-model': { type: 'string' },
+  'voice-key-env': { type: 'string' },
+  'daily-limit': { type: 'string' },
+  dashboard: { type: 'boolean' },
   sandbox: { type: 'string' },
   'ssh-host': { type: 'string' },
   'ssh-user': { type: 'string' },
@@ -237,7 +269,7 @@ export async function init(args: string[], io: Io, opts: SetupCommandDeps = {}):
     const style = makeStyle(wantsColor(process.stdout));
     const p = opts.prompter ?? new TerminalPrompter({ style });
     // A prompter passed in (tests) keeps asking; otherwise setup picks the fullscreen or line prompter itself.
-    if (await p.confirm({ id: 'setup', message: 'Set up Garnet now? (model, key, persona, channels)', default: true })) return setup(args.filter((a) => a === '--plain' || a === '--inline'), io, { ...opts, ...(opts.prompter ? { prompter: p } : {}) });
+    if (await p.confirm({ id: 'setup', message: 'Set up Garnet now? (model, key, persona, channels, tools)', default: true })) return setup(args.filter((a) => a === '--plain' || a === '--inline'), io, { ...opts, ...(opts.prompter ? { prompter: p } : {}) });
   }
   writeConfig(home, defaultConfig());
   mkdirSync(join(home, 'workspace'), { recursive: true });
