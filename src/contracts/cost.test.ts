@@ -30,14 +30,12 @@ test('formatting: ? for unknown, four decimals under a cent', () => {
   assert.equal(formatUsd(1.234), '$1.23');
 });
 
-test('built-in prices exist only for known Anthropic models; configured pricing wins', () => {
-  assert.deepEqual(resolvePricing('anthropic', 'claude-opus-5-5'), { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
-  assert.equal(resolvePricing('anthropic', 'claude-opus-5-5-20260101')?.input, 4, 'a dated snapshot matches its alias');
-  assert.equal(resolvePricing('anthropic', 'claude-opus-5')?.input, 5, 'opus 5 is not opus 5.5');
-  assert.equal(resolvePricing('anthropic', 'claude-unknown-9'), undefined);
-  assert.equal(resolvePricing('openai-compatible', 'claude-opus-5-5'), undefined);
-  assert.equal(resolvePricing('fake', 'x'), undefined);
-  assert.equal(resolvePricing('openai-compatible', 'llama', { input: 0, output: 0 })?.input, 0, 'a local model can be priced at zero on purpose');
+test('configured pricing wins; otherwise the lookup; otherwise unknown', () => {
+  const found = { input: 4, output: 20 };
+  assert.deepEqual(resolvePricing(undefined, () => found), found);
+  assert.equal(resolvePricing(undefined, () => undefined), undefined);
+  assert.equal(resolvePricing(undefined), undefined);
+  assert.equal(resolvePricing({ input: 0, output: 0 }, () => found)?.input, 0, 'a local model can be priced at zero on purpose');
 });
 
 test('session cost sums model calls and is unknown if any call is', () => {

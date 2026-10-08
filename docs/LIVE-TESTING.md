@@ -15,7 +15,7 @@ Rules while you work: report what you ran and saw, not what you expect. Never pa
 | Needed for | Name | Config field |
 | --- | --- | --- |
 | Anthropic | `ANTHROPIC_API_KEY` | `model.apiKeyEnv` |
-| Google Gemini | `GEMINI_API_KEY` | `model.provider = "gemini"` (or a named entry in `providers`); `model.name` e.g. `gemini-2.5-flash`. Not covered by automated tests: live Gemini calls are untested until you try one. |
+| Google Gemini | `GEMINI_API_KEY` | `model.provider = "gemini"` (or a named entry in `providers`); `model.name` e.g. `gemini-3.8-flash` (`garnet models` lists current ones with prices). Not covered by automated tests: live Gemini calls are untested until you try one. |
 | OpenAI-compatible (OpenRouter) | any name, e.g. `OPENROUTER_API_KEY` | `model.apiKeyEnv`, plus `model.provider = "openai-compatible"` and `model.baseUrl` (`https://openrouter.ai/api/v1`) |
 | Telegram | `TELEGRAM_BOT_TOKEN` | `channels.telegram.tokenEnv` |
 | Discord | `DISCORD_BOT_TOKEN` | `channels.discord.tokenEnv` |

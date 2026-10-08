@@ -8,6 +8,7 @@ import { assistantName, frozenContext, projectInstructionsSection } from './cont
 import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type ActiveExtras, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, scopesForConversation, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
+import { catalogPricing, findModel, loadCatalog, type Catalog } from './catalog/index.ts';
 import { AnthropicModel, FakeModel, GeminiModel, OpenAICompatibleModel, SwitchableModel, onboardingScript } from './models/index.ts';
 import { denyAll, Policy, type Approver } from './policy/index.ts';
 import { Agent, LaneQueue, sessionTaint, subagentFactory, type ResolvedSubagentModel } from './runtime/index.ts';
@@ -261,9 +262,10 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   for (const { connector, tool } of registerConnectors(registry, config, secret, ownerTimeZone(config), inUse)) connectorOf.set(tool, connector);
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
+  const catalog = loadCatalog(paths.home); // cache or bundled snapshot; never fetches at startup
   const injected = options.model !== undefined || options.noModel === true;
   // The demo provider has no real model: the wake-up conversation plays its offline script instead of echoing.
-  const first = options.model ?? (options.noModel ? new FakeModel() : onboarding && activeProvider(config).model.provider === 'fake' ? new FakeModel(onboardingScript()) : createModel(config, secret));
+  const first = options.model ?? (options.noModel ? new FakeModel() : onboarding && activeProvider(config).model.provider === 'fake' ? new FakeModel(onboardingScript()) : createModel(config, secret, undefined, catalog));
   // An injected model is used as is (tests read it back); only a configured one can be swapped.
   const switchable = injected ? null : new SwitchableModel(first);
   const model: ModelAdapter = switchable ?? first;
@@ -281,7 +283,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
         saveText: (sessionId, text) => artifacts.save(sessionId, text),
       })
     : null;
-  const currentPricing = (): Pricing | undefined => resolvePricing(live.model.provider, live.model.name, live.model.pricing);
+  const currentPricing = (): Pricing | undefined => resolvePricing(live.model.pricing, () => catalogPricing(catalog, live.model, live.model.name));
   const stats = new StatsStore(db);
   /**
    * The daily spending cap (budgets.dailyUsd), for the owner's calendar day: refuses new model-calling
@@ -395,7 +397,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
         const target = findProvider(config, name);
         if (!target) throw new GarnetError('invalid_input', `No provider named "${name}" (known: ${listProviders(config).map((p) => p.name).join(', ')}).`);
         const settings: ModelConfig = modelName ? { ...target.model, name: modelName } : target.model;
-        const next = createModel(config, secret, settings); // throws, changing nothing, when the key is missing
+        const next = createModel(config, secret, settings, catalog); // throws, changing nothing, when the key is missing
         switchable!.swap(next);
         live = { name, model: settings, active: true };
         return live;
@@ -475,18 +477,18 @@ function registerConnectors(registry: ToolRegistry, config: GarnetConfig, secret
 }
 
 /** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */
-export function createModel(config: GarnetConfig, secret: SecretLookup, settings: ModelConfig = activeProvider(config).model): ModelAdapter {
+export function createModel(config: GarnetConfig, secret: SecretLookup, settings: ModelConfig = activeProvider(config).model, catalog: Catalog = loadCatalog()): ModelAdapter {
   const m = settings;
   if (m.provider === 'fake') return new FakeModel();
   const keyEnv = keyEnvOf(m);
   const apiKey = secret(keyEnv);
   if (m.provider === 'gemini') {
     if (!apiKey) throw new GarnetError('config', `No Gemini API key found. Set the ${keyEnv} environment variable or store it with \`garnet secrets set ${keyEnv}\`.`);
-    return new GeminiModel({ apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf, baseUrl: m.baseUrl });
+    return new GeminiModel({ apiKey, model: m.name, contextWindow: m.contextWindow ?? findModel(catalog, m, m.name)?.contextWindow ?? undefined, vision: m.vision, pdf: m.pdf, baseUrl: m.baseUrl });
   }
   if (m.provider === 'openai-compatible') {
     // Local servers often need no key.
-    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf });
+    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow ?? findModel(catalog, m, m.name)?.contextWindow ?? undefined, vision: m.vision, pdf: m.pdf });
   }
   if (!apiKey) {
     throw new GarnetError('config', `No API key found. Set the ${keyEnv} environment variable or store it with \`garnet secrets set ${keyEnv}\`, or run with --fake.`);
