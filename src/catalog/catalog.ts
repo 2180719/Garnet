@@ -71,9 +71,12 @@ export function findModel(catalog: Catalog, ref: ProviderRef, name: string): Cat
   return id === null ? undefined : catalog.models.find((m) => m.id === id);
 }
 
-/** Known price for a model, or undefined. Used to cost token usage when `model.pricing` is not configured. */
+/** Known price for a model, or undefined. Used to cost token usage when `model.pricing` is not configured. Cache-write rates are kept only where the adapter reports cache writes (Anthropic). */
 export function catalogPricing(catalog: Catalog, ref: ProviderRef, name: string): Pricing | undefined {
-  return findModel(catalog, ref, name)?.pricing ?? undefined;
+  const p = findModel(catalog, ref, name)?.pricing;
+  if (!p || ref.provider === 'anthropic') return p ?? undefined;
+  const { cacheWrite: _dropped, ...rest } = p;
+  return { ...rest, ...(p.tiers ? { tiers: p.tiers.map(({ cacheWrite: _t, ...t }) => t) } : {}) };
 }
 
 /** Models a provider offers according to the catalog, newest first, for suggestions. Empty for providers it cannot cover. */

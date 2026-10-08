@@ -428,7 +428,7 @@ export function createModel(config: GarnetConfig, secret: SecretLookup, settings
   }
   if (m.provider === 'openai-compatible') {
     // Local servers often need no key.
-    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf });
+    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow ?? findModel(catalog, m, m.name)?.contextWindow ?? undefined, vision: m.vision, pdf: m.pdf });
   }
   if (!apiKey) {
     throw new GarnetError('config', `No API key found. Set the ${keyEnv} environment variable or store it with \`garnet secrets set ${keyEnv}\`, or run with --fake.`);

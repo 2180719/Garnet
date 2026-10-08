@@ -5,7 +5,16 @@ import type { SessionEvent } from './session.ts';
 import type { Usage } from './usage.ts';
 
 /** USD per million tokens. Cache prices may be omitted; they are then derived from `input` (see `CACHE_READ_MULTIPLIER`). */
-export type Pricing = { input: number; output: number; cacheRead?: number | undefined; cacheWrite?: number | undefined };
+export type Pricing = { input: number; output: number; cacheRead?: number | undefined; cacheWrite?: number | undefined; tiers?: readonly PriceTier[] | undefined };
+
+/** Higher rates a model charges for a whole call whose prompt (input + cache read + cache write tokens) exceeds `minPromptTokens`. */
+export type PriceTier = { minPromptTokens: number; input: number; output: number; cacheRead?: number | undefined; cacheWrite?: number | undefined };
+
+/** The rates that apply to a call with this many prompt tokens: the highest tier it exceeds, else the base rates. */
+function ratesFor(pricing: Pricing, promptTokens: number): Pricing {
+  const tier = (pricing.tiers ?? []).filter((t) => promptTokens > t.minPromptTokens).sort((a, b) => b.minPromptTokens - a.minPromptTokens)[0];
+  return tier ?? pricing;
+}
 
 /**
  * Configured pricing wins; otherwise whatever `lookup` knows (the model catalog, supplied by the composition
@@ -28,6 +37,7 @@ export function derivedCachePrices(pricing: Pricing): ('cacheRead' | 'cacheWrite
 /** USD for one usage record, or null when it cannot be known. */
 export function costOf(usage: Usage, pricing: Pricing | undefined): number | null {
   if (!pricing || usage.inputTokens === null || usage.outputTokens === null) return null;
+  pricing = ratesFor(pricing, usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0));
   let usd = usage.inputTokens * pricing.input + usage.outputTokens * pricing.output;
   for (const [tokens, price] of [
     [usage.cacheReadTokens, pricing.cacheRead ?? (tokens0(usage.cacheReadTokens) ? pricing.input * CACHE_READ_MULTIPLIER : undefined)],

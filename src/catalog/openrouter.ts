@@ -1,5 +1,5 @@
 // Reads OpenRouter's public model list (https://openrouter.ai/api/v1/models, no key needed) into catalog entries.
-import type { Pricing } from '../contracts/index.ts';
+import type { PriceTier, Pricing } from '../contracts/index.ts';
 import type { CatalogModel, ProviderRef } from './types.ts';
 
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
@@ -22,14 +22,27 @@ function perMillion(v: unknown): number | undefined {
   return Number.isFinite(n) && n >= 0 ? Number((n * 1e6).toPrecision(6)) : undefined;
 }
 
-function pricingOf(raw: Raw['pricing']): Pricing | null {
-  if (!raw) return null;
+function ratesOf(raw: Record<string, unknown>): Pricing | null {
   const input = perMillion(raw['prompt']);
   const output = perMillion(raw['completion']);
   if (input === undefined || output === undefined) return null; // missing, or "-1" for variable pricing
   const cacheRead = perMillion(raw['input_cache_read']);
   const cacheWrite = perMillion(raw['input_cache_write']);
   return { input, output, ...(cacheRead !== undefined ? { cacheRead } : {}), ...(cacheWrite !== undefined ? { cacheWrite } : {}) };
+}
+
+/** Base rates plus the higher long-prompt tiers OpenRouter lists under `overrides`. */
+function pricingOf(raw: Raw['pricing']): Pricing | null {
+  if (!raw) return null;
+  const base = ratesOf(raw);
+  if (!base) return null;
+  const tiers: PriceTier[] = [];
+  for (const o of Array.isArray(raw.overrides) ? (raw.overrides as Record<string, unknown>[]) : []) {
+    const rates = o && typeof o === 'object' ? ratesOf(o) : null;
+    const min = num(o?.['min_prompt_tokens']);
+    if (rates && min !== null) tiers.push({ minPromptTokens: min, ...rates });
+  }
+  return tiers.length ? { ...base, tiers } : base;
 }
 
 /**
@@ -50,7 +63,7 @@ export function parseOpenRouter(body: unknown): CatalogModel[] {
       contextWindow: num(raw.context_length),
       maxOutputTokens: num(raw.top_provider?.max_completion_tokens),
       pricing: pricingOf(raw.pricing),
-      tiered: Array.isArray(raw.pricing?.overrides) && raw.pricing.overrides.length > 0,
+      tiered: (pricingOf(raw.pricing)?.tiers?.length ?? 0) > 0,
       vision: input.includes('image'),
       pdf: input.includes('file'),
     });

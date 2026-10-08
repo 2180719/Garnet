@@ -294,3 +294,16 @@ test('providers add and models look up the provider\'s models and current prices
   out.length = 0;
   assert.equal(await modelsCommand(['nope', '--offline'], io, { home }), 2);
 });
+
+test('createModel takes the context window from the catalog for covered endpoints, and from config first', async () => {
+  const { createModel } = await import('../src/main.ts');
+  const { loadCatalog, findModel } = await import('../src/catalog/index.ts');
+  const base = defaultConfig();
+  const known = loadCatalog();
+  const win = findModel(known, { provider: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1' }, 'anthropic/claude-opus-5.5')?.contextWindow;
+  assert.ok(win && win > 128_000, 'the catalog has a larger window than the 128k fallback');
+  const mk = (extra: object) => createModel(base, () => 'k', { ...base.model, provider: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1', name: 'anthropic/claude-opus-5.5', ...extra }, known);
+  assert.equal(mk({}).capabilities.contextWindow, win);
+  assert.equal(mk({ contextWindow: 50_000 }).capabilities.contextWindow, 50_000);
+  assert.equal(createModel(base, () => 'k', { ...base.model, provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:1/v1', name: 'llama3' }, known).capabilities.contextWindow, 128_000, 'an uncovered server keeps the default');
+});

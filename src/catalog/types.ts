@@ -10,7 +10,7 @@ export type CatalogModel = {
   maxOutputTokens: number | null;
   /** Base price per million tokens; `null` when the source has no fixed price (routers, variable-priced models). */
   pricing: Pricing | null;
-  /** The source lists a higher price for long prompts; `pricing` is the base tier, so costs are a lower bound there. */
+  /** The price has higher long-prompt rates (`pricing.tiers`); costing applies them per call. */
   tiered: boolean;
   /** Accepts images / PDFs as input. */
   vision: boolean;

@@ -26,7 +26,7 @@ test('parseOpenRouter: per-token strings become USD per million, junk entries ar
       raw('vendor/image-only', { architecture: { input_modalities: ['text'], output_modalities: ['image'] } }),
       raw('openrouter/auto', { pricing: { prompt: '-1', completion: '-1' } }),
       raw('vendor/free', { pricing: { prompt: '0', completion: '0' } }),
-      raw('vendor/tiered', { pricing: { prompt: '0.000001', completion: '0.000002', overrides: [{ min_prompt_tokens: 100_000 }] } }),
+      raw('vendor/tiered', { pricing: { prompt: '0.000001', completion: '0.000002', overrides: [{ min_prompt_tokens: 100_000, prompt: '0.000002', completion: '0.000004' }] } }),
       { nope: true },
     ],
   });
@@ -72,13 +72,23 @@ test('the bundled snapshot prices the current Anthropic, Gemini and OpenAI model
   assert.equal(catalogPricing(c, { provider: 'anthropic' }, 'claude-unknown-9'), undefined);
 });
 
-test('a catalog price with cache rates still costs a call whose usage omits cache details', async () => {
+test('catalog prices keep cache-write rates only where the adapter reports cache writes', async () => {
   const { costOf } = await import('../contracts/index.ts');
-  const price = catalogPricing(loadCatalog(), { provider: 'gemini' }, 'gemini-3.8-flash');
-  assert.ok(price?.cacheWrite !== undefined, 'the fixture model has a cache-write rate');
-  // What the OpenAI-compatible adapter reports for { prompt_tokens: 1000, completion_tokens: 100 }.
-  const cost = costOf({ inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 }, price);
+  const gemini = catalogPricing(loadCatalog(), { provider: 'gemini' }, 'gemini-3.8-flash');
+  assert.ok(gemini && gemini.cacheWrite === undefined, 'no write rate: the OpenAI-compatible adapter reports no cache writes');
+  // Usage as that adapter reports it for a call with no cache details: reads known, writes unknown.
+  const cost = costOf({ inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: null }, gemini);
   assert.ok(cost !== null && cost > 0);
+  assert.ok(catalogPricing(loadCatalog(), { provider: 'anthropic' }, 'claude-opus-5-5')?.cacheWrite !== undefined);
+});
+
+test('long-prompt tiers are parsed and applied to the call that crosses them', async () => {
+  const { costOf } = await import('../contracts/index.ts');
+  const haiku = catalogPricing(loadCatalog(), { provider: 'anthropic' }, 'claude-haiku-5-5');
+  assert.deepEqual(haiku?.tiers?.map((t) => [t.minPromptTokens, t.input, t.output]), [[100_000, 0.5, 2.5]]);
+  const call = (inputTokens: number) => costOf({ inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, haiku);
+  assert.equal(call(100_000), 0.01, 'at the threshold the base rate applies ($0.10 per million)');
+  assert.equal(call(100_001), 0.0500005, 'over it the whole call is billed at the higher rate ($0.50 per million)');
 });
 
 test('a cache whose entries are damaged is ignored rather than crashing suggestions', () => {
