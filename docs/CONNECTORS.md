@@ -124,3 +124,16 @@ The goal was a small set that is useful to most people on day one, safe by const
 - **Email is not in this set.** Mail needs IMAP and SMTP, which are not HTTP, so they cannot go through the SSRF-guarded client every connector uses, and the HTTP mail APIs (Gmail, Microsoft Graph) need OAuth apps with refresh tokens. Email is also the largest prompt-injection surface. It is planned with the MCP client and an email connector ([FEATURE-GAPS.md](FEATURE-GAPS.md), items 1.6 and 2.9) rather than squeezed into this one.
 
 Adding a connector is described in `src/connectors/AGENTS.md`.
+
+### http (`http_request`)
+
+GET, and optionally POST, to any public web API: for services that have no connector of their own (a notes API, a home server's public endpoint, a webhook).
+
+1. `garnet secrets set NOTION_TOKEN` (or any name).
+2. Declare the credential in `config.json`, by name, with the only hosts it may be sent to:
+   ```json
+   { "connectors": { "enabled": ["http"], "http": { "write": false, "credentials": { "notion": { "secretEnv": "NOTION_TOKEN", "hosts": ["api.notion.com"], "header": "Authorization", "prefix": "Bearer " } } } } }
+   ```
+3. The agent asks for it by name (`credential: "notion"`). It cannot set `Authorization`, `Cookie` or key headers itself, cannot send a credential to another host or over plain http, and a server that echoes the secret back has it replaced with `[redacted]`. Without `credential` the request is anonymous.
+
+`write: true` adds POST (JSON or text bodies). A POST needs `message.send` as well as `net.fetch`, so it asks by default and shows the whole request. `credentials` and `write` can only be changed by editing `config.json`. Responses are text or JSON only, always untrusted, and bodies over the fetch limit are cut off.
