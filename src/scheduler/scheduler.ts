@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { open, lstat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
 import { billedTokens, errorMessage, isGarnetError, GarnetError, type SessionTaint, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
 import { resolveInWorkspace, type Policy } from '../policy/index.ts';
@@ -434,11 +435,13 @@ export class Scheduler {
 /** A file's size plus its first `MAX_CHECK_FILE_BYTES`, or a marker when it cannot be read (missing, a directory, ...). */
 async function readBounded(file: string): Promise<Buffer> {
   try {
-    // Only regular files: opening a FIFO or device for reading could block forever.
-    if (!(await lstat(file)).isFile()) return Buffer.from('<not a regular file>');
-    const handle = await open(file, 'r');
+    // Open without blocking or following a final symlink, then check the opened handle: a path swapped for a FIFO or
+    // symlink after validation can neither hang the open nor redirect the read.
+    const handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
     try {
-      const { size } = await handle.stat();
+      const stat = await handle.stat();
+      if (!stat.isFile()) return Buffer.from('<not a regular file>');
+      const { size } = stat;
       const buf = Buffer.alloc(Math.min(size, MAX_CHECK_FILE_BYTES));
       const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
       return Buffer.concat([Buffer.from(`${size}\n`), buf.subarray(0, bytesRead)]);
