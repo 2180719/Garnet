@@ -187,7 +187,7 @@ update_repo() {
     die "$dir has local changes; leaving it alone. Commit or stash them (or use a separate --dir), then run this again."
   fi
   origin=$(git -C "$dir" remote get-url origin 2>/dev/null || echo '')
-  # The repository moved from garnet-foundation/Garnet to garnet-foundation/Garnet: follow it.
+  # The repository moved from 2180719/Garnet to garnet-foundation/Garnet: follow it.
   case $origin in
     https://github.com/2180719/Garnet|https://github.com/2180719/Garnet.git|git@github.com:2180719/Garnet|git@github.com:2180719/Garnet.git|ssh://git@github.com/2180719/Garnet|ssh://git@github.com/2180719/Garnet.git)
       if [ "$repo" = "$default_repo" ]; then
