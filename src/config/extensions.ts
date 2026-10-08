@@ -8,7 +8,7 @@ export const BUILTIN_SKILLS = ['daily-briefing', 'github-triage', 'web-research'
 export type BuiltinSkillName = (typeof BUILTIN_SKILLS)[number];
 
 /** Built-in connectors in src/connectors. */
-export const CONNECTORS = ['calendar', 'github', 'weather'] as const;
+export const CONNECTORS = ['calendar', 'github', 'http', 'weather'] as const;
 export type ConnectorName = (typeof CONNECTORS)[number];
 
 /**

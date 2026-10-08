@@ -565,6 +565,24 @@ export const configSchema = z
           })
           .prefault({})
           .describe('Calendar connector: read-only events from an ICS feed, shown in your time zone.'),
+        http: z
+          .object({
+            credentials: z
+              .record(
+                z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, 'lowercase letters, digits and dashes'),
+                z.object({
+                  secretEnv: z.string().min(1).max(100).describe('Environment variable (or encrypted secret) holding the token or key. Only its name is stored here.'),
+                  hosts: z.array(z.string().regex(/^[a-z0-9.-]+(?::\d+)?$/, 'a lowercase host name, e.g. api.example.com')).min(1).describe('The only hosts this credential may be sent to (exact host names, https only). A model that was tricked cannot send it anywhere else.'),
+                  header: z.string().regex(/^[A-Za-z0-9-]+$/).default('Authorization').describe('Header that carries the secret.'),
+                  prefix: z.string().max(20).default('Bearer ').describe('Text placed before the secret in the header (use "" for a bare API key).'),
+                }),
+              )
+              .default({})
+              .describe('Named credentials the agent may ask for by name, e.g. { "notion": { "secretEnv": "NOTION_TOKEN", "hosts": ["api.notion.com"] } }. Without one, requests carry no credentials.'),
+            write: z.boolean().default(false).describe('Offer POST requests. A POST needs message.send as well as net.fetch, so it asks by default and shows the whole request.'),
+          })
+          .prefault({})
+          .describe('HTTP request connector: GET (and optionally POST) to any public web API, with credentials only from the list above, only to their hosts.'),
         weather: z
           .object({
             units: z.enum(['metric', 'imperial']).default('metric').describe('metric: °C, km/h, mm. imperial: °F, mph, inch.'),

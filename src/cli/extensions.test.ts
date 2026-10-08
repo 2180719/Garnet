@@ -80,7 +80,7 @@ test('enable, disable and reset built-ins globally or per scope; config.json is 
 test('bad names, scopes and usage are refused without touching config.json', async () => {
   const before = readFileSync(join(home, 'config.json'), 'utf8');
   const cases: [string[], RegExp][] = [
-    [['connectors', 'enable', 'gmail'], /No built-in connector named "gmail"\. Available: calendar, github, weather/],
+    [['connectors', 'enable', 'gmail'], /No built-in connector named "gmail"\. Available: calendar, github, http, weather/],
     [['skills', 'enable', 'nope'], /No built-in skill named "nope"/],
     [['connectors', 'enable', 'weather', '--channel', 'whatsapp'], /"whatsapp" is not a scope/],
     [['skills', 'enable', 'web-research', '--channel', 'route:Bad Name'], /is not a scope/],
