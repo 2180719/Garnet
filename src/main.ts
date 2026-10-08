@@ -18,7 +18,7 @@ import { importedArchiveSection } from './migrate/index.ts';
 import { ONBOARDING_TITLE, bootstrapPrompt, profileTool } from './onboarding/index.ts';
 import { BuiltinSkills, SkillStore, skillTools } from './skills/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
-import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
+import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, calculateTool, clarifyTool, datetimeTool, editFileTool, execTool, fileTools, readArtifactTool, searchBackend, searchFilesTool, todoListTool, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, requiresIsolation, type Sandbox, type SandboxOptions } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
@@ -178,7 +178,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(sessionId) ?? null, config.routes, [config.skills, config.connectors]), [...connectorOf.values()]);
   const extrasFor = (sessionId: string): ActiveExtras => frozenContext(store.events(sessionId))?.extras ?? selectExtras(sessionId);
   const builtinSkillFor = (name: string, sessionId: string) => (extrasFor(sessionId).skills.includes(name) ? builtinSkills.get(name) : undefined);
-  for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills, { builtin: builtinSkillFor }), readArtifactTool(artifacts)]) registry.register(tool);
+  for (const tool of [...fileTools, editFileTool, searchFilesTool, todoListTool, clarifyTool, calculateTool, datetimeTool({ defaultTimeZone: ownerTimeZone(config) }), memoryTool(memory), ...skillTools(skills, { builtin: builtinSkillFor }), readArtifactTool(artifacts)]) registry.register(tool);
   // Like the other optional tools, set_profile exists only when its permission is not deny (the tool set is fixed per session).
   const onboarding = Boolean(options.onboarding) && config.permissions['memory.write'] !== 'deny';
   if (onboarding) registry.register(profileTool(paths.home));

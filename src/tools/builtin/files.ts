@@ -15,7 +15,7 @@ const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
  * Returns the real path of an existing entry, or the logical path if it does
  * not exist yet.
  */
-async function realInWorkspace(workspace: string, path: string): Promise<string> {
+export async function realInWorkspace(workspace: string, path: string): Promise<string> {
   const logical = resolveInWorkspace(workspace, path);
   const real = await realpath(logical).catch((e: unknown) => {
     if ((e as { code?: string }).code === 'ENOENT') return null;
