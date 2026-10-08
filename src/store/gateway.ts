@@ -108,6 +108,22 @@ export class GatewayStore {
     return r && { channel: r.channel as string, account: r.account as string, chatId: r.chat_id as string };
   }
 
+  /**
+   * The sessions whose history `sessionId` may search: every session that heard from the same chat (a chat gets a
+   * new session after `/new`), or, for a session no chat ever reached and no conversation is bound to (the
+   * terminal), the other such sessions; an API key's or a job's session sees only itself (subagent sessions are never searched). Chats never see each other's history or the owner's terminal history.
+   */
+  searchableSessions(sessionId: string): string[] {
+    const chat = this.lastChatForSession(sessionId);
+    // A session bound to a conversation that is not a chat (an API key's, a job's) sees only itself: its history is
+    // not linked to later sessions of that conversation, and other keys and jobs are other people's.
+    if (!chat && this.keyForSession(sessionId)) return [sessionId];
+    const rows = chat
+      ? (this.db.prepare('SELECT DISTINCT session_id FROM inbox WHERE channel = ? AND account = ? AND chat_id = ? AND session_id IS NOT NULL').all(chat.channel, chat.account, chat.chatId) as Row[])
+      : (this.db.prepare('SELECT id AS session_id FROM sessions WHERE parent_id IS NULL AND id NOT IN (SELECT session_id FROM inbox WHERE session_id IS NOT NULL) AND id NOT IN (SELECT session_id FROM conversations)').all() as Row[]);
+    return [...new Set([sessionId, ...rows.map((r) => r.session_id as string)])];
+  }
+
   setInbox(id: string, status: InboxStatus, link: { sessionId?: string; taskId?: string } = {}): void {
     this.db
       .prepare('UPDATE inbox SET status = ?, session_id = COALESCE(?, session_id), task_id = COALESCE(?, task_id) WHERE id = ?')

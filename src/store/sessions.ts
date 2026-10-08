@@ -19,10 +19,22 @@ export class SessionStore {
     this.db = db;
   }
 
-  createSession(title: string | null = null, id: string = newId('ses')): SessionRow {
+  /** `parentId` marks a subagent's session: the session that started it. */
+  createSession(title: string | null = null, id: string = newId('ses'), parentId: string | null = null): SessionRow {
     const at = nowIso();
-    this.db.prepare('INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run(id, title, at, at);
+    this.db.prepare('INSERT INTO sessions (id, title, created_at, updated_at, parent_id) VALUES (?, ?, ?, ?, ?)').run(id, title, at, at, parentId);
     return { id, title, createdAt: at, updatedAt: at };
+  }
+
+  /** The session a conversation really belongs to: follows subagent links up to the session no one started. */
+  rootOf(sessionId: string): string {
+    let id = sessionId;
+    for (let hops = 0; hops < 10; hops++) {
+      const r = this.db.prepare('SELECT parent_id FROM sessions WHERE id = ?').get(id) as { parent_id: string | null } | undefined;
+      if (!r?.parent_id) return id;
+      id = r.parent_id;
+    }
+    return id;
   }
 
   getSession(id: string): SessionRow | undefined {

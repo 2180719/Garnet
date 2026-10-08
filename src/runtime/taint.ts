@@ -13,10 +13,11 @@ import { normalizeUrl, urlsInText } from '../policy/index.ts';
 /**
  * User-message sources whose text the owner did not write: a note recording a
  * message Ruby sent on its own (`notification`) and the continuation after an
- * approval (`approval`, which embeds a model-composed summary). URLs in them
+ * approval (`approval`, which embeds a model-composed summary), and the task a
+ * parent model wrote for a subagent (`subagent`). URLs in them
  * are never the owner's.
  */
-const NOT_OWNER_SOURCES = new Set(['notification', 'approval']);
+const NOT_OWNER_SOURCES = new Set(['notification', 'approval', 'subagent']);
 
 export function sessionTaint(events: readonly SessionEvent[]): SessionTaint {
   const sources: string[] = [];

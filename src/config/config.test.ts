@@ -223,3 +223,24 @@ test('sandbox.ssh: documented non-secret options, safe defaults, required fields
     assert.ok(ssh[key]?.description && !ssh[key]!.description!.includes('—'), key);
   }
 });
+
+test('a version 3 config (before delegation and the http connector) migrates to the current version with defaults', () => {
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 3, persona: 'Old.' }));
+  const { config, migrated } = loadConfig(home);
+  assert.equal(migrated, true);
+  assert.ok(existsSync(join(home, 'config.json.bak-v3')));
+  assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
+  assert.equal(config.delegation.enabled, true);
+  assert.equal(config.delegation.maxDepth, 2);
+  assert.deepEqual(config.connectors.http, { credentials: {}, write: false });
+});
+
+test('http credentials are named in secretNames only while the http connector is on, and are protected', async () => {
+  const { isProtectedConfigPath, secretNames } = await import('./index.ts');
+  const credentials = { notion: { secretEnv: 'NOTION_TOKEN', hosts: ['api.notion.com'] } };
+  assert.ok(!secretNames(parseConfig({ version: CONFIG_VERSION, connectors: { http: { credentials } } })).includes('NOTION_TOKEN'));
+  assert.ok(secretNames(parseConfig({ version: CONFIG_VERSION, connectors: { enabled: ['http'], http: { credentials } } })).includes('NOTION_TOKEN'));
+  assert.ok(isProtectedConfigPath('connectors.http.credentials.notion.hosts'));
+  assert.ok(isProtectedConfigPath('connectors.http.write'));
+});

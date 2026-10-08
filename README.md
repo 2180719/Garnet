@@ -124,7 +124,7 @@ Web pages can carry instructions meant for Garnet (prompt injection). Once a con
 
 ### Built-in skills and connectors (optional, off by default)
 
-Garnet ships three skills (`daily-briefing`, `web-research`, `github-triage`) and three connectors: `calendar` (your calendar's private ICS feed, read-only), `github` (issues, pull requests, notifications; comments only if you allow them) and `weather` (Open-Meteo, keyless). Nothing is on until you enable it, everywhere or for one channel, chat, API key, job or shared conversation:
+Garnet ships three skills (`daily-briefing`, `web-research`, `github-triage`) and four connectors: `calendar` (your calendar's private ICS feed, read-only), `github` (issues, pull requests, notifications; comments only if you allow them), `weather` (Open-Meteo, keyless) and `http` (any public web API, with credentials you list by name). Nothing is on until you enable it, everywhere or for one channel, chat, API key, job or shared conversation:
 
 ```sh
 garnet connectors enable calendar --channel telegram

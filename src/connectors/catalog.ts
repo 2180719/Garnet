@@ -2,6 +2,7 @@ import { CONNECTORS, type ConnectorName, type GarnetConfig } from '../config/ind
 import type { Capability, ToolDefinition } from '../contracts/index.ts';
 import { calendarTool } from './calendar.ts';
 import { githubTool } from './github.ts';
+import { httpRequestTool } from './request.ts';
 import type { ConnectorDeps } from './http.ts';
 import { weatherTool } from './weather.ts';
 
@@ -46,6 +47,14 @@ export const CONNECTOR_INFO: Record<ConnectorName, ConnectorInfo> = {
     hosts: (s) => [hostOf(s.github.apiUrl)],
     secrets: (s) => [{ name: s.github.tokenEnv, required: false, why: 'a token (optional for public repositories; needed for private ones, notifications and comments)' }],
   },
+  http: {
+    name: 'http',
+    tool: 'http_request',
+    summary: 'GET (optionally POST) to any public web API, with credentials you list by name, sent only to the hosts you list for them.',
+    needs: (s) => (s.http.write ? ['net.fetch', 'message.send'] : ['net.fetch']),
+    hosts: (s) => [...new Set(Object.values(s.http.credentials).flatMap((c) => c.hosts)), 'any public host (limited by web.allowHosts)'],
+    secrets: (s) => Object.entries(s.http.credentials).map(([name, c]) => ({ name: c.secretEnv, required: false, why: `the "${name}" credential` })),
+  },
   weather: {
     name: 'weather',
     tool: 'weather',
@@ -64,6 +73,8 @@ export function connectorTools(names: readonly ConnectorName[], settings: Connec
         return { connector: name, tool: calendarTool(settings.calendar, deps) as ToolDefinition };
       case 'github':
         return { connector: name, tool: githubTool(settings.github, deps) as ToolDefinition };
+      case 'http':
+        return { connector: name, tool: httpRequestTool(settings.http, deps) as ToolDefinition };
       case 'weather':
         return { connector: name, tool: weatherTool(settings.weather, deps) as ToolDefinition };
     }

@@ -15,3 +15,4 @@ export { ApprovalStore, type ApprovalRow, type ApprovalStatus } from './approval
 export { JobStore, type JobRun, type JobRunStatus, type JobState, type StoredJob } from './jobs.ts';
 export { StatsStore, type SessionSummary, type FailureRow } from './stats.ts';
 export { pruneOperationalRows, mediaIdsInUse, type RetentionDays, type RetentionResult } from './retention.ts';
+export { SearchIndex, type SearchHit } from './search.ts';

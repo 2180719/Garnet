@@ -196,6 +196,10 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX model_spend_by_time ON model_spend(at);
   `,
+  // A subagent's session points at the session that started it, so it is scoped (chat, search, built-ins) as its parent is.
+  `
+  ALTER TABLE sessions ADD COLUMN parent_id TEXT;
+  `,
 ];
 
 export type Db = DatabaseSync;
