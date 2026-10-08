@@ -224,7 +224,12 @@ test('sandbox.ssh: documented non-secret options, safe defaults, required fields
   }
 });
 
-test('providerKeyEnv derives a valid, distinct secret name from a provider name', () => {
-  assert.equal(providerKeyEnv('my-laptop'), 'MY_LAPTOP_API_KEY');
-  assert.notEqual(providerKeyEnv('a-b'), providerKeyEnv('a'));
+test('providerKeyEnv derives a valid, distinct secret name that never hits a well-known or already-used key', () => {
+  const c = defaultConfig();
+  assert.equal(providerKeyEnv(c, 'my-laptop'), 'MY_LAPTOP_API_KEY');
+  assert.equal(providerKeyEnv(c, '1x'), 'GARNET_1X_API_KEY');
+  assert.equal(providerKeyEnv(c, 'anthropic'), 'GARNET_ANTHROPIC_API_KEY');
+  assert.equal(providerKeyEnv(c, 'local-model'), 'GARNET_LOCAL_MODEL_API_KEY');
+  const withKey = parseConfig({ version: CONFIG_VERSION, providers: { other: { provider: 'openai-compatible', baseUrl: 'https://x.example/v1', name: 'm', apiKeyEnv: 'MY_LAPTOP_API_KEY' } } });
+  assert.equal(providerKeyEnv(withKey, 'my-laptop'), 'GARNET_MY_LAPTOP_API_KEY');
 });

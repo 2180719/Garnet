@@ -15,9 +15,18 @@ export function keyEnvOf(m: ModelConfig): string {
   return m.apiKeyEnv ?? DEFAULT_KEY_ENV[m.provider];
 }
 
-/** The key name a new provider called `name` gets (`my-laptop` -> `MY_LAPTOP_API_KEY`), so providers never share one by accident. */
-export function providerKeyEnv(name: string): string {
-  return `${name.toUpperCase().replaceAll('-', '_')}_API_KEY`;
+/** Key names with a well-known owner; a custom provider must never be pointed at one of them by derivation. */
+const WELL_KNOWN_KEY_ENV = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'LOCAL_MODEL_API_KEY'];
+
+/**
+ * The key name a new provider called `name` gets (`my-laptop` -> `MY_LAPTOP_API_KEY`), so providers never share one by accident.
+ * The result is always a valid secret name and never a well-known key or one another provider already reads;
+ * in those cases it is prefixed with `GARNET_`.
+ */
+export function providerKeyEnv(config: GarnetConfig, name: string): string {
+  const base = `${name.toUpperCase().replaceAll('-', '_')}_API_KEY`;
+  const taken = new Set([...WELL_KNOWN_KEY_ENV, ...listProviders(config).filter((p) => p.name !== name).map((p) => keyEnvOf(p.model))]);
+  return /^[0-9]/.test(base) || taken.has(base) ? `GARNET_${base}` : base;
 }
 
 /** Every provider: `default` (the `model` block) first, then `providers` in file order. */

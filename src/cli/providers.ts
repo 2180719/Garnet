@@ -77,7 +77,7 @@ export function providers(args: string[], io: Io, opts: Opts = {}): number {
         const model = values.model ?? (kind === 'gemini' ? DEFAULT_GEMINI_MODEL : undefined);
         if (!model && kind !== 'fake') throw new GarnetError('invalid_input', '--model <id> is required.');
         // A custom (openai-compatible) provider gets a key name of its own unless --key-env says otherwise.
-        const keyEnv = values['key-env'] ?? (kind === 'openai-compatible' ? providerKeyEnv(name) : undefined);
+        const keyEnv = values['key-env'] ?? (kind === 'openai-compatible' ? providerKeyEnv(config, name) : undefined);
         const entry = { provider: kind, ...(model ? { name: model } : {}), ...(values['base-url'] ? { baseUrl: values['base-url'] } : {}), ...(keyEnv ? { apiKeyEnv: keyEnv } : {}) } as ModelConfig;
         // parseConfig fills the defaults and reports problems (an openai-compatible provider needs a base URL).
         let next = withProvider(config, name, entry);
