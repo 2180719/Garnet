@@ -189,7 +189,7 @@ update_repo() {
   origin=$(git -C "$dir" remote get-url origin 2>/dev/null || echo '')
   # The repository moved from garnet-foundation/Garnet to garnet-foundation/Garnet: follow it.
   case $origin in
-    */2180719/Garnet|*/2180719/Garnet.git)
+    https://github.com/2180719/Garnet|https://github.com/2180719/Garnet.git|git@github.com:2180719/Garnet|git@github.com:2180719/Garnet.git|ssh://git@github.com/2180719/Garnet|ssh://git@github.com/2180719/Garnet.git)
       if [ "$repo" = "$default_repo" ]; then
         git -C "$dir" remote set-url origin "$repo" && origin=$repo
       fi ;;
