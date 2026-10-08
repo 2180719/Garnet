@@ -33,6 +33,8 @@ export const PROTECTED_CONFIG_PATHS: readonly string[] = [
   'connectors.github.apiUrl', // where the GitHub token is sent
   'connectors.github.write',
   'connectors.github.repos',
+  'connectors.http.credentials', // which secrets exist and the only hosts each is sent to
+  'connectors.http.write',
   '*Env', // any environment-variable / stored-secret name, at any depth
 ];
 

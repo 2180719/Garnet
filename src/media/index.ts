@@ -4,3 +4,4 @@ export { OpenAITranscriber, CommandTranscriber, type Transcriber, type OpenAITra
 export { runOnFile, type CommandSpec } from './command.ts';
 export { detectMime, sniffMime, kindOf, mimeFromName, isTextMime, looksLikeText } from './mime.ts';
 export { sendFileTool, type SendFileDeps, type ChatTarget } from './tool.ts';
+export { visionTool, type VisionDeps, type VisionModel } from './vision.ts';

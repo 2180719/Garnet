@@ -13,6 +13,7 @@ import { importDeps } from './import.ts';
 import { unlockWarnings } from '../secrets/index.ts';
 import { secrets } from './secrets.ts';
 import { doctor } from './doctor.ts';
+import { modelsCommand } from './models.ts';
 import { providers } from './providers.ts';
 import { init, setup } from './setup/command.ts';
 import { chat } from './chat/index.ts';
@@ -44,6 +45,7 @@ Usage:
   garnet providers list|add|use|rm
                             Named model providers (Anthropic, Gemini, OpenAI-compatible);
                             /provider in chat swaps for that chat (\`garnet providers help\`)
+  garnet models [<provider>]  Models a provider offers with current prices (\`garnet models help\`)
   garnet sandbox check        Probe the command sandbox (docker or ssh), read-only
   garnet sessions             List recent sessions
   garnet start                Run the service (channels, gateway, API) in the foreground
@@ -137,7 +139,9 @@ export async function main(argv: string[], io: Io = stdio): Promise<number> {
       case 'config':
         return await configCommand(rest, io, io === stdio);
       case 'providers':
-        return providers(rest, io);
+        return await providers(rest, io);
+      case 'models':
+        return await modelsCommand(rest, io);
       case 'sandbox':
         return await sandboxCommand(rest, io);
       case 'sessions':

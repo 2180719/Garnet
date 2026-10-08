@@ -106,8 +106,11 @@ export class WebFetcher {
             method = 'GET';
             body = undefined;
           }
-          // Never carry credentials (API keys in headers) to another origin.
-          if (next.origin !== url.origin) headers = {};
+          // Never carry credentials (API keys in headers) to another origin, nor a request body the caller approved for this one.
+          if (next.origin !== url.origin) {
+            if (body !== undefined) throw new GarnetError('denied', `Refused to resend the request body to ${next.host}: ${url.host} redirected a ${method} to another origin.`);
+            headers = {};
+          }
           url = next;
           continue;
         }

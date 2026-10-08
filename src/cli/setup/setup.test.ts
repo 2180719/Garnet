@@ -349,12 +349,12 @@ test('non-interactive: the service is only touched with --service (install, or r
   assert.equal(fresh.svc.installs, 1);
 });
 
-test('gemini: its own key name, the table default model, a models check on the compatibility endpoint', async () => {
-  const h = harness({ responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-2.5-flash' }] } })] });
+test('gemini: its own key name, the default model, a models check on the compatibility endpoint', async () => {
+  const h = harness({ responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-3.8-flash' }] } })] });
   assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: true, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
   const c = h.config();
   assert.equal(c.model.provider, 'gemini');
-  assert.equal(c.model.name, 'gemini-2.5-flash');
+  assert.equal(c.model.name, 'gemini-3.8-flash');
   assert.equal(c.model.apiKeyEnv, 'GEMINI_API_KEY');
   assert.equal(h.calls[0]!.url, 'https://generativelanguage.googleapis.com/v1beta/openai/models');
   assert.match(h.out(), /✓ server answered/);
@@ -888,4 +888,37 @@ test('fullscreen wizard: a named custom provider and a Gemini choice work throug
     assert.ok(script.check(h.config()), JSON.stringify(h.config().providers));
     assert.ok(seen.some((s) => s.includes('Save these settings?') && script.review.test(s)), 'the review names the provider in use');
   }
+});
+
+const OR_FIXTURE = {
+  data: Array.from({ length: 25 }, (_, i) => ({
+    id: i === 0 ? 'google/gemini-3.8-flash' : `vendor/model-${i}`,
+    created: 1_790_000_000 + i,
+    context_length: 1_048_576,
+    architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] },
+    top_provider: { max_completion_tokens: 65_536 },
+    pricing: { prompt: '0.00000075', completion: '0.00000375', input_cache_read: '0.000000075' },
+  })),
+};
+
+test('model step: a checked setup refreshes prices and shows the price of the chosen model', async () => {
+  const h = harness({ catalog: OR_FIXTURE, responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-3.8-flash' }] } })] });
+  assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: true, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  assert.equal(h.catalogCalls.length, 1);
+  assert.match(h.out(), /gemini-3\.8-flash: \$0\.75 in \/ \$3\.75 out per million tokens \(fetched just now\)/);
+  assert.equal(existsSync(join(h.home, 'cache', 'models.json')), true, 'the refreshed catalog is cached');
+});
+
+test('model step: without consent nothing is fetched and the bundled prices are labelled as such', async () => {
+  const h = harness({ responses: [] });
+  assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: false, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  assert.equal(h.catalogCalls.length, 0);
+  assert.equal(h.calls.length, 0);
+  assert.match(h.out(), /gemini-3\.8-flash: \$[\d.]+ in \/ \$[\d.]+ out per million tokens \(snapshot of \d{4}-\d\d-\d\d\)/);
+});
+
+test('model step: a model the catalog does not know says so instead of showing nothing', async () => {
+  const h = harness();
+  assert.equal(await h.run({ provider: 'gemini', model: 'gemini-9-future', secrets: 'env-file', check: false, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  assert.match(h.out(), /gemini-9-future: price unknown \(not in the model catalog\).*cost will show "\?"/);
 });

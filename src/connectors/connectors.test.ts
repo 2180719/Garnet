@@ -9,7 +9,7 @@ import { openDb, SessionStore } from '../store/index.ts';
 import { isGarnetError, type SessionTaint, type ToolCallBlock, type ToolContext, type ToolDefinition } from '../contracts/index.ts';
 import { Policy, type ApprovalRequest } from '../policy/index.ts';
 import { ToolExecutor, ToolRegistry, WebFetcher, type FetchRequest, type FetchResponse } from '../tools/index.ts';
-import { CONNECTOR_INFO, calendarTool, connectorTools, githubTool, occurrences, parseDuration, parseDurationParts, parseIcs, parseWhen, repoAllowed, toInstant, weatherTool, type ConnectorDeps } from './index.ts';
+import { CONNECTOR_INFO, calendarTool, connectorTools, githubTool, occurrences, parseDuration, parseDurationParts, parseIcs, parseWhen, repoAllowed, httpRequestTool, toInstant, weatherTool, type ConnectorDeps } from './index.ts';
 
 // ---------- helpers ----------
 
@@ -532,4 +532,58 @@ test('calendar: a fetch failure never forwards the feed path or query (a redirec
   } finally {
     server.close();
   }
+});
+
+// ---------- http_request ----------
+
+const HTTP = { credentials: { notion: { secretEnv: 'NOTION_TOKEN', hosts: ['api.notion.com'] }, bare: { secretEnv: 'BARE_KEY', hosts: ['api.example.com'], header: 'X-Key', prefix: '' } }, write: true };
+
+test('http_request: a credential is added from config only, to its own https hosts, and never reaches the model', async () => {
+  const { fetcher, seen } = stubFetcher(() => ({ json: { ok: true, echo: 'tok_123' } }));
+  const tool = httpRequestTool(settings({ http: HTTP }).http, deps(fetcher, { NOTION_TOKEN: 'tok_123', BARE_KEY: 'k' }));
+  const res = await tool.run(parse(tool, { url: 'https://api.notion.com/v1/users', credential: 'notion' }), ctx());
+  assert.equal(seen[0]!.req.headers!.Authorization, 'Bearer tok_123');
+  assert.ok(!res.content.includes('tok_123'), 'an echoed secret is scrubbed');
+  assert.match(res.content, /\[redacted\]/);
+  assert.equal(res.untrusted?.source, 'http_request api.notion.com');
+  await tool.run(parse(tool, { url: 'https://api.example.com/x', credential: 'bare' }), ctx());
+  assert.equal(seen[1]!.req.headers!['X-Key'], 'k');
+  for (const [input, code, pattern] of [
+    [{ url: 'https://evil.example.net/steal', credential: 'notion' }, 'denied', /only for api\.notion\.com/],
+    [{ url: 'http://api.notion.com/v1', credential: 'notion' }, 'invalid_input', /only sent over https/],
+    [{ url: 'https://api.notion.com/v1', credential: 'nope' }, 'invalid_input', /Unknown credential "nope"\. Available: notion, bare/],
+    [{ url: 'https://api.notion.com/v1', headers: { Authorization: 'Bearer mine' } }, 'invalid_input', /cannot be set here/],
+    [{ url: 'https://api.notion.com/v1', headers: { 'X-Api-Key': 'mine' } }, 'invalid_input', /cannot be set here/],
+  ] as const) {
+    await assert.rejects(async () => tool.targets!(parse(tool, input), ctx()), (e) => isGarnetError(e, code) && pattern.test(e.message), JSON.stringify(input));
+  }
+  assert.equal(seen.length, 2, 'nothing was sent for a refused request');
+});
+
+test('http_request: a missing secret is a config error; POST needs write and asks as message.send', async () => {
+  const { fetcher, seen } = stubFetcher(() => ({ json: { id: 1 }, status: 201 }));
+  const tool = httpRequestTool(settings({ http: HTTP }).http, deps(fetcher));
+  await assert.rejects(tool.run(parse(tool, { url: 'https://api.notion.com/v1', credential: 'notion' }), ctx()), (e) => isGarnetError(e, 'config') && /NOTION_TOKEN/.test(e.message));
+  const post = parse(tool, { url: 'https://api.example.com/items', method: 'POST', json: { name: 'x' } });
+  assert.deepEqual(tool.capabilitiesFor!(post), ['net.fetch', 'message.send']);
+  assert.deepEqual(tool.capabilitiesFor!(parse(tool, { url: 'https://api.example.com/items' })), ['net.fetch']);
+  assert.match(tool.summarize!(post, ctx()), /^POST https:\/\/api\.example\.com\/items\n\n\{"name":"x"\}$/);
+  await tool.run(post, ctx());
+  assert.equal(seen[0]!.req.method, 'POST');
+  assert.equal(seen[0]!.req.body, '{"name":"x"}');
+  assert.equal(seen[0]!.req.headers!['content-type'], 'application/json');
+  const readOnly = httpRequestTool(settings({ http: { ...HTTP, write: false } }).http, deps(fetcher));
+  assert.ok(!readOnly.input.safeParse({ url: 'https://api.example.com', method: 'POST' }).success, 'POST is not even offered without write');
+  assert.throws(() => readOnly.targets!({ url: 'https://api.example.com', method: 'POST', headers: {} }, ctx()), (e) => isGarnetError(e, 'denied'));
+});
+
+test('http_request: errors and binary responses are reported honestly', async () => {
+  const { fetcher } = stubFetcher((url) => (url.endsWith('/img') ? { text: 'PNG', contentType: 'image/png' } : { status: 404, json: { message: 'nope' } }));
+  const tool = httpRequestTool(settings({ http: HTTP }).http, deps(fetcher));
+  const notFound = await tool.run(parse(tool, { url: 'https://api.example.com/missing' }), ctx());
+  assert.equal(notFound.error, 'tool_failed');
+  assert.match(notFound.content, /HTTP 404/);
+  const image = await tool.run(parse(tool, { url: 'https://api.example.com/img' }), ctx());
+  assert.equal(image.error, 'invalid_input');
+  assert.match(image.content, /not text/);
 });

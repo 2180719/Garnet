@@ -5,7 +5,7 @@ import type { ModelConfig } from '../../config/index.ts';
 import { GEMINI_BASE_URL } from '../../models/index.ts';
 
 /** `warn`: it works, but something deserves a look (for example the model is not listed). */
-export type CheckResult = { ok: boolean; detail: string; warn?: boolean };
+export type CheckResult = { ok: boolean; detail: string; warn?: boolean; /** Model ids the provider listed, when the check asked it (live, so newer than any bundled list). */ models?: string[] };
 export type FetchFn = typeof fetch;
 
 const TIMEOUT_MS = 10_000;
@@ -47,8 +47,8 @@ export async function checkModel(model: ModelConfig, key: string | undefined, fe
     if (r.status !== 200) return { ok: false, detail: `unexpected HTTP ${r.status} from ${new URL(base).host}` };
     const ids = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((m) => m.id);
     const known = ids.includes(model.name);
-    if (ids.length && !known) return { ok: true, warn: true, detail: `key accepted, but "${model.name}" was not among the ${ids.length} models listed; check the model ID` };
-    return { ok: true, detail: 'key accepted' };
+    if (ids.length && !known) return { ok: true, warn: true, detail: `key accepted, but "${model.name}" was not among the ${ids.length} models listed; check the model ID`, models: ids.filter((id): id is string => !!id) };
+    return { ok: true, detail: 'key accepted', models: ids.filter((id): id is string => !!id) };
   }
   const base = trimSlash(model.baseUrl ?? (model.provider === 'gemini' ? GEMINI_BASE_URL : ''));
   if (!base) return { ok: false, detail: 'no base URL' };
@@ -60,9 +60,9 @@ export async function checkModel(model: ModelConfig, key: string | undefined, fe
   if (r.status === 401 || r.status === 403) return { ok: false, detail: `the server rejected the key (HTTP ${r.status})` };
   if (r.status !== 200) return { ok: false, detail: `unexpected HTTP ${r.status} from ${new URL(base).host}` };
   if (openrouter) return { ok: true, detail: 'OpenRouter accepted the key' };
-  const ids = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((m) => m.id?.replace(/^models\//, '')).filter(Boolean);
-  if (ids.length && !ids.includes(model.name)) return { ok: true, warn: true, detail: `server answered, but "${model.name}" is not among its models (${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ', …' : ''})` };
-  return { ok: true, detail: 'server answered' };
+  const ids = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((m) => m.id?.replace(/^models\//, '')).filter((id): id is string => !!id);
+  if (ids.length && !ids.includes(model.name)) return { ok: true, warn: true, detail: `server answered, but "${model.name}" is not among its models (${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ', …' : ''})`, models: ids };
+  return { ok: true, detail: 'server answered', models: ids };
 }
 
 /** Telegram `getMe`: returns the bot's @username so the owner knows whom to message. */

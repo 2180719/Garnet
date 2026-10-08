@@ -1,6 +1,7 @@
 // A wired setup wizard for tests: temp home, fake service, scripted fetch and pairing, all through SetupDeps.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { OPENROUTER_MODELS_URL } from '../src/catalog/index.ts';
 import { parseConfig } from '../src/config/index.ts';
 import type { ServiceResult } from '../src/service/index.ts';
 import type { Io } from '../src/cli/main.ts';
@@ -14,13 +15,14 @@ export const TG = '123456789:AAThisIsNotARealTelegramToken_xyz';
 
 export type Call = { url: string; headers: Record<string, string> };
 
-export function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((url: string) => { status: number; body: unknown })[]; installed?: boolean; pending?: Pairing[]; sources?: SetupDeps['importSources'] } = {}) {
+export function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((url: string) => { status: number; body: unknown })[]; installed?: boolean; catalog?: unknown; pending?: Pairing[]; sources?: SetupDeps['importSources'] } = {}) {
   const home = opts.home ?? tempDir();
   const keyDir = tempDir();
   const env: NodeJS.ProcessEnv = opts.env ?? {};
   let out = '';
   const io: Io = { out: (t) => (out += t), err: (t) => (out += t) };
   const calls: Call[] = [];
+  const catalogCalls: string[] = [];
   const responses = [...(opts.responses ?? [])];
   const svc = { installs: 0, restarts: 0, installed: opts.installed ?? false };
   const ok = (cmd: string[]): ServiceResult => ({ ok: true, files: [], commands: [{ cmd, code: 0, stdout: '', stderr: '' }], notes: [] });
@@ -36,6 +38,10 @@ export function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; response
     now: () => new Date('2026-10-06T12:00:00Z'),
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
+      if (url === OPENROUTER_MODELS_URL) {
+        catalogCalls.push(url);
+        return new Response(JSON.stringify(opts.catalog ?? { data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
       const r = (responses.shift() ?? (() => ({ status: 200, body: { data: [] } })))(url);
       return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
@@ -72,6 +78,6 @@ export function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; response
     const p = new AnswerPrompter(answers, { interactive, secrets });
     return { p, done: runSetup(p, io, deps) };
   };
-  return { home, env, deps, io, run, calls, svc, imports, approved, out: () => out, config: () => parseConfig(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))) };
+  return { home, env, deps, io, run, calls, catalogCalls, svc, imports, approved, out: () => out, config: () => parseConfig(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))) };
 }
 

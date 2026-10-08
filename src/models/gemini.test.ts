@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChatMessage, ModelEvent } from '../contracts/index.ts';
-import { GEMINI_BASE_URL, GEMINI_MODELS, GeminiModel, geminiModelInfo } from './index.ts';
+import { GEMINI_BASE_URL, GeminiModel } from './index.ts';
 
 const chunk = (o: object) => `data: ${JSON.stringify(o)}\n\n`;
 const delta = (d: object, finish: string | null = null) => chunk({ choices: [{ index: 0, delta: d, finish_reason: finish }] });
@@ -92,14 +92,7 @@ test('attachments go as image_url parts; another provider\'s blocks are dropped 
   assert.deepEqual(sent[3].content, [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBO' } }]);
 });
 
-test('the model table lists explicit ids with windows and media; overrides and unknown ids work', () => {
-  assert.ok(GEMINI_MODELS.length >= 4);
-  for (const g of GEMINI_MODELS) {
-    assert.match(g.id, /^gemini-/);
-    assert.ok(g.contextWindow >= 1_000_000 && g.vision && g.pdf, g.id);
-    assert.ok(!/latest/.test(g.id), 'explicit ids only');
-  }
-  assert.equal(geminiModelInfo('models/gemini-2.5-pro')?.maxOutputTokens, 65_536);
+test('the context window defaults to 1M; config and the caller can override it, and media follows overrides', () => {
   const unknown = gemini(() => sse([]), [], { model: 'gemini-9-future' });
   assert.equal(unknown.capabilities.contextWindow, 1_048_576);
   const custom = gemini(() => sse([]), [], { contextWindow: 200_000, vision: false });
