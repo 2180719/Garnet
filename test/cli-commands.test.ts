@@ -1,9 +1,10 @@
 // CLI argument handling for the owner commands (memory, skills, flags).
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { tempDir } from './helpers.ts';
+import { restoreWith } from '../src/cli/backup.ts';
 import { main } from '../src/cli/main.ts';
 import { MemoryStore } from '../src/memory/index.ts';
 import { createGarnet } from '../src/main.ts';
@@ -25,6 +26,17 @@ async function run(...argv: string[]) {
   let err = '';
   const code = await main(argv, { out: (t) => (out += t), err: (t) => (err += t) });
   return { code, out, err };
+}
+
+/** Runs `fn` against a fresh Garnet home, for tests that must not see other tests' leftovers. */
+async function withOwnHome(fn: (home: string) => Promise<void>) {
+  const own = tempDir();
+  process.env.GARNET_HOME = own;
+  try {
+    await fn(own);
+  } finally {
+    process.env.GARNET_HOME = home;
+  }
 }
 
 test('memory rollback takes the id even when --ns comes last', async () => {
@@ -84,6 +96,168 @@ test('backup and restore round-trip the database, config, memory, skills, artifa
   const aside = readdirSync(home).find((n) => n.startsWith('pre-restore-'))!;
   assert.equal(readFileSync(join(home, aside, 'artifacts', 'art_1.txt'), 'utf8'), 'changed', 'the replaced data is moved aside, not deleted');
 });
+
+test('restore puts the workspace where the backup config names it, and keeps what was there', () => withOwnHome(async (home) => {
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, workspace: 'workspace-a' }));
+  mkdirSync(join(home, 'workspace-a'), { recursive: true });
+  writeFileSync(join(home, 'workspace-a', 'data.txt'), 'BACKED-UP');
+  const target = join(tempDir(), 'bk-workspace');
+  assert.equal((await run('backup', target)).code, 0);
+
+  writeFileSync(join(home, 'workspace-a', 'data.txt'), 'CHANGED');
+  mkdirSync(join(home, 'workspace-b'), { recursive: true });
+  writeFileSync(join(home, 'workspace-b', 'other.txt'), 'B-CONTENT');
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, workspace: 'workspace-b' }));
+
+  const r = await run('restore', target);
+  assert.equal(r.code, 0, r.err);
+  const garnet = createGarnet({ noModel: true, home });
+  try {
+    assert.equal(garnet.paths.workspace, join(home, 'workspace-a'));
+    assert.equal(readFileSync(join(garnet.paths.workspace, 'data.txt'), 'utf8'), 'BACKED-UP');
+  } finally {
+    garnet.close();
+  }
+  assert.ok(!existsSync(join(home, 'workspace-b')), 'the workspace the old config named is not left behind');
+  const aside = join(home, readdirSync(home).find((n) => n.startsWith('pre-restore-'))!);
+  assert.equal(readFileSync(join(aside, 'workspace', 'other.txt'), 'utf8'), 'B-CONTENT');
+  assert.equal(readFileSync(join(aside, 'workspace-at-restored-path', 'data.txt'), 'utf8'), 'CHANGED');
+  assert.ok(!readdirSync(home).some((n) => n.includes('restore-staging')), 'no staging directory remains');
+}));
+
+test('restore refuses an unusable backup config before moving anything', () => withOwnHome(async (home) => {
+  const target = join(tempDir(), 'bk-bad-config');
+  assert.equal((await run('backup', target)).code, 0);
+  writeFileSync(join(target, 'config.json'), '{ not json');
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, persona: 'Live.' }));
+  const r = await run('restore', target);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /nothing was changed/);
+  assert.match(readFileSync(join(home, 'config.json'), 'utf8'), /Live\./);
+  assert.ok(!readdirSync(home).some((n) => n.startsWith('pre-restore-')));
+}));
+
+test('restore keeps a backed-up workspace that is a dangling relative symlink', () => withOwnHome(async (home) => {
+  mkdirSync(join(home, 'real-ws'), { recursive: true });
+  writeFileSync(join(home, 'real-ws', 'data.txt'), 'KEEP');
+  symlinkSync('real-ws', join(home, 'workspace'));
+  const target = join(tempDir(), 'bk-symlink-ws');
+  assert.equal((await run('backup', target)).code, 0);
+  rmSync(join(home, 'workspace'), { force: true });
+  mkdirSync(join(home, 'workspace'));
+  writeFileSync(join(home, 'workspace', 'live.txt'), 'LIVE');
+  const r = await run('restore', target);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(lstatSync(join(home, 'workspace')).isSymbolicLink(), 'the backed-up link, not nothing, is at the workspace path');
+}));
+
+/** Every file under `dir` (except the database, which opening Garnet touches) with its content, for before/after comparisons. */
+function snapshot(dir: string, prefix = ''): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('garnet.db')) continue;
+    const rel = `${prefix}${entry.name}`;
+    if (entry.isDirectory()) Object.assign(out, snapshot(join(dir, entry.name), `${rel}/`));
+    else out[rel] = readFileSync(join(dir, entry.name), 'utf8');
+  }
+  return out;
+}
+
+/** A home with a backup of workspace-a (BACKED-UP) and a live config pointing at workspace-b. Returns the backup directory. */
+async function backedUpWithOtherWorkspace(home: string): Promise<string> {
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, workspace: 'workspace-a' }));
+  mkdirSync(join(home, 'workspace-a'), { recursive: true });
+  writeFileSync(join(home, 'workspace-a', 'data.txt'), 'BACKED-UP');
+  const target = join(tempDir(), 'bk');
+  assert.equal((await run('backup', target)).code, 0);
+  writeFileSync(join(home, 'workspace-a', 'data.txt'), 'CHANGED');
+  mkdirSync(join(home, 'workspace-b'), { recursive: true });
+  writeFileSync(join(home, 'workspace-b', 'other.txt'), 'B-CONTENT');
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, workspace: 'workspace-b' }));
+  return target;
+}
+
+function restoreCapture(target: string, rename: (from: string, to: string) => void) {
+  let out = '';
+  let err = '';
+  const code = restoreWith([target], { out: (t) => (out += t), err: (t) => (err += t) }, { rename });
+  return { code, out, err };
+}
+
+test('restore falls back to copy and remove when rename crosses filesystems (EXDEV)', () => withOwnHome(async (home) => {
+  const target = await backedUpWithOtherWorkspace(home);
+  const r = restoreCapture(target, () => {
+    throw Object.assign(new Error('cross-device link not permitted'), { code: 'EXDEV' });
+  });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(readFileSync(join(home, 'workspace-a', 'data.txt'), 'utf8'), 'BACKED-UP');
+  assert.ok(!existsSync(join(home, 'workspace-b')));
+  const aside = join(home, readdirSync(home).find((n) => n.startsWith('pre-restore-'))!);
+  assert.equal(readFileSync(join(aside, 'workspace', 'other.txt'), 'utf8'), 'B-CONTENT');
+}));
+
+test('a failure at any commit step rolls everything back', () => withOwnHome(async (home) => {
+  const target = await backedUpWithOtherWorkspace(home);
+  mkdirSync(join(home, 'memory'));
+  writeFileSync(join(home, 'memory', 'MEMORY.md'), '- live');
+  createGarnet({ noModel: true, home }).close(); // opening migrates config.json once; do that before taking the snapshot
+  const before = snapshot(home);
+  let failed = 0;
+  for (let n = 1; n < 40; n++) {
+    let calls = 0;
+    const r = restoreCapture(target, (a, b) => {
+      if (++calls === n) throw Object.assign(new Error('disk trouble'), { code: 'EIO' });
+      renameSync(a, b);
+    });
+    if (r.code === 0) break;
+    failed++;
+    assert.match(r.err, /rolled back/);
+    assert.doesNotMatch(r.err, /only in part/, `step ${n}`);
+    assert.deepEqual(snapshot(home), before, `step ${n} left the home as it was`);
+    assert.ok(!readdirSync(home).some((name) => name.startsWith('pre-restore-') || name.includes('restore-staging')), `step ${n} cleaned up`);
+  }
+  assert.ok(failed >= 5, `exercised ${failed} failing steps`);
+}));
+
+test('restore ignores files in the backup that backup does not write, such as env', () => withOwnHome(async (home) => {
+  const target = await backedUpWithOtherWorkspace(home);
+  writeFileSync(join(home, 'env'), 'LIVE_KEY=1');
+  writeFileSync(join(target, 'env'), 'FROM_BACKUP=1');
+  const r = restoreCapture(target, renameSync);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /Ignoring files.*env/);
+  assert.equal(readFileSync(join(home, 'env'), 'utf8'), 'LIVE_KEY=1');
+}));
+
+test('restore from a backup with no workspace directory still moves the live workspace aside', () => withOwnHome(async (home) => {
+  const target = await backedUpWithOtherWorkspace(home);
+  rmSync(join(target, 'workspace'), { recursive: true });
+  const r = restoreCapture(target, renameSync);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(readFileSync(join(home, 'workspace-a', 'data.txt'), 'utf8'), 'CHANGED', 'the restored path is untouched when the backup has no workspace');
+  const aside = join(home, readdirSync(home).find((n) => n.startsWith('pre-restore-'))!);
+  assert.equal(readFileSync(join(aside, 'workspace', 'other.txt'), 'utf8'), 'B-CONTENT');
+}));
+
+test('restore refuses nested or home-containing workspaces before moving anything', () => withOwnHome(async (home) => {
+  const target = await backedUpWithOtherWorkspace(home);
+  const before = snapshot(home);
+  const cases: [string, string, RegExp][] = [
+    ['workspace-b/inner', 'workspace-b', /nested/],
+    ['/', 'workspace-b', /contains Garnet's home/],
+    ['memory/ws', 'workspace-b', /inside .*memory/],
+  ];
+  for (const [restored, current, expected] of cases) {
+    writeFileSync(join(target, 'config.json'), JSON.stringify({ version: 1, workspace: restored }));
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, workspace: current }));
+    const r = restoreCapture(target, renameSync);
+    assert.equal(r.code, 1, restored);
+    assert.match(r.err, expected, restored);
+    assert.match(r.err, /Nothing was changed/);
+  }
+  assert.equal(snapshot(home)['workspace-b/other.txt'], before['workspace-b/other.txt']);
+  assert.ok(!readdirSync(home).some((n) => n.startsWith('pre-restore-')));
+}));
 
 test('backup and restore include the media store, so a pending outbox attachment survives', async () => {
   const media = new MediaStore(join(home, 'media'), 1_000_000);

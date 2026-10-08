@@ -97,3 +97,7 @@ Behavior to preserve:
 - Secrets: the hidden input shows dots and a count, never the value. The config browser shows secret NAMES (`apiKeyEnv`, `tokenEnv`) only, hides and refuses to edit credential-looking string fields, and redacts displayed values.
 - Adding a setting needs no change here. A wizard prompt needs an id (the stage map in `prompter.ts` falls back to the current stage for unknown ids).
 - Tests drive `updatePrompt`/`viewPrompt` and the config `Screen` with scripted keys, and `TuiPrompter` with a fake TTY and `test/vt.ts`. No real terminal.
+
+## Backup and restore (`backup.ts`)
+
+`garnet restore` validates the backup's `config.json` first and resolves the workspace destination from it, not from the live config. It restores only what `backup` writes (anything else in the directory is ignored with a warning), stages copies, moves every replaced destination aside (`<home>/pre-restore-<stamp>`; an external workspace next to itself as `<ws>.pre-restore-<stamp>`), then moves the staged copies in. A failure part-way undoes the moves. Workspaces that contain home, sit inside a replaced home entry or nest in each other are refused before anything moves. A cross-filesystem move (EXDEV) is copy then remove; a mount-point workspace cannot be renamed and fails safely. `restoreWith(args, io, { rename })` lets tests inject failures.
