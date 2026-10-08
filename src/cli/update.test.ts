@@ -439,7 +439,7 @@ test('renamedOrigin only recognizes the old GitHub forms and keeps the protocol'
   assert.equal(renamedOrigin('/srv/git/2180719/Garnet'), null);
 });
 
-test('an update repoints a remote that names the old GitHub location, but --check does not', async () => {
+test('an update repoints a remote that names the old GitHub location only once it succeeds', async () => {
   const f = fixture();
   const oldUrl = 'https://github.com/2180719/Garnet';
   const newUrl = 'https://github.com/garnet-foundation/Garnet';
@@ -449,6 +449,9 @@ test('an update repoints a remote that names the old GitHub location, but --chec
   f.push({ 'src/a.ts': 'x' }, 'code only');
   const check = harness(f);
   await check.go(['--check']);
+  assert.equal(git(f.install, 'remote', 'get-url', 'origin'), oldUrl);
+  const declined = harness(f, { yes: false });
+  assert.equal(await declined.go([]), 1);
   assert.equal(git(f.install, 'remote', 'get-url', 'origin'), oldUrl);
   const h = harness(f);
   assert.equal(await h.go(['-y']), 0);
