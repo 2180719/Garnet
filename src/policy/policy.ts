@@ -73,6 +73,12 @@ export type PolicyOptions = {
 export type CheckContext = {
   /** Paths or URLs the operation touches (`ToolDefinition.targets`). */
   targets?: readonly string[];
+  /**
+   * True when the call sends bytes the model composed beyond the target URL
+   * (headers, a body). Such a call is never exempt from containment because of
+   * its destination alone (`ToolDefinition.carriesData`).
+   */
+  carriesData?: boolean;
   taint?: SessionTaint | undefined;
 };
 
@@ -104,7 +110,7 @@ export class Policy {
     const sources = ctx.taint?.sources ?? [];
     const c = this.options.containment;
     if (decision.verdict === 'deny' || sources.length === 0 || !c.enabled) return decision;
-    if (capability === 'net.fetch' && targets.length > 0 && targets.every((t) => this.carriesNoData(t, ctx.taint!))) return decision;
+    if (capability === 'net.fetch' && !ctx.carriesData && targets.length > 0 && targets.every((t) => this.carriesNoData(t, ctx.taint!))) return decision;
     if (decision.verdict === 'ask') {
       // Already ask: still marked, so no standing "always" answer applies to it.
       return { ...decision, taint: sources };

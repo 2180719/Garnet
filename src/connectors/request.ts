@@ -66,6 +66,8 @@ export function httpRequestTool(settings: HttpSettings, deps: ConnectorDeps): To
     // A POST changes something outside Garnet, so it asks like any outbound message and shows the whole request.
     capabilitiesFor: (i): Capability[] => (i.method === 'POST' ? ['net.fetch', 'message.send'] : ['net.fetch']),
     targets: (i) => [plan(i).url],
+    // Headers and bodies are model-composed bytes a URL exemption would never see.
+    carriesData: (i) => Object.keys(i.headers).length > 0 || i.body !== undefined || i.json !== undefined,
     summarize: (i) => {
       const p = plan(i);
       const headers = Object.entries(i.headers).map(([k, v]) => `${k}: ${v}`);

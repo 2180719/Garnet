@@ -29,7 +29,7 @@ Names resolve from the process environment first, then from the encrypted store.
 All commands run from the repo root as the non-root service user. Every command below appears in `npm run garnet -- help`.
 
 ```sh
-garnet setup                                 # model, key, persona, channels, service, pairing
+garnet setup                                 # model, key, persona, channels, tools and extras, service, pairing
 garnet doctor                                # checks the install and setup
 npm run garnet -- config explain             # every setting
 npm run garnet -- chat --fake                # offline sanity check
@@ -82,7 +82,7 @@ Only tested offline and in a scratch `HOME` on one Linux container (no systemd u
 4. `garnet setup` on a real terminal: numbered menus, the channels checklist (arrows or numbers to tick, Enter to confirm, none ticked is fine, with and without `NO_COLOR`), hidden key input (dots only), Ctrl+C at any question saves nothing. Accept the live checks: a real Anthropic key (expect "key accepted"), a wrong key (expect "rejected", and the offer to re-enter), an OpenRouter key (uses `GET /api/v1/key`; confirm that endpoint still exists), a local Ollama (`/v1/models`), a Telegram token (expect the bot's @username), a Discord token. The key must not appear on screen, in `config.json` or in shell history.
 5. Let setup install the service, then pair through it: message the bot, press Enter at the prompt, approve the code. Expect the greeting in the chat. On macOS check that `launchctl kickstart -k` restarts the agent when setup offers a restart.
 6. Wake-up: in `garnet setup` choose "Wake it up" with a real key (and again with a weak or local model). Expect the agent to speak first, ask name, your name, answer style, time zone and what you want help with, call `set_profile` and `memory` (visible tool rows), and print "Tool check passed". Check `config.json` (`persona` between the `garnet setup` markers, `timezone`) and `memory/default/USER.md`. With a model that cannot call tools, expect the chat to stop with "Setup chat is stopping because ..." and the three form questions, never a loop. `garnet setup -y` must not open a chat. `garnet wake` re-runs it.
-7. Re-run `garnet setup`: the menu shows the current values; changing only the persona keeps everything else in `config.json` byte-for-byte apart from `persona`.
+7. Re-run `garnet setup`: the menu shows the current values (tools, connectors and skills, voice notes, spending cap and dashboard are entries too: tick commands and expect the sandbox question, add a calendar feed and expect the address never on screen or in `config.json`); changing only the persona keeps everything else in `config.json` byte-for-byte apart from `persona`.
 8. `garnet doctor` on the finished host: expect no failures; stop Docker with `permissions.exec` at `ask` and expect a sandbox failure with a fix.
 
 ### 1. Anthropic model

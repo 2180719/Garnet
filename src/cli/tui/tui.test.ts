@@ -6,7 +6,8 @@ import { defaultConfig } from '../../config/index.ts';
 import { KeyParser, type Key } from '../chat/keys.ts';
 import { displayWidth, stripAnsi } from '../chat/text.ts';
 import { makeTheme } from '../chat/theme.ts';
-import { configScreen, displayValue, fieldsFromSchema, getAt, setAt, type ConfigState } from './config-browser.ts';
+import { configScreen, type ConfigState } from './config-browser.ts';
+import { displayValue, fieldsFromSchema, getAt, setAt } from './config-fields.ts';
 import { FULLSCREEN_OFF, FULLSCREEN_ON, FullscreenSession, wantsFullscreen, type Screen } from './fullscreen.ts';
 import { TuiPrompter, stageOf } from './prompter.ts';
 import { initConfirm, initMultiSelect, initSecret, initSelect, initText, updatePrompt, viewPrompt, type PromptState, type PromptValue } from './prompts.ts';
@@ -136,10 +137,17 @@ test('secret input is dots only: the value is never in a frame', () => {
 
 test('setup stage mapping', () => {
   assert.equal(stageOf('provider'), 'Import & model');
-  assert.equal(stageOf('keep-key'), 'Import & model');
   assert.equal(stageOf('import-apply'), 'Import & model');
-  assert.equal(stageOf('name'), 'Persona');
+  assert.equal(stageOf('name'), 'About you');
+  assert.equal(stageOf('timezone'), 'About you');
   assert.equal(stageOf('discord'), 'Channels');
+  assert.equal(stageOf('tools'), 'Tools');
+  assert.equal(stageOf('ssh-host'), 'Tools');
+  assert.equal(stageOf('github-repos'), 'Extras');
+  assert.equal(stageOf('daily-limit'), 'Extras');
+  // Ids several steps share stay in whatever stage is current.
+  assert.equal(stageOf('keep-key'), null);
+  assert.equal(stageOf('secrets'), null);
   assert.equal(stageOf('review'), 'Save');
   assert.equal(stageOf('pair-wait'), 'Finish');
   assert.equal(stageOf('something-new'), null);
@@ -269,9 +277,9 @@ test('config fields are generated from the schema, with documented descriptions 
 test('config browser: sections, fields, description and validated edits', () => {
   const b = browser();
   let rows = b.press('');
-  assert.ok(rows.some((r) => r.includes('› general')));
+  assert.ok(rows.some((r) => r.includes('› General')));
   rows = b.press('j'); // model
-  assert.ok(rows.some((r) => r.includes('› model')));
+  assert.ok(rows.some((r) => r.includes('› Model')));
   rows = b.press('\r');
   assert.ok(rows.some((r) => r.includes('model.provider')));
   assert.ok(rows.some((r) => r.includes('model.apiKeyEnv')));
@@ -335,7 +343,7 @@ test('config browser: enum and boolean edits, reset, unsaved-changes prompt on q
 test('config browser never shows or accepts secret values; names are shown', () => {
   const cfg = defaultConfig();
   const leaky = setAt(cfg, ['model', 'apiKeyEnv'], 'ANTHROPIC_API_KEY') as typeof cfg;
-  const synthetic = { path: ['x', 'password'], section: 'x', kind: 'string' as const, description: '', default: undefined, choices: [], optional: true, secretName: false, secretValue: true, fixed: false };
+  const synthetic = { path: ['x', 'password'], section: 'x', kind: 'string' as const, description: '', default: undefined, choices: [], itemChoices: [], optional: true, secretName: false, secretValue: true, fixed: false };
   assert.equal(displayValue(synthetic, 'hunter2-very-secret'), '[hidden]');
   assert.equal(displayValue({ ...synthetic, secretValue: false, path: ['model', 'name'] }, 'sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV'), '[redacted]');
   const b = browser(leaky);
@@ -350,7 +358,7 @@ test('config browser: complex fields are read-only with a pointer to the file; N
   let guard = 0;
   while (guard++ < 30 && !b.press('j').some((r) => r.includes('› jobs'))) {}
   const rows = b.press('\r');
-  assert.ok(rows.some((r) => r.includes('edit config.json by hand')));
+  assert.ok(rows.some((r) => r.includes('garnet jobs')));
   assert.equal(b.state.level, 'fields');
   assert.equal(b.screen.view(b.state, 80, 24).rows.join('').includes('\x1b'), false);
 });

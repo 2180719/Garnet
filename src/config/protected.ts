@@ -27,6 +27,7 @@ export const PROTECTED_CONFIG_PATHS: readonly string[] = [
   'media.transcription.*', // a host command, or where voice notes and a key are sent
   'media.pdfText.*', // a host command
   'containment.*',
+  'jobs', // a script job's command runs on the sandbox with no approval, and checks and grants shape what a job may do
   'web.allowHosts',
   'web.search.searxngUrl',
   'web.search.backend',
