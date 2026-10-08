@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Scheduler hardening
+- Built-in job pre-checks now obey the job's effective permissions: `url_changed` needs `net.fetch` and uses the SSRF-guarded web client (size, time and redirect limits from `web.fetch`); `file_changed` needs `fs.read` and reads at most 5 MiB (plus the file size in the hash). A refused check fails the run with a clear note instead of fetching or reading anyway.
+- Output and failure text of script-only jobs are marked untrusted when the sandbox can reach the network, as for `run_command`, so the chat that receives the notification is contained.
+
 ### Security fixes (from the Codex review)
 - `jobs` is protected from the admin API (`PUT /api/config`): a script job's command runs on the sandbox without an approval, so adding one over a leaked admin key ran host code after a restart with no approval prompt. Edit jobs with `garnet` commands or config.json.
 - A tool call that sends model-composed headers or a body (`http_request`) no longer gets the containment exemption for owner-written or already-seen URLs: in a conversation that read untrusted content it asks, like any other outbound data. Plain URL fetches are unchanged.
