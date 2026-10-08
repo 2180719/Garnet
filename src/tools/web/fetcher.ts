@@ -161,7 +161,7 @@ export class WebFetcher {
 
   private send(url: URL, pinned: ResolvedAddress, r: { method: string; headers: Record<string, string>; body: string | undefined; signal: AbortSignal }): Promise<IncomingMessage> {
     const headers: OutgoingHttpHeaders = {
-      'user-agent': this.o.userAgent ?? 'Garnet/1.0 (personal agent; +https://github.com/2180719/Garnet)',
+      'user-agent': this.o.userAgent ?? 'Garnet/1.0 (personal agent; +https://github.com/garnet-foundation/Garnet)',
       accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.8,*/*;q=0.5',
       'accept-encoding': 'gzip, deflate, br',
       ...lower(r.headers),

@@ -154,6 +154,14 @@ const short = (sha: string): string => sha.slice(0, 7);
 const firstLines = (text: string, n = 8): string => text.trim().split('\n').slice(-n).join('\n    ');
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+const OLD_GITHUB_REPO = /^(https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)2180719\/Garnet(\.git)?$/;
+
+/** The repository moved from 2180719/Garnet to garnet-foundation/Garnet. Returns the new form of a recognized old GitHub remote URL (same protocol), else null. */
+export function renamedOrigin(url: string): string | null {
+  const m = OLD_GITHUB_REPO.exec(url.trim());
+  return m ? `${m[1]}garnet-foundation/Garnet${m[2] ?? ''}` : null;
+}
+
 type Failure = { fail: string; hint?: string };
 type Target = {
   remote: string;
@@ -165,6 +173,8 @@ type Target = {
   relation: 'same' | 'behind' | 'ahead' | 'diverged';
   behind: number;
   ahead: number;
+  /** Set when the remote still names the old GitHub location: the fetch used this address, and a successful update saves it. */
+  movedTo: string | null;
 };
 type Flags = { yes?: boolean | undefined; ref?: string | undefined; reinstall?: boolean | undefined };
 
@@ -203,7 +213,7 @@ class Updater {
     if (!this.d.exists(join(dir, '.git'))) {
       return {
         fail: `${dir} is not a git checkout, so it cannot be updated in place.`,
-        hint: 'Reinstall with install.sh (it keeps your data in GARNET_HOME): curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh',
+        hint: 'Reinstall with install.sh (it keeps your data in GARNET_HOME): curl -fsSL https://raw.githubusercontent.com/garnet-foundation/Garnet/main/install.sh | sh',
       };
     }
     const status = await this.git(['status', '--porcelain', '--untracked-files=no']);
@@ -235,7 +245,8 @@ class Updater {
       return { fail: 'This checkout is on a detached HEAD, so there is no branch to follow.', hint: 'Name one: garnet update --ref main (or a tag).' };
     }
     const head = (await this.git(['rev-parse', 'HEAD'])).stdout.trim();
-    const fetched = await this.git(['fetch', '--quiet', remote, ref], 180_000);
+    const movedTo = renamedOrigin((await this.git(['remote', 'get-url', remote])).stdout);
+    const fetched = await this.git(['fetch', '--quiet', movedTo ?? remote, ref], 180_000);
     if (fetched.code !== 0) {
       return { fail: `git fetch ${remote} ${ref} failed: ${firstLines(fetched.stderr, 3) || 'no output'}`, hint: 'Check the network and that the branch or tag exists. Nothing was changed.' };
     }
@@ -246,7 +257,7 @@ class Updater {
     const behind = await count(`${head}..${target}`);
     const ahead = await count(`${target}..${head}`);
     const relation = behind === 0 && ahead === 0 ? 'same' : ahead === 0 ? 'behind' : behind === 0 ? 'ahead' : 'diverged';
-    return { remote, ref, branch, head, target, relation, behind, ahead };
+    return { remote, ref, branch, head, target, relation, behind, ahead, movedTo };
   }
 
   /** Why an update is refused for a target that is not a plain fast-forward. */
@@ -383,6 +394,11 @@ class Updater {
     }
   }
 
+  /** Saves the new address of a remote that still names the old GitHub location. Only called once the checkout is known to be fine. */
+  async saveMovedRemote(t: Target): Promise<void> {
+    if (t.movedTo && (await this.git(['remote', 'set-url', t.remote, t.movedTo])).code === 0) this.ok(`The repository moved; ${t.remote} now points at ${t.movedTo}.`);
+  }
+
   async update(v: Flags, refuse: (f: Failure) => number): Promise<number> {
     this.step('Looking for updates');
     const t = await this.resolveTarget(v.ref);
@@ -390,6 +406,7 @@ class Updater {
     await this.report(t);
     if (t.relation === 'same') {
       this.ok(`Already up to date (${short(t.head)}).`);
+      await this.saveMovedRemote(t);
       return 0;
     }
     if (t.relation !== 'behind') return refuse(this.localCommitsFailure(t));
@@ -433,6 +450,7 @@ class Updater {
     const smoke = await this.smoke();
     if (smoke.code !== 0) return await failAndRollback('The new version does not start.', firstLines(smoke.stderr || smoke.stdout, 6));
     this.ok(`The new version loads (${smoke.stdout.trim().split('\n')[0] ?? ''})`);
+    await this.saveMovedRemote(t);
 
     // The update has succeeded. Everything below is advice and never changes the result.
     this.step('Checking your config with the new version');

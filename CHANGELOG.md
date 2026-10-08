@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Repository move
+- The repository moved from `2180719/Garnet` to `garnet-foundation/Garnet`. Links, the installer, the update hint and the fetch user-agent now use the new location, and both `install.sh` and `garnet update` repoint an existing install's `origin` from the old GitHub URL (not mirrors or local paths) when they update.
+
 ### Budgets
 - The task time limit (`maxWallMs`) now also aborts a model call or tool that is still running, not only the next turn; a complete reply that finishes just past the deadline stays `completed`. Time spent waiting on an interactive approval (including a subagent's) stops the clock. Known limits: the scheduler's own outer timer for a job is separate, and a side-effect tool cut off at the deadline may already have acted (its result is an error either way).
 - Tokens used by `delegate_task` subagents and by `vision_analyze` count against the task's token budget and the scheduler's per-run and daily job limits (`TaskRecord.delegatedUsage`, not stored, so costs are not double counted); a subagent's tokens are charged as each of its model calls completes, so a cut-off child still counts.

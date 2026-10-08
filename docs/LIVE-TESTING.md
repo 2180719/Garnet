@@ -9,7 +9,7 @@ Rules while you work: report what you ran and saw, not what you expect. Never pa
 - Linux host (systemd user services) or macOS (launchd). Node.js 22.18 or newer (`node -v`).
 - Docker, if you test the sandbox. Pull the image first: `docker pull debian:stable-slim` (the default `sandbox.image`; the sandbox does not pull).
 - A regular, non-root user for the service. Run `loginctl enable-linger <user>` yourself if the service must survive logout (Garnet only prints the hint).
-- Garnet itself: `curl -fsSL https://raw.githubusercontent.com/2180719/Garnet/main/install.sh | sh` (installs to `~/.local/share/garnet` with a `garnet` command in `~/.local/bin`), or `git clone https://github.com/2180719/Garnet && cd Garnet && npm install` and use `npm run garnet --` in place of `garnet`.
+- Garnet itself: `curl -fsSL https://raw.githubusercontent.com/garnet-foundation/Garnet/main/install.sh | sh` (installs to `~/.local/share/garnet` with a `garnet` command in `~/.local/bin`), or `git clone https://github.com/garnet-foundation/Garnet && cd Garnet && npm install` and use `npm run garnet --` in place of `garnet`.
 - Accounts and credentials, with the names Garnet reads by default (all configurable in `config.json`):
 
 | Needed for | Name | Config field |
