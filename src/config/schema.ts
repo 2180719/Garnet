@@ -206,6 +206,15 @@ export const configSchema = z
       })
       .prefault({})
       .describe('Per-task resource limits.'),
+    delegation: z
+      .object({
+        enabled: z.boolean().default(true).describe('Let the agent hand side tasks to subagents (the `delegate_task` tool). A subagent has the same permissions and the same untrusted-content state as the session that started it, and can run on any configured provider and model.'),
+        maxDepth: z.number().int().min(1).max(2).default(2).describe('How many levels of subagents may exist: 1 means only the main agent delegates; 2 lets a subagent delegate once more.'),
+        maxModelCalls: z.number().int().positive().default(15).describe('Model calls one subagent may make (never more than `budgets.maxModelCalls`).'),
+        maxToolCalls: z.number().int().positive().default(30).describe('Tool calls one subagent may make (never more than `budgets.maxToolCalls`).'),
+      })
+      .prefault({})
+      .describe('Subagents started with `delegate_task`. Each subagent also gets the per-task `budgets` token and time limits.'),
     context: z
       .object({
         compactAtTokens: z

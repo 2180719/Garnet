@@ -10,7 +10,7 @@ import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway
 import { createBackend } from './backend.ts';
 import { AnthropicModel, FakeModel, GeminiModel, OpenAICompatibleModel, SwitchableModel, onboardingScript } from './models/index.ts';
 import { Policy, type Approver } from './policy/index.ts';
-import { Agent, LaneQueue, sessionTaint } from './runtime/index.ts';
+import { Agent, LaneQueue, sessionTaint, subagentFactory, type ResolvedSubagentModel } from './runtime/index.ts';
 import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, StatsStore, type Db } from './store/index.ts';
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
@@ -18,7 +18,7 @@ import { importedArchiveSection } from './migrate/index.ts';
 import { ONBOARDING_TITLE, bootstrapPrompt, profileTool } from './onboarding/index.ts';
 import { BuiltinSkills, SkillStore, skillTools } from './skills/index.ts';
 import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
-import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, calculateTool, clarifyTool, datetimeTool, editFileTool, execTool, fileTools, readArtifactTool, searchBackend, searchFilesTool, todoListTool, webFetchTool, webSearchTool } from './tools/index.ts';
+import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, calculateTool, delegateTaskTool, clarifyTool, datetimeTool, editFileTool, execTool, fileTools, readArtifactTool, searchBackend, searchFilesTool, todoListTool, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, requiresIsolation, type Sandbox, type SandboxOptions } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
@@ -182,6 +182,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   // Like the other optional tools, set_profile exists only when its permission is not deny (the tool set is fixed per session).
   const onboarding = Boolean(options.onboarding) && config.permissions['memory.write'] !== 'deny';
   if (onboarding) registry.register(profileTool(paths.home));
+  if (config.delegation.enabled) registry.register(delegateTaskTool);
   // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
   if (config.permissions['schedule.edit'] !== 'deny') {
     const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
@@ -283,10 +284,11 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     return `Daily spending cap reached: ${formatUsd(known)} spent today (${tz}) of ${formatUsd(cap)} (budgets.dailyUsd). Model tasks are refused until midnight ${tz}; the owner can raise or remove the cap in config.json.`;
   };
   /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
-  const makeAgent = (policy: Policy, budget: Budget): Agent =>
-    new Agent({
+  const makeAgent = (policy: Policy, budget: Budget, own: { model?: ModelAdapter; maxOutputTokens?: number; depth?: number } = {}): Agent => {
+    const depth = own.depth ?? 0;
+    return new Agent({
       store,
-      model,
+      model: own.model ?? model,
       registry,
       executor: new ToolExecutor({ registry, policy, approver, artifacts }),
       budget,
@@ -308,12 +310,29 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       get maxOutputTokens() {
-        return live.model.maxOutputTokens;
+        return own.maxOutputTokens ?? live.model.maxOutputTokens;
       },
       ...(mediaStore ? { loadAttachment: (ref: { id: string }) => mediaStore.read(ref.id) } : {}),
       maxAttachmentsInContext: config.media.maxInContext,
       timeZone: ownerTimeZone(config),
+      ...(config.delegation.enabled
+        ? {
+            subagents: subagentFactory({
+              store,
+              depth,
+              maxDepth: config.delegation.maxDepth,
+              providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name })),
+              resolve: (providerName, modelName) => resolveSubagentModel(config, secret, live, providerName, modelName, model),
+              makeChild: (resolved) => {
+                const d = config.delegation;
+                const childBudget: Budget = { ...budget, maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
+                return makeAgent(policy, childBudget, { model: resolved.adapter, maxOutputTokens: findProvider(config, resolved.provider)?.model.maxOutputTokens ?? live.model.maxOutputTokens, depth: depth + 1 });
+              },
+            }),
+          }
+        : {}),
     });
+  };
   const ownerPolicy = new Policy(config.permissions, { containment: config.containment, allowHosts: config.web.allowHosts, trustedEndpoints });
   const agent = makeAgent(ownerPolicy, config.budgets);
   return {
@@ -365,6 +384,20 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     },
     close: () => db.close(),
   };
+}
+
+/**
+ * The model a subagent runs on. A named provider uses its own settings (and `modelName` overrides its model); with
+ * only a model name, the live provider's settings are kept. With neither, the subagent shares the live model.
+ * `shared` is the session's own model (also what tests and `--fake` inject), used as is when nothing is specified.
+ */
+function resolveSubagentModel(config: GarnetConfig, secret: SecretLookup, live: NamedProvider, providerName: string | undefined, modelName: string | undefined, shared: ModelAdapter): ResolvedSubagentModel {
+  const known = listProviders(config).map((p) => p.name).join(', ');
+  const target = providerName === undefined ? live : findProvider(config, providerName);
+  if (!target) throw new GarnetError('invalid_input', `No provider named "${providerName}" (known: ${known}).`);
+  const settings: ModelConfig = modelName ? { ...target.model, name: modelName } : target.model;
+  if (providerName === undefined && modelName === undefined) return { adapter: shared, provider: target.name, model: settings.name };
+  return { adapter: createModel(config, secret, settings), provider: target.name, model: settings.name }; // throws when the key is missing
 }
 
 /** The owner's time zone: `timezone` in config, else the host's. */

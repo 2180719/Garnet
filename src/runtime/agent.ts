@@ -15,6 +15,8 @@ import {
   type ModelAdapter,
   type ModelEvent,
   type ModelRequest,
+  type SessionTaint,
+  type SubagentRunner,
   type StopReason,
   type TaskRecord,
   type TaskStatus,
@@ -91,6 +93,11 @@ export type AgentDeps = {
    * model with its send time (derived from the event log, not the system prompt).
    */
   timeZone?: string;
+  /**
+   * Gives a tool call a runner for starting subagents, bound to the calling session (its cancellation signal and
+   * taint). Absent when delegation is off; `ToolContext.subagents` is then unset and `delegate_task` refuses.
+   */
+  subagents?: (parent: { sessionId: string; signal: AbortSignal; taint: SessionTaint }) => SubagentRunner;
 };
 
 export type CompactionOutcome = {
@@ -247,7 +254,7 @@ export class Agent {
           store.append(sessionId, { type: 'tool_started', call, operationId });
           emit({ type: 'tool_start', call });
           task.toolCalls += 1;
-          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name), taint });
+          result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name), taint, ...(this.deps.subagents ? { subagents: this.deps.subagents({ sessionId, signal, taint }) } : {}) });
           emit({ type: 'tool_end', call, result });
           if (result.approvalWaitMs) {
             started += result.approvalWaitMs;

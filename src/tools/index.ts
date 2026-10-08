@@ -15,3 +15,4 @@ export { searchFilesTool, globToRegExp } from './builtin/search.ts';
 export { calculateTool, evaluate } from './builtin/calculate.ts';
 export { datetimeTool, parseInstant, formatIn } from './builtin/datetime.ts';
 export { todoListTool, clarifyTool } from './builtin/planning.ts';
+export { delegateTaskTool } from './builtin/delegate.ts';

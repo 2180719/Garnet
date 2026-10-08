@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { ErrorCategory } from './errors.ts';
+import type { TaskStatus } from './session.ts';
 
 /** Capabilities a policy can allow, require approval for, or deny. */
 export type Capability =
@@ -28,6 +29,31 @@ export type ToolContext = {
    * to a subagent.
    */
   taint?: SessionTaint;
+  /** Starts a subagent for this session (present when delegation is enabled); bound to this session's permissions and taint. */
+  subagents?: SubagentRunner;
+};
+
+/** What a tool may ask of a subagent. `provider` is a configured provider's name; `model` overrides that provider's model. */
+export type SubagentRequest = { task: string; provider?: string; model?: string };
+
+export type SubagentOutcome = {
+  sessionId: string;
+  status: TaskStatus;
+  /** The subagent's final reply (empty when it never produced one). */
+  text: string;
+  /** Provider name and model the subagent ran on. */
+  provider: string;
+  model: string;
+  modelCalls: number;
+  toolCalls: number;
+  /** Untrusted sources the subagent read beyond what its parent already had; empty when it stayed clean. */
+  newTaint: readonly string[];
+};
+
+export type SubagentRunner = {
+  /** Configured providers a subagent may use, for the tool description and error messages. */
+  providers: () => { name: string; model: string }[];
+  run: (request: SubagentRequest) => Promise<SubagentOutcome>;
 };
 
 /**
