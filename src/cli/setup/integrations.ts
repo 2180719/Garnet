@@ -16,7 +16,8 @@ type ConnectorSpec = {
   setup: (p: Prompter, io: Io, deps: SetupDeps, st: State) => Promise<Connectors>;
 };
 
-const CONNECTOR_STEPS: Record<ConnectorName, ConnectorSpec> = {
+/** Connectors with their own questions. Any other connector is set up generically from CONNECTOR_INFO (its label, and a prompt for each secret it declares). */
+const CONNECTOR_STEPS: Partial<Record<ConnectorName, ConnectorSpec>> = {
   calendar: {
     label: 'Calendar',
     setup: async (p, io, deps, st) => {
@@ -81,6 +82,18 @@ const CONNECTOR_STEPS: Record<ConnectorName, ConnectorSpec> = {
   },
 };
 
+const labelOf = (n: ConnectorName): string => CONNECTOR_STEPS[n]?.label ?? n.charAt(0).toUpperCase() + n.slice(1);
+
+/** The questions of one connector: its own step, or one secret prompt per secret CONNECTOR_INFO declares. */
+async function setupConnector(name: ConnectorName, p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<Connectors> {
+  const own = CONNECTOR_STEPS[name];
+  if (own) return own.setup(p, io, deps, st);
+  for (const sec of CONNECTOR_INFO[name].secrets(st.config.connectors)) {
+    await secretStep(p, io, deps, st, { id: `${name}-${sec.name.toLowerCase().replace(/_/g, '-')}`, name: sec.name, label: sec.name, help: sec.why, required: sec.required }, false);
+  }
+  return st.config.connectors;
+}
+
 const SKILL_HINTS: Record<BuiltinSkillName, string> = {
   'daily-briefing': 'a short morning summary · uses calendar and weather',
   'github-triage': 'what needs your attention on GitHub · needs the GitHub connector',
@@ -115,16 +128,16 @@ export async function integrationsStep(p: Prompter, io: Io, deps: SetupDeps, st:
     id: 'connectors',
     message: 'Which services should Garnet be connected to?',
     help: 'Pick as many as you like, or none.',
-    choices: CONNECTORS.map((n) => ({ value: n, label: CONNECTOR_STEPS[n].label, hint: CONNECTOR_INFO[n].summary.replace(/\.$/, '') })),
+    choices: CONNECTORS.map((n) => ({ value: n, label: labelOf(n), hint: CONNECTOR_INFO[n].summary.replace(/\.$/, '') })),
     default: only(CONNECTORS, st.config.connectors.enabled),
   });
   const dropped = st.config.connectors.enabled.filter((n) => !(picked as string[]).includes(n));
   st.config = { ...st.config, connectors: { ...st.config.connectors, enabled: [...picked] } };
   if (dropped.length) io.out(`  ${s.muted(`Turned off ${dropped.join(', ')}. Its secret stays where it is.`)}\n`);
   for (const [i, name] of picked.entries()) {
-    if (picked.length > 1) io.out(`\n${s.bold(`${CONNECTOR_STEPS[name].label} (${i + 1} of ${picked.length})`)}\n`);
-    await allowFetching(p, io, deps, st, CONNECTOR_STEPS[name].label);
-    st.config = { ...st.config, connectors: await CONNECTOR_STEPS[name].setup(p, io, deps, st) };
+    if (picked.length > 1) io.out(`\n${s.bold(`${labelOf(name)} (${i + 1} of ${picked.length})`)}\n`);
+    await allowFetching(p, io, deps, st, labelOf(name));
+    st.config = { ...st.config, connectors: await setupConnector(name, p, io, deps, st) };
   }
 
   const skills = await p.multiselect<BuiltinSkillName>({
