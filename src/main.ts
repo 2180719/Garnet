@@ -619,6 +619,10 @@ export function buildService(garnet: Garnet, rawLog: LogFn, channels: ChannelAda
     jobs: () => garnet.jobBook.jobs(),
     // Script-only jobs run in the same sandbox as run_command, and only when exec is not denied.
     runScript: sandbox ? (job, signal) => sandbox.run({ command: job.script!.command, cwd: '.', timeoutMs: job.script!.timeoutSeconds * 1000, signal }) : null,
+    scriptNetworked: sandbox?.networked ?? false,
+    // Pre-checks run under the job's effective policy and the SSRF-guarded client, like web_fetch.
+    policyFor: (job) => garnet.ownerPolicy.intersect(new Policy(job.permissions)),
+    fetcher: new WebFetcher({ maxBytes: config.web.fetch.maxBytes, timeoutMs: config.web.fetch.timeoutSeconds * 1000, maxRedirects: config.web.fetch.maxRedirects }),
     store: garnet.jobStore,
     workspace: garnet.paths.workspace,
     enabled: config.scheduler.enabled,
@@ -630,13 +634,13 @@ export function buildService(garnet: Garnet, rawLog: LogFn, channels: ChannelAda
       const taint = garnet.jobBook.taintOf(job.id);
       return gateway.chat(`job:${job.id}`, text, { signal, source: 'scheduler', ...(taint.length ? { taint } : {}) });
     },
-    notify: (job, text) => {
+    notify: (job, text, extra) => {
       if (!job.notify) return;
       const account = job.notify.channel === 'signal' ? (config.channels.signal.account ?? job.notify.account) : job.notify.account;
       // Recorded in the chat's conversation so a reply to it has context.
-      // The job's inherited taint plus whatever its own run read: the note must not launder it into the owner's chat.
+      // The job's inherited taint plus whatever its own run read (or its script's networked output carries): the note must not launder it into the owner's chat.
       const runSession = garnet.gatewayStore.conversation(`job:${job.id}`);
-      const taint = [...new Set([...garnet.jobBook.taintOf(job.id), ...(runSession ? sessionTaint(garnet.store.events(runSession)).sources : [])])];
+      const taint = [...new Set([...garnet.jobBook.taintOf(job.id), ...(runSession ? sessionTaint(garnet.store.events(runSession)).sources : []), ...(extra?.taint ?? [])])];
       gateway.notify({ channel: job.notify.channel, account, chatId: job.notify.chatId }, text, { from: `scheduled job "${job.id}"`, ...(taint.length ? { taint } : {}) });
     },
   });

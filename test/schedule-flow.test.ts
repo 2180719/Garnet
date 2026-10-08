@@ -11,6 +11,7 @@ import { tempDir } from './helpers.ts';
 import { textOf } from '../src/contracts/index.ts';
 import { buildService, createGarnet } from '../src/main.ts';
 import { FakeModel } from '../src/models/index.ts';
+import { sessionTaint } from '../src/runtime/index.ts';
 
 test('reminder from a Discord DM: approve in chat, delivered back to that DM, recorded in the conversation', async () => {
   const home = tempDir();
@@ -105,6 +106,31 @@ test('a job created by a tainted conversation runs tainted: its consequential ac
     assert.equal(garnet.jobStore.runs('dirty')[0]?.status, 'waiting_for_approval', 'the inherited taint escalates allow to ask');
     const events = garnet.store.events(garnet.gatewayStore.conversation('job:dirty')!);
     assert.ok(events.some((e) => e.type === 'tainted' && e.inherited && e.source === 'web_fetch https://evil.example/'));
+  } finally {
+    await scheduler.stop();
+    await gateway.stop(0);
+    garnet.close();
+  }
+});
+
+test('a networked script job taints the receiving chat, so its next consequential action asks', async () => {
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 1, model: { provider: 'fake' }, sandbox: { backend: 'local' }, permissions: { exec: 'allow', 'fs.write': 'allow' } }));
+  const garnet = createGarnet({ home, model: new FakeModel(), memoryDb: true });
+  const channel = new FakeChannel();
+  const { gateway, scheduler } = buildService(garnet, () => {}, [channel], true);
+  try {
+    assert.equal(garnet.sandbox?.networked, true, 'the local sandbox can reach the network');
+    const notify = { channel: 'telegram', chatId: 'chat-1', account: 'default' };
+    garnet.jobBook.create({ id: 'feed', kind: 'cron', cron: '0 9 * * *', script: { command: 'echo remote text' }, notify }, { by: 'owner', via: 'cli', at: new Date().toISOString() });
+    await scheduler.runNow('feed');
+    await gateway.deliver();
+    await new Promise((r) => setTimeout(r, 50));
+    const session = garnet.gatewayStore.conversation(`${notify.channel}:${notify.account}:${notify.chatId}`)!;
+    assert.ok(session, 'the notification was recorded in the chat');
+    const taint = sessionTaint(garnet.store.events(session));
+    assert.deepEqual(taint.sources, ['command with network access']);
+    assert.equal(garnet.ownerPolicy.check('fs.write', { taint }).verdict, 'ask');
   } finally {
     await scheduler.stop();
     await gateway.stop(0);

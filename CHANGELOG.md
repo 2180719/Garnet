@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Scheduler hardening
+- Built-in job pre-checks now obey the job's effective permissions: `url_changed` needs `net.fetch` and uses the SSRF-guarded web client (size, time and redirect limits from `web.fetch`); `file_changed` needs `fs.read` and reads at most 5 MiB (plus the file size in the hash). A refused check fails the run with a clear note instead of fetching or reading anyway.
+- Output and failure text of script-only jobs are marked untrusted when the sandbox can reach the network, as for `run_command`, so the chat that receives the notification is contained.
+
 ### More tools and subagents
 - New tools: `edit_file` (exact-string edits, several per call, all or none), `search_files` (regex over contents, glob over names), `todo_list`, `clarify`, `calculate` (a small parser, no `eval`), `datetime` (time zones, DST-aware conversion, date arithmetic), `session_search` and `delegate_task` (on unless `delegation.enabled` is false). Those that only read Garnet's own state declare no permission; `edit_file` needs `fs.write`.
 - `delegate_task` hands a task to a subagent on any configured provider and model (`provider` is a provider name, `model` overrides its model). The subagent has the same permissions and starts with the parent's untrusted-content state; what it reads taints the parent too. Budgets come from the new `delegation` config block (depth up to 2, call limits). Known limits: a subagent's spend is priced at the active provider's rates for the daily cap, and its tokens are not counted against the parent's task budget. Where approvals go to a chat, a subagent's needed approval is refused.

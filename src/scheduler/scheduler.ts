@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
 import { billedTokens, errorMessage, isGarnetError, GarnetError, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
-import { resolveInWorkspace } from '../policy/index.ts';
+import { resolveInWorkspace, type Policy } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
+import type { FetchResponse } from '../tools/index.ts';
 
 export const NOTHING = 'NOTHING_TO_REPORT';
 /** OpenClaw's heartbeat acknowledgement; imported checklists still ask for it. */
@@ -17,9 +18,14 @@ const SHUTDOWN = 'shutdown';
 const DELETED = 'deleted';
 /** Longest script output sent to a chat. */
 const MAX_SCRIPT_MESSAGE = 3500;
+/** Most bytes of a watched file that a `file_changed` pre-check reads (the file's size is hashed too). */
+const MAX_CHECK_FILE_BYTES = 5 * 1024 * 1024;
+/** Untrusted-source name for output of a script that could reach the network (same wording as the command tools). */
+export const NETWORKED_SCRIPT_SOURCE = 'command with network access';
 
 export type RunJob = (job: JobConfig, text: string, signal: AbortSignal) => Promise<{ task: TaskRecord; text: string }>;
-export type Notify = (job: JobConfig, text: string) => void;
+/** `taint`: untrusted sources the text itself carries (beyond what the job inherited), for the receiving chat's containment. */
+export type Notify = (job: JobConfig, text: string, extra?: { taint?: readonly string[] }) => void;
 export type CheckFn = (job: JobConfig, signal: AbortSignal) => Promise<string>;
 /** Runs a script job's command in the sandbox. Absent when exec is denied. */
 export type RunScript = (
@@ -42,7 +48,19 @@ export type SchedulerDeps = {
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Override the built-in pre-checks (tests). */
   check?: CheckFn;
-  fetch?: typeof fetch;
+  /**
+   * The SSRF-guarded client for `url_changed` pre-checks (response size and time are bounded by its own options).
+   * Without it a `url_changed` check fails.
+   */
+  fetcher?: { fetch(url: string, req?: { signal?: AbortSignal }): Promise<FetchResponse> };
+  /**
+   * The job's effective policy (the owner's intersected with its grant). Built-in pre-checks need `net.fetch`
+   * (`url_changed`) or `fs.read` (`file_changed`) to be allowed for it; `ask` counts as denied because nobody is
+   * there to answer. Without it the built-in pre-checks fail closed.
+   */
+  policyFor?: (job: JobConfig) => Policy;
+  /** Whether the script sandbox can reach the network: its output is then untrusted text (like a networked `run_command`). */
+  scriptNetworked?: boolean;
   /** Time zone for jobs without their own `timezone` (the owner's). Defaults to the host zone. */
   timeZone?: string;
 };
@@ -62,6 +80,8 @@ type Outcome = {
   checkValue?: string | null;
   /** Error reason used in the "paused" notice. */
   reason?: string;
+  /** Untrusted sources the message text carries, merged into the notification's taint. */
+  taint?: string[];
 };
 
 /**
@@ -277,10 +297,10 @@ export class Scheduler {
       if (!outcome.failed && outcome.checkValue !== undefined) fresh.checkValue = outcome.checkValue;
       if (fresh.consecutiveFailures >= FAILURE_THRESHOLD) {
         fresh.paused = true;
-        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${outcome.reason ?? 'unknown'}. Resume with: garnet jobs resume ${job.id}`);
+        this.notify(job, `Job "${job.id}" failed ${FAILURE_THRESHOLD} times in a row and is paused. Last error: ${outcome.reason ?? 'unknown'}. Resume with: garnet jobs resume ${job.id}`, outcome.taint);
       }
       store.saveState(fresh);
-      if (outcome.message !== null) this.notify(job, outcome.message);
+      if (outcome.message !== null) this.notify(job, outcome.message, outcome.taint);
     } catch (e) {
       // Only an abort counts as stopped: a genuine error that races a shutdown is still a failure.
       const aborted = e === controller.signal.reason || (e as Error)?.name === 'AbortError' || isGarnetError(e, 'cancelled');
@@ -318,12 +338,14 @@ export class Scheduler {
       return { status: 'failed', failed: true, note: reason, reason, message: `[${job.id}] ${reason}` };
     }
     const r = await this.deps.runScript(job, signal);
+    // Output (and error text) of a networked script may come from remote servers: mark the notification untrusted.
+    const taint = this.deps.scriptNetworked ? { taint: [NETWORKED_SCRIPT_SOURCE] } : {};
     if (r.cancelled || signal.aborted) return { status: 'cancelled', failed: true, note: 'Cancelled.', reason: 'cancelled', message: null };
     if (r.timedOut || r.exitCode !== 0) {
       const why = r.timedOut ? `timed out after ${job.script!.timeoutSeconds}s` : `exit code ${r.exitCode ?? 'none (killed)'}`;
       const detail = (r.stderr.trim() || r.stdout.trim()).slice(-500);
       const reason = `the script failed (${why})${detail ? `: ${detail}` : ''}`;
-      return { status: 'failed', failed: true, note: reason, reason, message: `[${job.id}] The script failed (${why}).${detail ? `\n${detail}` : ''}` };
+      return { status: 'failed', failed: true, note: reason, reason, message: `[${job.id}] The script failed (${why}).${detail ? `\n${detail}` : ''}`, ...taint };
     }
     const out = r.stdout.trim();
     if (!out) return { status: 'completed', failed: false, note: 'No output; nothing sent.', message: null, checkValue: null };
@@ -332,7 +354,7 @@ export class Scheduler {
       return { status: 'skipped_unchanged', failed: false, note: 'Output unchanged; nothing sent.', message: null };
     }
     const text = out.length > MAX_SCRIPT_MESSAGE ? `${out.slice(0, MAX_SCRIPT_MESSAGE)}\n… (${out.length - MAX_SCRIPT_MESSAGE} more characters)` : out;
-    return { status: 'completed', failed: false, note: 'Output sent.', message: `[${job.id}] ${text}`, checkValue: hash };
+    return { status: 'completed', failed: false, note: 'Output sent.', message: `[${job.id}] ${text}`, checkValue: hash, ...taint };
   }
 
   /** A normal job: runs the agent with the job's instructions. */
@@ -364,22 +386,55 @@ export class Scheduler {
     };
   }
 
-  private notify(job: JobConfig, text: string): void {
+  private notify(job: JobConfig, text: string, taint?: readonly string[]): void {
     try {
-      this.deps.notify(job, text);
+      this.deps.notify(job, text, taint?.length ? { taint } : undefined);
     } catch (e) {
       this.log('warn', `notify for ${job.id} failed: ${errorMessage(e)}`);
     }
   }
 
+  /**
+   * Built-in pre-checks, run under the job's effective policy like the agent's own tools would be: `file_changed`
+   * needs `fs.read` and `url_changed` needs `net.fetch`. Nobody can approve a pre-check, so `ask` is a refusal too.
+   * A refused or failed check fails the run (and is counted towards pausing); it never reads or fetches anyway.
+   */
   private readonly builtinCheck: CheckFn = async (job, signal) => {
     const check = job.check!;
     const hash = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
     if (check.type === 'file_changed') {
       const file = resolveInWorkspace(this.deps.workspace, check.path);
-      return hash(await readFile(file).catch(() => Buffer.from('<missing>')));
+      this.requireAllowed(job, 'fs.read', file);
+      return hash(await readBounded(file));
     }
-    const res = await (this.deps.fetch ?? fetch)(check.url, { signal, redirect: 'follow' });
-    return hash(`${res.status}\n${await res.text()}`);
+    this.requireAllowed(job, 'net.fetch', check.url);
+    if (!this.deps.fetcher) throw new GarnetError('denied', `Pre-check for job "${job.id}" refused: no guarded HTTP client is configured.`);
+    const res = await this.deps.fetcher.fetch(check.url, { signal });
+    return hash(`${res.status}\n${res.truncated ? 'truncated\n' : ''}`.concat(res.body.toString('utf8')));
   };
+
+  private requireAllowed(job: JobConfig, capability: 'fs.read' | 'net.fetch', target: string): void {
+    const policy = this.deps.policyFor?.(job);
+    const decision = policy?.check(capability, { targets: [target] });
+    if (decision?.verdict === 'allow') return;
+    const why = decision ? (decision.verdict === 'ask' ? `${capability} needs approval, and a pre-check cannot ask` : decision.reason) : 'no policy is configured';
+    throw new GarnetError('denied', `Pre-check for job "${job.id}" refused: ${why}. Grant ${capability} to the job (and allow it globally) or remove the check.`);
+  }
+}
+
+/** A file's size plus its first `MAX_CHECK_FILE_BYTES`, or a marker when it cannot be read (missing, a directory, ...). */
+async function readBounded(file: string): Promise<Buffer> {
+  try {
+    const handle = await open(file, 'r');
+    try {
+      const { size } = await handle.stat();
+      const buf = Buffer.alloc(Math.min(size, MAX_CHECK_FILE_BYTES));
+      const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+      return Buffer.concat([Buffer.from(`${size}\n`), buf.subarray(0, bytesRead)]);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return Buffer.from('<missing>');
+  }
 }
