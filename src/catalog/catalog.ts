@@ -15,7 +15,8 @@ function readCatalog(file: string, source: Catalog['source']): Catalog | null {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as { fetchedAt?: unknown; models?: unknown };
     if (typeof raw.fetchedAt !== 'string' || !Array.isArray(raw.models) || raw.models.length < MIN_MODELS) return null;
-    return { source, fetchedAt: raw.fetchedAt, models: raw.models as CatalogModel[] };
+    const models = (raw.models as Partial<CatalogModel>[]).filter((m): m is CatalogModel => typeof m?.id === 'string');
+    return models.length < MIN_MODELS ? null : { source, fetchedAt: raw.fetchedAt, models };
   } catch {
     return null;
   }

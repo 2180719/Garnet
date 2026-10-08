@@ -120,12 +120,12 @@ test('garnet providers list|add|use|rm and config get|set|unset edit config.json
   h.reset();
 
   // Duplicate, bad name, missing base URL, missing model: refused, file unchanged.
-  assert.equal(await h.run('providers', 'add', 'work', '--provider', 'gemini'), 2);
+  assert.equal(await h.run('providers', 'add', 'work', '--provider', 'gemini', '--offline'), 2);
   assert.match(h.err(), /already exists/);
-  assert.equal(await h.run('providers', 'add', 'Bad Name', '--provider', 'fake'), 2);
-  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'openai-compatible', '--model', 'llama3'), 1);
+  assert.equal(await h.run('providers', 'add', 'Bad Name', '--provider', 'fake', '--offline'), 2);
+  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'openai-compatible', '--model', 'llama3', '--offline'), 1);
   assert.match(h.err(), /providers\.loc\.baseUrl/);
-  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'anthropic'), 2);
+  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'anthropic', '--offline'), 2);
   assert.deepEqual(Object.keys(loadConfig(home).config.providers), ['work']);
   h.reset();
 

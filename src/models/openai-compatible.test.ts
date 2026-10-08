@@ -71,7 +71,8 @@ test('streams text with usage, subtracting cached tokens, across mid-line chunk 
   assert.ok(done?.type === 'done');
   assert.equal(done.stopReason, 'end_turn');
   assert.deepEqual(done.message.content, [{ type: 'text', text: 'Hello' }]);
-  assert.deepEqual(done.usage, { inputTokens: 60, outputTokens: 7, cacheReadTokens: 40, cacheWriteTokens: null });
+  assert.deepEqual(done.usage, { inputTokens: 60, outputTokens: 7, cacheReadTokens: 40, cacheWriteTokens: 0 });
+  // Absent cache details with a known prompt count mean nothing cached, so a price with cache rates still gives a cost.
   assert.equal(events.filter((e) => e.type === 'done' || e.type === 'error').length, 1);
 });
 

@@ -72,6 +72,25 @@ test('the bundled snapshot prices the current Anthropic, Gemini and OpenAI model
   assert.equal(catalogPricing(c, { provider: 'anthropic' }, 'claude-unknown-9'), undefined);
 });
 
+test('a catalog price with cache rates still costs a call whose usage omits cache details', async () => {
+  const { costOf } = await import('../contracts/index.ts');
+  const price = catalogPricing(loadCatalog(), { provider: 'gemini' }, 'gemini-3.8-flash');
+  assert.ok(price?.cacheWrite !== undefined, 'the fixture model has a cache-write rate');
+  // What the OpenAI-compatible adapter reports for { prompt_tokens: 1000, completion_tokens: 100 }.
+  const cost = costOf({ inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0 }, price);
+  assert.ok(cost !== null && cost > 0);
+});
+
+test('a cache whose entries are damaged is ignored rather than crashing suggestions', () => {
+  const home = tempDir();
+  mkdirSync(join(home, 'cache'), { recursive: true });
+  writeFileSync(cacheFile(home), JSON.stringify({ fetchedAt: '2999-01-01T00:00:00Z', models: [{ nope: 1 }, ...filler] }));
+  const c = loadCatalog(home);
+  assert.equal(c.source, 'cache');
+  assert.equal(c.models.length, filler.length, 'entries without an id are dropped');
+  assert.doesNotThrow(() => suggestModels(c, { provider: 'gemini' }, 5));
+});
+
 test('refreshCatalog caches a good response and the cache wins only while it is newer than the snapshot', async () => {
   const home = tempDir();
   const ok = await refreshCatalog(home, reply({ data: [raw('google/gemini-9-new'), ...filler] }), () => new Date('2999-01-01T00:00:00Z'));

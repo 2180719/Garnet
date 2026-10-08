@@ -344,8 +344,11 @@ function mapUsage(u: any): Usage {
   const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const prompt = num(u.prompt_tokens);
   // prompt_tokens includes both; OpenRouter reports cache writes for providers that bill them.
-  const cached = num(u.prompt_tokens_details?.cached_tokens);
-  const written = num(u.prompt_tokens_details?.cache_write_tokens);
+  // With the prompt count known, an absent cache detail means nothing was cached or written (OpenAI and Gemini omit
+  // it then); without it the cache counts stay unknown. Otherwise a priced model could never get a known cost.
+  const none = prompt === null ? null : 0;
+  const cached = num(u.prompt_tokens_details?.cached_tokens) ?? none;
+  const written = num(u.prompt_tokens_details?.cache_write_tokens) ?? none;
   return {
     inputTokens: prompt === null ? null : Math.max(0, prompt - (cached ?? 0) - (written ?? 0)),
     outputTokens: num(u.completion_tokens),
