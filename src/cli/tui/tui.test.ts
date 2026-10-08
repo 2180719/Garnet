@@ -136,10 +136,17 @@ test('secret input is dots only: the value is never in a frame', () => {
 
 test('setup stage mapping', () => {
   assert.equal(stageOf('provider'), 'Import & model');
-  assert.equal(stageOf('keep-key'), 'Import & model');
   assert.equal(stageOf('import-apply'), 'Import & model');
-  assert.equal(stageOf('name'), 'Persona');
+  assert.equal(stageOf('name'), 'About you');
+  assert.equal(stageOf('timezone'), 'About you');
   assert.equal(stageOf('discord'), 'Channels');
+  assert.equal(stageOf('tools'), 'Tools');
+  assert.equal(stageOf('ssh-host'), 'Tools');
+  assert.equal(stageOf('github-repos'), 'Extras');
+  assert.equal(stageOf('daily-limit'), 'Extras');
+  // Ids several steps share stay in whatever stage is current.
+  assert.equal(stageOf('keep-key'), null);
+  assert.equal(stageOf('secrets'), null);
   assert.equal(stageOf('review'), 'Save');
   assert.equal(stageOf('pair-wait'), 'Finish');
   assert.equal(stageOf('something-new'), null);

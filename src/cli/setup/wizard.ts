@@ -5,7 +5,7 @@
 // or the env file, never into config.
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   DEFAULT_PROVIDER,
   PROVIDER_NAME_RE,
@@ -15,7 +15,6 @@ import {
   defaultConfig,
   keyEnvOf,
   parseConfig,
-  parseEnv,
   pathsFor,
   readPersona,
   removeFromEnvFile,
@@ -27,99 +26,29 @@ import {
   type ModelConfig,
 } from '../../config/index.ts';
 import { DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV, GEMINI_MODELS } from '../../models/index.ts';
-import { GarnetError, errorMessage } from '../../contracts/index.ts';
-import { KEY_FILE_ENV, PASSPHRASE_ENV, isInside, openSecretStore, secretsFile, unlockFrom, writePrivateFile, type KdfParams } from '../../secrets/index.ts';
+import { errorMessage } from '../../contracts/index.ts';
+import { KEY_FILE_ENV, openSecretStore, unlockFrom, writePrivateFile } from '../../secrets/index.ts';
 import type { ServiceResult } from '../../service/index.ts';
 import type { Io } from '../main.ts';
-import { checkDiscord, checkModel, checkSignal, checkTelegram, type CheckResult, type FetchFn } from './checks.ts';
+import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
+import { integrationsStep, integrationsSummary } from './integrations.ts';
 import { askBasics } from './persona.ts';
-import { sandboxStep } from './sandbox.ts';
+import { preferencesStep, preferencesSummary, timezoneStep } from './preferences.ts';
 import type { Choice, Prompter, Style } from './prompt.ts';
+import { checked, lookup, secretStep } from './secrets.ts';
+import { heading, required, validEnvName, validUrl, type ImportDraft, type SetupDeps, type State } from './shared.ts';
+import { toolsStep, toolsSummary } from './tools.ts';
+import { voiceStep, voiceSummary } from './voice.ts';
 
-export type ImportSource = { source: 'openclaw' | 'hermes'; dir: string };
-export type Pairing = { code: string; channel: string; senderId: string; senderName: string | null };
+export type { ApprovalBinding, ApprovalMode, ImportDraft, ImportSource, Pairing, SetupDeps } from './shared.ts';
 
-export type SetupDeps = {
-  home: string;
-  /** The process environment (with <home>/env already loaded, as `main` does). Updated when setup creates a key file. */
-  env: NodeJS.ProcessEnv;
-  style: Style;
-  /** Where a new key file for the secret store goes (must be outside home). */
-  defaultKeyFile: string;
-  /** Cheaper key derivation (tests). */
-  kdf?: KdfParams;
-  /** Used only for checks the owner agreed to. */
-  fetch?: FetchFn;
-  now?: () => Date;
-  /** The background service, or null where it is unsupported. */
-  service: {
-    label: string;
-    installed: () => boolean;
-    install: () => Promise<ServiceResult>;
-    restart: () => Promise<ServiceResult>;
-  } | null;
-  /** OpenClaw / Hermes installs found on this machine. */
-  importSources: () => ImportSource[];
-  /**
-   * Runs `garnet import` against the draft: persona and config changes (raised memory caps, imported
-   * jobs) land in the draft and are saved with the rest of setup; `ask` puts the import's questions
-   * to the owner.
-   */
-  runImport: (args: string[], draft: ImportDraft) => number | Promise<number>;
-  /**
-   * Starts the wake-up chat (`garnet chat --onboard`) after setup is saved; resolves with its exit code.
-   * Absent where there is nowhere to chat (scripts and tests that do not offer it).
-   */
-  wake?: (opts: { fake: boolean }) => Promise<number>;
-  /** Pending pairing requests in Garnet's database (written by the running service). */
-  pairing: () => { pending: () => Pairing[]; approve: (code: string) => Pairing | null; close: () => void };
-};
-
-export type ImportDraft = {
-  get: () => string | undefined;
-  set: (persona: string) => void;
-  config: () => GarnetConfig;
-  setConfig: (config: GarnetConfig) => void;
-  ask: Prompter;
-};
-
-type Storage = 'encrypted' | 'env-file' | 'env';
 type ProviderChoice = 'anthropic' | 'gemini' | 'openrouter' | 'local' | 'openai-compatible' | 'fake';
-type Section = 'model' | 'persona' | 'sandbox' | 'channels' | 'import' | 'service' | 'done' | 'quit';
-
-type State = {
-  config: GarnetConfig;
-  existing: boolean;
-  /** An invalid config.json to move aside on save. */
-  resetFrom: string | null;
-  secrets: Map<string, { value: string; storage: 'encrypted' | 'env-file' }>;
-  storage: Storage | null;
-  keyFile: string | null;
-  consent: boolean | null;
-  /** Bot names learned from checks, for the pairing hint and summary. */
-  bots: Record<string, string>;
-  todo: string[];
-  changed: boolean;
-  /** The owner chose to set up the persona by talking to the agent, after setup is saved. */
-  wake: boolean;
-};
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1';
 const LOCAL_URL = 'http://127.0.0.1:11434/v1';
 /** Local servers rarely need a key; a dedicated name keeps another provider's key from being sent to them. */
 const LOCAL_KEY_ENV = 'LOCAL_MODEL_API_KEY';
 const E164 = /^\+[1-9][0-9]{6,14}$/;
-
-const validUrl = (v: string): string | null => {
-  try {
-    const u = new URL(v);
-    return u.protocol === 'http:' || u.protocol === 'https:' ? null : 'Use an http:// or https:// URL.';
-  } catch {
-    return 'That is not a URL.';
-  }
-};
-const required = (what: string) => (v: string) => (v.trim() ? null : `Enter ${what}.`);
-const validEnvName = (v: string) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) ? null : 'Use letters, digits and _ (like an environment variable).');
 
 export function providerOf(m: ModelConfig): ProviderChoice {
   if (m.provider !== 'openai-compatible') return m.provider;
@@ -158,14 +87,14 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
   let wantService = false;
   if (st.existing && p.interactive) {
     for (;;) {
-      const section = await p.select<Section>({ id: 'section', message: 'What would you like to change?', choices: menu(st, deps), default: 'done' });
+      const section = await p.select<string>({ id: 'section', message: 'What would you like to change?', choices: menu(st, deps), default: 'done' });
       if (section === 'quit') {
         io.out('Nothing was changed.\n');
         return 0;
       }
       if (section === 'done') break;
       if (section === 'service') wantService = true;
-      else await runSection(section, p, io, deps, st);
+      else await runSection(SECTIONS.find((x) => x.id === section)!, p, io, deps, st);
     }
     if (!st.changed && !wantService) {
       io.out('No changes.\n');
@@ -174,9 +103,9 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
   } else {
     if (!st.existing) await importStep(p, io, deps, st);
     await modelStep(p, io, deps, st);
-    await personaStep(p, io, deps, st);
-    await sandboxSection(p, io, deps, st);
+    await personaSection(p, io, deps, st);
     await channelsStep(p, io, deps, st);
+    await extrasSteps(p, io, deps, st);
   }
 
   if (p.review && !(await p.review({ id: 'review', message: 'Save these settings?', help: `Nothing has been written yet. Saving writes ${join(deps.home, 'config.json')} and stores any keys you entered.`, body: summary(st, deps) }))) {
@@ -206,33 +135,95 @@ function loadState(io: Io, deps: SetupDeps): State {
   }
 }
 
-function menu(st: State, deps: SetupDeps): Choice<Section>[] {
-  const c = st.config;
-  const channels = enabledChannels(c);
-  const persona = readPersona(c.persona);
-  const items: Choice<Section>[] = [
-    { value: 'model', label: 'Model and API key', hint: `${providerOf(activeProvider(c).model)} · ${activeProvider(c).model.name}` },
-    { value: 'persona', label: 'Name and persona', hint: `${persona.name}${persona.owner ? `, for ${persona.owner}` : ''}` },
-    ...(c.permissions.exec === 'deny' ? [] : [{ value: 'sandbox' as const, label: 'Where commands run', hint: sandboxHint(c.sandbox) }]),
-    { value: 'channels', label: 'Messaging channels', hint: channels.length ? channels.join(', ') : 'none' },
-  ];
+/**
+ * The parts of setup, in the order of a first run (after the import offer). On a re-run each one is a menu entry;
+ * adding a part is adding an entry here. `extra` parts belong to the second half of a first run, which the owner may skip.
+ */
+type SectionSpec = {
+  id: string;
+  label: string;
+  hint: (st: State, deps: SetupDeps) => string;
+  run: (p: Prompter, io: Io, deps: SetupDeps, st: State) => Promise<void>;
+  extra: boolean;
+};
+
+const SECTIONS: SectionSpec[] = [
+  {
+    id: 'model',
+    label: 'Model and API key',
+    hint: (st) => `${providerOf(activeProvider(st.config).model)} · ${activeProvider(st.config).model.name}`,
+    run: modelStep,
+    extra: false,
+  },
+  {
+    id: 'persona',
+    label: 'Name, persona and time zone',
+    hint: (st) => {
+      const persona = readPersona(st.config.persona);
+      return `${persona.name}${persona.owner ? `, for ${persona.owner}` : ''} · ${st.config.timezone ?? 'host time zone'}`;
+    },
+    run: personaSection,
+    extra: false,
+  },
+  {
+    id: 'channels',
+    label: 'Messaging channels',
+    hint: (st) => enabledChannels(st.config).join(', ') || 'none',
+    run: channelsStep,
+    extra: false,
+  },
+  { id: 'tools', label: 'Tools and permissions', hint: (st) => toolsSummary(st.config), run: toolsStep, extra: true },
+  {
+    id: 'integrations',
+    label: 'Connectors and skills',
+    hint: (st) => {
+      const i = integrationsSummary(st.config);
+      return `${i.connectors} · skills: ${i.skills}`;
+    },
+    run: integrationsStep,
+    extra: true,
+  },
+  { id: 'voice', label: 'Voice notes', hint: (st) => voiceSummary(st.config), run: voiceStep, extra: true },
+  { id: 'preferences', label: 'Spending cap and dashboard', hint: (st) => preferencesSummary(st.config), run: preferencesStep, extra: true },
+];
+
+function menu(st: State, deps: SetupDeps): Choice<string>[] {
+  const items: Choice<string>[] = SECTIONS.map((x) => ({ value: x.id, label: x.label, hint: x.hint(st, deps) }));
   if (deps.importSources().length) items.push({ value: 'import', label: 'Import from OpenClaw or Hermes' });
   if (deps.service) items.push({ value: 'service', label: 'Background service', hint: deps.service.installed() ? 'installed · restart or reinstall' : 'not installed' });
   items.push({ value: 'done', label: 'Save and finish' }, { value: 'quit', label: 'Quit without saving' });
   return items;
 }
 
-async function runSection(section: Exclude<Section, 'service' | 'done' | 'quit'>, p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
+async function runSection(section: SectionSpec | { id: 'import'; run: SectionSpec['run'] }, p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   const before = JSON.stringify(st.config) + st.secrets.size;
-  if (section === 'model') await modelStep(p, io, deps, st);
-  if (section === 'persona') await personaStep(p, io, deps, st);
-  if (section === 'sandbox') await sandboxSection(p, io, deps, st);
-  if (section === 'channels') await channelsStep(p, io, deps, st);
-  if (section === 'import') await importStep(p, io, deps, st);
+  await section.run(p, io, deps, st);
   if (JSON.stringify(st.config) + st.secrets.size !== before || st.wake) st.changed = true;
 }
 
-const heading = (io: Io, s: Style, n: string) => io.out(`\n${s.accent('◆')} ${s.bold(n)}\n`);
+/**
+ * The second half of a first run: tools, connectors, voice notes, limits. A person is asked once whether to go
+ * through it; a script always runs it (every question keeps the current setting unless a flag says otherwise).
+ */
+async function extrasSteps(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
+  const more = await p.select<'more' | 'defaults'>({
+    id: 'extras',
+    message: 'Want to set up tools and extras now?',
+    help: 'Garnet asks before it browses, writes files or sends messages, and never runs commands unless you allow it. Everything here can be changed later with `garnet setup`.',
+    choices: [
+      { value: 'more', label: 'Yes, walk me through them', hint: 'web search, commands, calendar, GitHub, voice notes, a spending cap' },
+      { value: 'defaults', label: 'No, the defaults are fine' },
+    ],
+    default: 'more',
+    auto: 'more',
+  });
+  if (more === 'defaults') return;
+  for (const section of SECTIONS.filter((x) => x.extra)) {
+    // Voice notes arrive through chats, so only offer them when one is connected.
+    if (section.id === 'voice' && !enabledChannels(st.config).length) continue;
+    await section.run(p, io, deps, st);
+  }
+}
 
 // ---------- import ----------
 
@@ -361,136 +352,17 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
   });
 }
 
-// ---------- secrets ----------
-
-type SecretSpec = { id: string; name: string; label: string; help: string; required: boolean };
-
-type Found = { found: boolean; where: string; value: string | undefined };
-
-function lookup(deps: SetupDeps, st: State, name: string): Found {
-  const pending = st.secrets.get(name);
-  if (pending) return { found: true, where: pending.storage === 'encrypted' ? 'encrypted store' : `${deps.home}/env`, value: pending.value };
-  const envFile = join(deps.home, 'env');
-  if (deps.env[name]) {
-    const inFile = existsSync(envFile) && parseEnv(readFileSync(envFile, 'utf8')).has(name);
-    return { found: true, where: inFile ? `${envFile}, plain text` : 'your environment', value: deps.env[name] };
-  }
-  const store = openSecretStore(deps.home, deps.env, deps.kdf ? { kdf: deps.kdf } : {});
-  if (!store.exists()) return { found: false, where: '', value: undefined };
-  try {
-    const value = store.get(name);
-    return value === undefined ? { found: false, where: '', value: undefined } : { found: true, where: 'encrypted store', value };
-  } catch {
-    // Locked or unreadable: we cannot tell, so do not claim it is there.
-    return { found: false, where: '', value: undefined };
-  }
-}
-
-function canUnlock(deps: SetupDeps): { ok: true } | { ok: false; why: string | null } {
-  try {
-    return unlockFrom(deps.env) ? { ok: true } : { ok: false, why: null };
-  } catch (e) {
-    return { ok: false, why: errorMessage(e) };
-  }
-}
-
-async function chooseStorage(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<Storage> {
-  if (st.storage) return st.storage;
-  const s = deps.style;
-  const unlock = canUnlock(deps);
-  const storeExists = existsSync(secretsFile(deps.home));
-  const lockedOut = !unlock.ok && (storeExists || unlock.why !== null);
-  const choices: Choice<Storage>[] = [];
-  if (!lockedOut) {
-    choices.push({ value: 'encrypted', label: 'Encrypted secret store', hint: unlock.ok ? 'recommended' : `recommended · unlocked by a key file kept outside ${deps.home}` });
-  }
-  choices.push(
-    { value: 'env-file', label: `Plain env file (${deps.home}/env, mode 600)`, hint: 'simple; readable by anyone with your account' },
-    { value: 'env', label: "I'll set environment variables myself", hint: 'shell profile, systemd or a secrets manager' },
-  );
-  if (lockedOut) {
-    io.out(`  ${s.warn('!')} The encrypted store at ${secretsFile(deps.home)} is locked${unlock.ok ? '' : unlock.why ? `: ${unlock.why}` : ''}. Set ${KEY_FILE_ENV} or ${PASSPHRASE_ENV} and re-run setup to use it.\n`);
-  }
-  const storage = await p.select<Storage>({ id: 'secrets', message: 'Where should Garnet keep keys and tokens?', choices, default: choices[0]!.value });
-  if (storage === 'encrypted' && !unlock.ok) {
-    const path = await p.text({
-      id: 'key-file',
-      message: 'Key file that unlocks the store',
-      help: `Created with mode 600. Back it up: without it the store cannot be read. ${KEY_FILE_ENV} pointing at it goes in ${deps.home}/env.`,
-      default: deps.defaultKeyFile,
-      validate: (v) => (!isAbsolute(v) ? 'Use an absolute path.' : isInside(deps.home, v) ? `Keep it outside ${deps.home}, away from the store it unlocks.` : null),
-    });
-    st.keyFile = path;
-  }
-  st.storage = storage;
-  return storage;
-}
-
-/** Asks for one secret (or keeps the one already set). Returns the value when known, for checks. */
-async function secretStep(p: Prompter, io: Io, deps: SetupDeps, st: State, spec: SecretSpec, fresh: boolean): Promise<string | undefined> {
-  const s = deps.style;
-  const found = lookup(deps, st, spec.name);
-  if (found.found && !fresh) {
-    const keep = await p.confirm({ id: `keep-${spec.id}`, message: `Keep the ${spec.label} already set as ${spec.name} (${found.where})?`, default: true });
-    if (keep) return found.value;
-  }
-  const storage = await chooseStorage(p, io, deps, st);
-  if (storage === 'env') {
-    io.out(`  Set ${s.bold(spec.name)} yourself: \`export ${spec.name}=…\` for the terminal, and a ${spec.name}=… line in ${deps.home}/env (mode 600) for the background service.\n`);
-    if (spec.required && !found.found) st.todo.push(`Set ${spec.name} (your ${spec.label}).`);
-    return found.value;
-  }
-  const value = await p.secret({ id: spec.id, message: `Paste your ${spec.label}`, help: spec.help });
-  if (!value) {
-    if (spec.required && !found.found) {
-      io.out(`  ${s.warn('!')} Skipped. Add it later with \`garnet secrets set ${spec.name}\`.\n`);
-      st.todo.push(`Add your ${spec.label}: garnet secrets set ${spec.name}`);
-    }
-    return found.value;
-  }
-  if (/\s/.test(value)) {
-    io.out(`  ${s.warn('!')} That contains spaces; keys and tokens never do. Removed them.\n`);
-  }
-  st.secrets.set(spec.name, { value: value.replace(/\s+/g, ''), storage });
-  return st.secrets.get(spec.name)!.value;
-}
-
-/**
- * Enters a secret, then (with consent, asked once) checks it live. On a
- * failed check a person may re-enter it; a script fails instead.
- */
-async function checked(
-  p: Prompter,
-  io: Io,
-  deps: SetupDeps,
-  st: State,
-  o: { what: string; consentHelp: string; enter: (fresh: boolean) => Promise<string | undefined>; check: (value: string | undefined) => Promise<CheckResult>; canRetry: boolean; needsValue?: boolean },
-): Promise<CheckResult | null> {
-  const s = deps.style;
-  let fresh = false;
-  for (;;) {
-    const value = await o.enter(fresh);
-    if (o.needsValue !== false && value === undefined) return null;
-    if (st.consent === null) {
-      st.consent = await p.confirm({ id: 'check', message: 'Check keys and connections with a live request as you go?', help: o.consentHelp, default: true, auto: false });
-    }
-    if (!st.consent) return null;
-    const result = await o.check(value);
-    io.out(`  ${!result.ok ? s.bad('✗') : result.warn ? s.warn('!') : s.ok('✓')} ${result.detail}\n`);
-    if (result.ok) return result;
-    if (!p.interactive) throw new GarnetError('config', `The ${o.what} check failed: ${result.detail}. Nothing was saved.`);
-    if (!o.canRetry || !(await p.confirm({ id: `retry-${o.what}`, message: 'Enter it again?', default: true }))) {
-      st.todo.push(`Fix the ${o.what} setup (the live check said: ${result.detail}), then run \`garnet doctor\`.`);
-      return result;
-    }
-    fresh = true;
-  }
-}
 
 // ---------- persona ----------
 
+/** Name, how to be addressed and answer style, then the time zone (the wake-up chat asks that itself). */
+async function personaSection(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
+  await personaStep(p, io, deps, st);
+  if (!st.wake) await timezoneStep(p, st, deps);
+}
+
 async function personaStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
-  heading(io, deps.style, 'Persona');
+  heading(io, deps.style, 'About you');
   st.wake = false;
   // Only a person at a terminal is offered the chat, and only when the model can answer. Scripts always get the form.
   if (p.interactive && deps.wake && wakeReady(deps, st)) {
@@ -544,17 +416,6 @@ async function wakeStep(io: Io, deps: SetupDeps, st: State): Promise<void> {
   } catch {
     // Keep the draft: the summary is informational.
   }
-}
-
-// ---------- sandbox ----------
-
-const sandboxHint = (sb: GarnetConfig['sandbox']): string => (sb.backend === 'ssh' && sb.ssh.host ? `ssh ${sb.ssh.user ? `${sb.ssh.user}@` : ''}${sb.ssh.host}` : sb.backend);
-
-/** Where commands run. Skipped when commands are denied; a script that passes no flag keeps the current backend. */
-async function sandboxSection(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
-  if (st.config.permissions.exec === 'deny') return;
-  heading(io, deps.style, 'Commands');
-  st.config.sandbox = await sandboxStep(p, st.config.sandbox);
 }
 
 // ---------- channels ----------
@@ -829,6 +690,11 @@ function summary(st: State, deps: SetupDeps, service?: ServiceOutcome): string {
           .join('; ')
       : 'none',
   ]);
+  rows.push(['Tools', toolsSummary(c)]);
+  const extras = integrationsSummary(c);
+  rows.push(['Services', `${extras.connectors} · skills: ${extras.skills}`]);
+  rows.push(['Voice', voiceSummary(c)]);
+  rows.push(['Limits', `${c.timezone ?? 'host time zone'} · ${preferencesSummary(c)}`]);
   if (deps.service) rows.push(['Service', deps.service.installed() ? `${deps.service.label} installed${service === 'failed' ? ', but not running' : ''}` : 'not installed']);
   return rows.map(([k, v]) => `  ${s.muted(k.padEnd(9))} ${v}\n`).join('');
 }
@@ -847,6 +713,7 @@ function nextSteps(st: State, deps: SetupDeps, service: ServiceOutcome): string 
   step(activeProvider(c).model.provider === 'fake' ? 'garnet chat --fake' : 'garnet chat', 'talk to Garnet in this terminal');
   if (channels.length && service !== 'installed' && service !== 'restarted') step('garnet start', 'run Garnet for your channels (or `garnet service install`)');
   if (channels.length) step('garnet pair list', 'see and approve who wants to talk to Garnet');
+  if (c.permissions.exec !== 'deny') step('garnet sandbox check', 'make sure commands can run');
   step('garnet doctor', 'check that everything is wired up');
   step('garnet setup', 'change any of this later');
   step('garnet dashboard', 'open the web dashboard (optional)');
