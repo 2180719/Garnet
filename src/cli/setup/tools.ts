@@ -13,12 +13,12 @@ type Permissions = GarnetConfig['permissions'];
 export type Ability = 'web' | 'files' | 'memory' | 'reminders' | 'messages' | 'commands';
 
 export const ABILITIES: { id: Ability; capability: keyof Permissions; label: string; hint: string }[] = [
-  { id: 'web', capability: 'net.fetch', label: 'Look things up on the web', hint: 'search and read pages' },
-  { id: 'files', capability: 'fs.write', label: 'Create and change files', hint: 'in its own workspace folder' },
-  { id: 'memory', capability: 'memory.write', label: 'Remember things between chats', hint: 'notes about you and its own notes' },
-  { id: 'reminders', capability: 'schedule.edit', label: 'Set reminders and scheduled jobs', hint: 'it can wake itself up later' },
-  { id: 'messages', capability: 'message.send', label: 'Message you on its own', hint: 'only in chats you have paired' },
-  { id: 'commands', capability: 'exec', label: 'Run shell commands', hint: 'in a sandbox · off unless you tick it' },
+  { id: 'web', capability: 'net.fetch', label: 'Look things up on the web', hint: 'web_search, web_fetch' },
+  { id: 'files', capability: 'fs.write', label: 'Create and change files', hint: 'write_file, in its own workspace folder' },
+  { id: 'memory', capability: 'memory.write', label: 'Remember things between chats', hint: 'memory: notes about you and its own notes' },
+  { id: 'reminders', capability: 'schedule.edit', label: 'Set reminders and scheduled jobs', hint: 'schedule: it can wake itself up later' },
+  { id: 'messages', capability: 'message.send', label: 'Message you on its own', hint: 'send_message, only to chats you have paired' },
+  { id: 'commands', capability: 'exec', label: 'Run shell commands', hint: 'run_command, in a sandbox · off unless you tick it' },
 ];
 
 /** Which abilities a permissions block turns on (anything but `deny`). */
