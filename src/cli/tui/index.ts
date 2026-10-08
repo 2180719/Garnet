@@ -13,25 +13,22 @@ export type TuiStreams = { stdin: FsInput; stdout: FsOutput & { isTTY?: boolean 
 
 /**
  * Whether a secret NAME resolves: in the environment, or in the encrypted store. Names only, never values.
- * Answers are remembered for the life of the browser, so redrawing does not reopen the store.
+ * The store is read once, so redrawing does not repeat the key derivation.
  */
 export function secretStatusFor(home: string, env: NodeJS.ProcessEnv): (name: string) => SecretStatus {
-  const seen = new Map<string, SecretStatus>();
+  // The store is opened (one key derivation) the first time a name is not in the environment, then reused.
+  let stored: Set<string> | 'locked' | null = null;
   return (name) => {
-    const known = seen.get(name);
-    if (known) return known;
-    let status: SecretStatus;
-    if (env[name]) status = 'set';
-    else {
+    if (env[name]) return 'set';
+    if (stored === null) {
       try {
         const store = openSecretStore(home, env);
-        status = store.exists() && store.names().includes(name) ? 'set' : 'missing';
+        stored = new Set(store.exists() ? store.names() : []);
       } catch {
-        status = 'locked';
+        stored = 'locked';
       }
     }
-    seen.set(name, status);
-    return status;
+    return stored === 'locked' ? 'locked' : stored.has(name) ? 'set' : 'missing';
   };
 }
 

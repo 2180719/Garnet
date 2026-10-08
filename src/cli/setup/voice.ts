@@ -1,6 +1,6 @@
 // Voice notes: which speech-to-text service turns them into text. Audio is sent to that service, so the
 // default is off and the question says where it goes. A `command` backend set in config is kept as it is.
-import { CONFIG_VERSION, parseConfig, type GarnetConfig } from '../../config/index.ts';
+import { CONFIG_VERSION, keyEnvOf, listProviders, parseConfig, type GarnetConfig } from '../../config/index.ts';
 import type { Io } from '../main.ts';
 import type { Choice, Prompter } from './prompt.ts';
 import { secretStep } from './secrets.ts';
@@ -20,6 +20,18 @@ export function serviceOf(t: Transcription): Service {
   const host = t.baseUrl ? new URL(t.baseUrl).host : '';
   return host === 'api.openai.com' ? 'openai' : host === 'api.groq.com' ? 'groq' : 'other';
 }
+
+const origin = (url: string | undefined): string => {
+  try {
+    return url ? new URL(url).origin : '';
+  } catch {
+    return '';
+  }
+};
+
+/** True when a model provider on another host already reads the secret called `name`. */
+const usedByOtherHost = (c: GarnetConfig, name: string, baseUrl: string): boolean =>
+  listProviders(c).some((x) => keyEnvOf(x.model) === name && origin(x.model.baseUrl ?? (x.model.provider === 'anthropic' ? 'https://api.anthropic.com' : undefined)) !== origin(baseUrl));
 
 export async function voiceStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   const s = deps.style;
@@ -54,14 +66,17 @@ export async function voiceStep(p: Prompter, io: Io, deps: SetupDeps, st: State)
     });
     const model = await p.text({ id: 'voice-model', message: 'Transcription model name', default: cur.model, validate: required('a model name') });
     // Another service's key is never offered to this address.
-    const was = now === 'other' ? (cur.apiKeyEnv ?? '') : '';
+    const sameAddress = (url: string) => now === 'other' && origin(url) === origin(cur.baseUrl);
+    const was = sameAddress(baseUrl) ? (cur.apiKeyEnv ?? '') : '';
     const keyEnv = await p.text({ id: 'voice-key-env', message: 'Name of the secret that holds its key (empty if it needs none)', default: was, auto: was, validate: (v) => (v === '' ? null : validEnvName(v)) });
     const { apiKeyEnv: _old, ...rest } = cur;
     next = { ...rest, backend: 'openai-compatible', baseUrl, model, ...(keyEnv ? { apiKeyEnv: keyEnv } : {}) };
     if (keyEnv) await secretStep(p, io, deps, st, { id: 'voice-key', name: keyEnv, label: 'transcription API key', help: 'Press Enter to skip it.', required: false }, false);
   } else {
     const svc = SERVICES[service];
-    const name = now === service && cur.apiKeyEnv ? cur.apiKeyEnv : svc.keyEnv;
+    // A name another provider's key already uses (say OPENAI_API_KEY for some other OpenAI-compatible host) is not reused.
+    const own = now === service && cur.apiKeyEnv ? cur.apiKeyEnv : svc.keyEnv;
+    const name = usedByOtherHost(st.config, own, svc.baseUrl) ? `${svc.keyEnv.replace(/_API_KEY$/, '')}_TRANSCRIBE_API_KEY` : own;
     next = { ...cur, backend: 'openai-compatible', baseUrl: svc.baseUrl, model: now === service ? cur.model : svc.model, apiKeyEnv: name };
     await secretStep(p, io, deps, st, { id: 'voice-key', name, label: `${svc.label} API key`, help: svc.keyHelp, required: true }, false);
   }

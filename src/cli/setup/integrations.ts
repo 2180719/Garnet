@@ -46,7 +46,7 @@ const CONNECTOR_STEPS: Record<ConnectorName, ConnectorSpec> = {
       const write = await p.confirm({
         id: 'github-write',
         message: 'May Garnet comment on issues and pull requests?',
-        help: 'Each comment still asks you first, with the full text.',
+        help: 'Commenting needs permission to send messages, and asks first unless you allowed that.',
         default: c.github.write,
         auto: c.github.write,
       });
@@ -75,7 +75,8 @@ const CONNECTOR_STEPS: Record<ConnectorName, ConnectorSpec> = {
         default: c.weather.units,
         auto: c.weather.units,
       });
-      return { ...c, weather: { ...c.weather, units, ...(location ? { location } : {}) } };
+      const { location: _old, ...rest } = c.weather;
+      return { ...c, weather: { ...rest, units, ...(location ? { location } : {}) } };
     },
   },
 };
@@ -91,11 +92,19 @@ const only = <T extends string>(all: readonly T[], xs: readonly string[]): T[] =
 
 const splitList = (v: string): string[] => v.split(',').map((x) => x.trim()).filter(Boolean);
 
-/** Connectors need to fetch over the network: an ability the owner switched off is raised to `ask`, and the owner is told. */
-function allowFetching(io: Io, deps: SetupDeps, st: State, why: string): void {
+/**
+ * Connectors need to fetch over the network. When the owner switched web access off, a person is asked whether
+ * to turn it back on (to `ask`); a script never raises a permission, it only says what is missing.
+ */
+async function allowFetching(p: Prompter, io: Io, deps: SetupDeps, st: State, label: string): Promise<void> {
   if (st.config.permissions['net.fetch'] !== 'deny') return;
-  st.config = { ...st.config, permissions: { ...st.config.permissions, 'net.fetch': 'ask' } };
-  io.out(`  ${deps.style.warn('!')} ${why} needs web access, so "look things up on the web" is back on (it asks first).\n`);
+  const s = deps.style;
+  if (p.interactive && (await p.confirm({ id: 'connector-web', message: `${label} needs web access, which is off. Turn it back on? (it asks first)`, default: true }))) {
+    st.config = { ...st.config, permissions: { ...st.config.permissions, 'net.fetch': 'ask' } };
+    return;
+  }
+  io.out(`  ${s.warn('!')} ${label} needs web access, which is off.\n`);
+  st.todo.push(`${label} will not work until web access is on (permissions.net.fetch is deny).`);
 }
 
 export async function integrationsStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
@@ -114,7 +123,7 @@ export async function integrationsStep(p: Prompter, io: Io, deps: SetupDeps, st:
   if (dropped.length) io.out(`  ${s.muted(`Turned off ${dropped.join(', ')}. Its secret stays where it is.`)}\n`);
   for (const [i, name] of picked.entries()) {
     if (picked.length > 1) io.out(`\n${s.bold(`${CONNECTOR_STEPS[name].label} (${i + 1} of ${picked.length})`)}\n`);
-    allowFetching(io, deps, st, CONNECTOR_STEPS[name].label);
+    await allowFetching(p, io, deps, st, CONNECTOR_STEPS[name].label);
     st.config = { ...st.config, connectors: await CONNECTOR_STEPS[name].setup(p, io, deps, st) };
   }
 

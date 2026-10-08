@@ -57,7 +57,8 @@ async function searchStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Prom
     search.searxngUrl = await p.text({ id: 'searxng-url', message: 'Address of your SearXNG instance', help: 'For example http://127.0.0.1:8888', ...(cur.searxngUrl ? { default: cur.searxngUrl } : {}), validate: validUrl });
   }
   if (spec?.keyEnv) {
-    const name = cur.apiKeyEnv ?? spec.keyEnv;
+    // Another backend's key name is never carried over: that key would be sent to the wrong service.
+    const name = cur.backend === backend ? (cur.apiKeyEnv ?? spec.keyEnv) : spec.keyEnv;
     search.apiKeyEnv = name;
     await secretStep(p, io, deps, st, { id: 'web-search-key', name, label: `${spec.label} API key`, help: spec.keyHelp ?? '', required: true }, false);
   }
@@ -67,7 +68,7 @@ async function searchStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Prom
 export async function toolsStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promise<void> {
   const s = deps.style;
   heading(io, s, 'Tools');
-  io.out(`  ${s.muted('Switch on what Garnet may do. Anything you tick still asks first, until you say otherwise.')}\n`);
+  io.out(`  ${s.muted('Switch on what Garnet may do. Things you tick start at ask-first unless you already allowed them.')}\n`);
   const current = enabledAbilities(st.config.permissions);
   const picked = await p.multiselect<Ability>({
     id: 'tools',
@@ -76,11 +77,10 @@ export async function toolsStep(p: Prompter, io: Io, deps: SetupDeps, st: State)
     choices: ABILITIES.map((a) => ({ value: a.id, label: a.label, hint: a.hint })),
     default: current,
   });
-  const wasOn = current;
   st.config = { ...st.config, permissions: applyAbilities(st.config.permissions, picked) };
   if (picked.includes('web')) await searchStep(p, io, deps, st);
   if (picked.includes('commands')) {
-    if (!wasOn.includes('commands')) io.out(`  ${s.muted('Commands stay in a sandbox. Docker needs to be installed; `garnet sandbox check` tests it.')}\n`);
+    if (!current.includes('commands')) io.out(`  ${s.muted('Commands stay in a sandbox. Docker needs to be installed; `garnet sandbox check` tests it.')}\n`);
     st.config = { ...st.config, sandbox: await sandboxStep(p, st.config.sandbox) };
   }
   await approvalsStep(p, io, deps, st);

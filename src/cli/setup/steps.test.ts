@@ -173,7 +173,6 @@ test('connectors: one that needs the web turns web access back on, and a skill w
   existing(h, (c) => (c.permissions['net.fetch'] = 'deny'));
   await menu(h, 'integrations', { connectors: 'weather', skills: 'github-triage,web-research', 'weather-location': '', 'weather-units': 'metric' });
   assert.equal(h.config().permissions['net.fetch'], 'ask');
-  assert.match(h.out(), /Weather needs web access/);
   assert.match(h.out(), /github-triage needs the GitHub connector/);
   assert.deepEqual(h.config().skills.enabled, ['github-triage', 'web-research']);
 });
@@ -278,3 +277,61 @@ test('`garnet setup --help` lists the tools and extras flags', async () => {
   for (const f of ['--timezone', '--extras', '--tools', '--web-search', '--connectors', '--skills', '--voice', '--daily-limit', '--dashboard', '--github-repos', '--weather-units']) assert.ok(out.includes(f), f);
 });
 
+
+// ---------- regressions found in review ----------
+
+test('web search: switching backends never carries the old backend key name along', async () => {
+  const h = harness();
+  existing(h, (c) => void (c.web.search = { ...c.web.search, backend: 'brave', apiKeyEnv: 'BRAVE_API_KEY' }));
+  await menu(h, 'tools', { tools: 'web', 'web-search': 'tavily', secrets: 'env' });
+  assert.equal(h.config().web.search.apiKeyEnv, 'TAVILY_API_KEY');
+});
+
+test('voice notes: a key name used by a provider on another host, or for another address, is not reused', async () => {
+  const h = harness();
+  existing(h, (c) => void (c.model = { ...c.model, provider: 'openai-compatible', baseUrl: 'https://api.together.xyz/v1', apiKeyEnv: 'OPENAI_API_KEY' }));
+  await menu(h, 'voice', { voice: 'openai', secrets: 'env' });
+  assert.equal(h.config().media.transcription.apiKeyEnv, 'OPENAI_TRANSCRIBE_API_KEY');
+
+  const o = harness();
+  existing(o, (c) => void (c.media.transcription = { ...c.media.transcription, backend: 'openai-compatible', baseUrl: 'https://a.example/v1', apiKeyEnv: 'A_KEY' }));
+  await menu(o, 'voice', { voice: 'other', 'voice-url': 'https://b.example/v1', 'voice-model': 'm', 'voice-key-env': '' });
+  assert.equal(o.config().media.transcription.apiKeyEnv, undefined);
+});
+
+test('the import entry of the re-run menu works', async () => {
+  const h = harness({ sources: () => [{ source: 'openclaw', dir: '/nowhere' }] });
+  existing(h);
+  const p = new AnswerPrompter({ section: ['import', 'done'], import: false }, { interactive: true });
+  assert.equal(await runSetup(p, h.io, h.deps), 0);
+  assert.ok(p.asked.includes('import'));
+});
+
+test('connectors: a script never turns web access back on; a person is asked first', async () => {
+  const h = harness();
+  existing(h, (c) => ((c.permissions['net.fetch'] = 'deny'), (c.connectors.enabled = ['weather'])));
+  assert.equal(await h.run({ ...NO_CHANNELS, extras: 'more' }, {}, false).done, 0);
+  assert.equal(h.config().permissions['net.fetch'], 'deny');
+  assert.match(h.out(), /Still to do/);
+
+  const q = harness();
+  existing(q, (c) => (c.permissions['net.fetch'] = 'deny'));
+  await menu(q, 'integrations', { connectors: 'weather', skills: 'none', 'connector-web': false, 'weather-location': '', 'weather-units': 'metric' });
+  assert.equal(q.config().permissions['net.fetch'], 'deny');
+});
+
+test('wake-up chosen, then memory switched off by the tools step: falls back to the form and asks the time zone', async () => {
+  const h = harness();
+  h.deps.wake = async () => 0;
+  const { p, done } = h.run({ ...FAKE, onboarding: 'wake', extras: 'more', tools: 'web', name: 'Juno', timezone: 'Europe/London' });
+  assert.equal(await done, 0);
+  assert.ok(p.asked.includes('name'));
+  assert.equal(h.config().timezone, 'Europe/London');
+});
+
+test('weather: an empty place clears the saved one', async () => {
+  const h = harness();
+  existing(h, (c) => ((c.connectors.enabled = ['weather']), (c.connectors.weather.location = 'Lisbon')));
+  await menu(h, 'integrations', { connectors: 'weather', skills: 'none', 'weather-location': '', 'weather-units': 'metric' });
+  assert.equal(h.config().connectors.weather.location, undefined);
+});

@@ -94,7 +94,7 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
       }
       if (section === 'done') break;
       if (section === 'service') wantService = true;
-      else await runSection(SECTIONS.find((x) => x.id === section)!, p, io, deps, st);
+      else await runSection(section === 'import' ? { id: 'import', run: importStep } : SECTIONS.find((x) => x.id === section)!, p, io, deps, st);
     }
     if (!st.changed && !wantService) {
       io.out('No changes.\n');
@@ -108,6 +108,13 @@ export async function runSetup(p: Prompter, io: Io, deps: SetupDeps): Promise<nu
     await extrasSteps(p, io, deps, st);
   }
 
+  // The tools step may have switched off the permission the wake-up chat needs to save what it learns.
+  if (st.wake && st.config.permissions['memory.write'] === 'deny') {
+    io.out(`  ${deps.style.warn('!')} The wake-up chat needs to remember things, which is off. Using the short form instead.\n`);
+    st.wake = false;
+    await personaStep(p, io, deps, st);
+    await timezoneStep(p, st, deps);
+  }
   if (p.review && !(await p.review({ id: 'review', message: 'Save these settings?', help: `Nothing has been written yet. Saving writes ${join(deps.home, 'config.json')} and stores any keys you entered.`, body: summary(st, deps) }))) {
     io.out('Nothing was saved.\n');
     return 0;

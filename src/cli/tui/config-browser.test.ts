@@ -213,3 +213,37 @@ test('short terminals still show the question and key hints', () => {
   assert.ok(rows.some((r) => r.includes('type to filter')));
   assert.equal(rows.length, 9);
 });
+
+test('the changes view: editing a setting back to its saved value does not move the editor to another setting', () => {
+  const b = browser();
+  b.open('Skills');
+  b.press('\r');
+  b.press(' \x1b'); // skills.enabled: one skill on
+  b.press('\x1b');
+  b.open('Connectors');
+  b.press('\r');
+  b.press(' \x1b');
+  b.press('\x1b');
+  b.press('c');
+  b.press('\r'); // first changed setting
+  const target = b.state.target;
+  b.press(' '); // back to the saved value: it drops out of the changes list
+  assert.equal(b.state.target, target);
+  b.press(' ');
+  assert.deepEqual(getAt(b.state.draft, ['connectors', 'enabled']), ['calendar']);
+  b.press('\x1b');
+  assert.equal(b.state.level, 'fields');
+
+  const one = browser();
+  one.open('Web');
+  one.seek('web.allowHosts');
+  one.press('\r');
+  one.press('a');
+  one.press('x.org\r');
+  one.press('\x1b');
+  one.press('c');
+  one.press('\r');
+  one.press('d'); // empties the list again: must not crash
+  assert.equal(one.state.level, 'list');
+  assert.deepEqual(getAt(one.state.draft, ['web', 'allowHosts']), []);
+});

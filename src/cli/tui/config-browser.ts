@@ -32,6 +32,8 @@ export type ConfigState = {
   /** Scroll offset of the field list. */
   top: number;
   scope: Scope;
+  /** The setting an edit, picker or list level is working on, by path, so it cannot change under the cursor when the visible list does. */
+  target: string | null;
   edit: EditLine;
   choice: number;
   /** The list editor: the highlighted item (one past the end is "add an item") and the item being typed, if any. */
@@ -56,7 +58,7 @@ const NO_EDIT: EditLine = { chars: [], cursor: 0, error: null };
 
 export function initialConfigState(config: GarnetConfig, fields: Field[]): ConfigState {
   const sections = orderSections([...new Set(fields.map((f) => f.section))]);
-  return { draft: config, saved: key(config), level: 'sections', sections, section: 0, row: 0, top: 0, scope: { kind: 'section' }, edit: NO_EDIT, choice: 0, list: { cursor: 0, editing: null }, status: null };
+  return { draft: config, saved: key(config), level: 'sections', sections, section: 0, row: 0, top: 0, scope: { kind: 'section' }, target: null, edit: NO_EDIT, choice: 0, list: { cursor: 0, editing: null }, status: null };
 }
 
 export const isDirty = (s: ConfigState) => key(s.draft) !== s.saved;
@@ -83,6 +85,7 @@ export function visibleFields(c: ConfigContext, s: ConfigState): Field[] {
 }
 
 const fieldAt = (c: ConfigContext, s: ConfigState): Field | undefined => {
+  if (s.target && s.level !== 'fields') return c.fields.find((f) => dotted(f) === s.target);
   const list = visibleFields(c, s);
   return list[Math.min(s.row, list.length - 1)];
 };
@@ -146,6 +149,7 @@ function open(s: ConfigState, field: Field): Next {
     const r = apply(s, field, !(value ?? field.default ?? false));
     return r.error ? info(s, r.error, 'error') : { state: r.state };
   }
+  s = { ...s, target: dotted(field) };
   if (field.kind === 'enum') return { state: { ...s, level: 'enum', choice: Math.max(0, field.choices.indexOf(String(value ?? field.default))), status: null } };
   if (field.kind === 'list') return { state: { ...s, level: field.itemChoices.length ? 'multi' : 'list', choice: 0, list: { cursor: 0, editing: null }, status: null } };
   const chars = cleanInput(value === undefined ? '' : String(value));
@@ -337,7 +341,7 @@ function secretNote(ctx: ConfigContext, s: ConfigState, f: Field): string {
   const status = ctx.secretStatus(name);
   const word = status === 'set' ? '✓ found' : status === 'missing' ? '✗ not found' : '? store locked';
   // An unset field uses a default name; say which, so the note is not about a name that is not on screen.
-  return `  ${explicit === undefined ? `${name} ` : ''}${word}`;
+  return `  ${explicit === undefined ? `${sanitize(name)} ` : ''}${word}`;
 }
 
 function describe(ctx: ConfigContext, s: ConfigState, f: Field, width: number): string[] {
@@ -421,7 +425,7 @@ function viewSections(ctx: ConfigContext, s: ConfigState, base: Base, note: stri
     const n = ctx.fields.filter((f) => f.section === name).length;
     const edited = ctx.fields.filter((f) => f.section === name && changed(s, f)).length;
     const title = padEnd(sectionTitle(name), 18);
-    const summary = info?.summary ? info.summary(s.draft) : countLabel(n, 'setting');
+    const summary = sanitize(info?.summary ? info.summary(s.draft) : countLabel(n, 'setting'));
     return truncate(`${on ? t.accent('›') : ' '} ${on ? t.bold(title) : title} ${t.muted(summary)}${edited ? t.warn(` (${edited} changed)`) : ''}`, leftW);
   });
   let body = left;
