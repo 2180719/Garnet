@@ -76,4 +76,11 @@ export type TaskRecord = {
   startedAt: string;
   endedAt: string | null;
   reason: string | null;
+  /**
+   * Tokens spent for this task outside its own model calls: by subagents it started (and theirs) and by side-model
+   * tools such as `vision_analyze`. Counted against the task's token budget and by the scheduler's job limits, but
+   * kept apart from `usage` and not stored: those calls are already priced from their own task rows or spend
+   * records, so adding them to `usage` would count their cost twice.
+   */
+  delegatedUsage?: Usage;
 };

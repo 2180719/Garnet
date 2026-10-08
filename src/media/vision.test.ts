@@ -31,8 +31,9 @@ function setup(opts: { seen?: FakeModel; blind?: boolean } = {}) {
   });
   const registry = new ToolRegistry().register(tool);
   const executor = new ToolExecutor({ registry, policy: new Policy({ ...defaultConfig().permissions, 'fs.read': 'allow' }), approver: async () => 'denied' });
-  const call = (input: unknown) => executor.execute({ type: 'tool_call', id: 'c', name: 'vision_analyze', input }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal });
-  return { workspace, media, seeing, blind, spent, call };
+  const charged: Usage[] = [];
+  const call = (input: unknown) => executor.execute({ type: 'tool_call', id: 'c', name: 'vision_analyze', input }, { sessionId: 's', workspace, memoryNamespace: 'default', signal: new AbortController().signal, chargeUsage: (u) => charged.push(u) });
+  return { workspace, media, seeing, blind, spent, charged, call };
 }
 
 test('vision_analyze sends a workspace image to the model and records its spend', async () => {
@@ -47,6 +48,7 @@ test('vision_analyze sends a workspace image to the model and records its spend'
   assert.equal(img.attachment.mimeType, 'image/png');
   assert.equal(img.data, readFileSync(PNG).toString('base64'));
   assert.equal(t.spent.length, 1);
+  assert.deepEqual(t.charged, t.spent, "the same usage is charged to the calling task");
 });
 
 test('vision_analyze reads stored attachments and can pick another provider', async () => {

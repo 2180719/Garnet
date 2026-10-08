@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { nextRun, parseCron, zonedParts, type JobConfig } from '../config/index.ts';
-import { billedTokens, errorMessage, isGarnetError, GarnetError, type SessionTaint, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
+import { errorMessage, isGarnetError, GarnetError, taskTokens, type SessionTaint, type TaskRecord, type TaskStatus } from '../contracts/index.ts';
 import { resolveInWorkspace, type Policy } from '../policy/index.ts';
 import type { JobRunStatus, JobStore } from '../store/index.ts';
 import type { FetchResponse } from '../tools/index.ts';
@@ -377,7 +377,7 @@ export class Scheduler {
       .filter(Boolean)
       .join('\n\n');
     const { task, text: reply } = await this.deps.run(job, text, signal);
-    const tokens = billedTokens(task.usage);
+    const tokens = taskTokens(task); // includes subagents and side-model calls
     if (task.status === 'cancelled' && (signal.reason === SHUTDOWN || signal.reason === DELETED)) {
       return { status: 'cancelled', failed: false, taskId: task.id, tokens, message: null };
     }

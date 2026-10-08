@@ -1,6 +1,7 @@
 import {
   errorMessage,
   isGarnetError,
+  MAX_TIMER_MS,
   type ErrorCategory,
   type ToolCallBlock,
   type ToolContext,
@@ -15,6 +16,8 @@ import type { ArtifactStore } from './artifacts.ts';
 import { repairCall } from './repair.ts';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+/** The abort reason of the task-deadline signal, to tell it from the tool's own timeout. */
+const DEADLINE = new Error('The task reached its time limit.');
 const DEFAULT_MAX_OUTPUT = 20_000;
 
 export type ExecutorDeps = {
@@ -118,6 +121,7 @@ export class ToolExecutor {
       }
       let answer: ApprovalDecision;
       const asked = Date.now();
+      ctx.approval?.begin();
       try {
         answer = await this.deps.approver({
           sessionId: ctx.sessionId,
@@ -132,6 +136,8 @@ export class ToolExecutor {
       } catch (e) {
         approvalWaitMs = Date.now() - asked;
         return fail('internal', `Could not ask the owner for approval: ${errorMessage(e)}. The operation did not run.`);
+      } finally {
+        ctx.approval?.end();
       }
       approvalWaitMs = Date.now() - asked;
       if (answer === 'denied') return fail('denied', 'The owner declined this operation. Do not retry it.');
@@ -140,7 +146,20 @@ export class ToolExecutor {
 
     if (ctx.signal.aborted) return fail('cancelled', 'Cancelled before the tool started.');
     const timeout = AbortSignal.timeout(tool.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const signal = AbortSignal.any([ctx.signal, timeout]);
+    // The task's wall-clock deadline also bounds the tool. Time spent waiting on the owner does not count against it.
+    // It can move while the tool runs (a subagent waiting for the owner), so the timer re-checks it when it fires.
+    const deadline = new AbortController();
+    let deadlineTimer: NodeJS.Timeout | undefined;
+    const armDeadline = () => {
+      const left = ctx.deadline!() - Date.now();
+      if (left <= 0) return deadline.abort(DEADLINE);
+      // After the first arming, a short `left` means the deadline is being held back by an open wait: do not spin.
+      deadlineTimer = setTimeout(armDeadline, Math.min(Math.max(left, rearmed ? 50 : 0), MAX_TIMER_MS)).unref();
+      rearmed = true;
+    };
+    let rearmed = false;
+    if (ctx.deadline) armDeadline();
+    const signal = AbortSignal.any([ctx.signal, timeout, deadline.signal]);
     // From here the tool has run: an untrusted tool's result taints the session even when it failed
     // (an error page or a server's error message is outside content too).
     const defaultMark = tool.untrustedOutput ? { untrusted: { source: tool.name } } : {};
@@ -148,9 +167,13 @@ export class ToolExecutor {
     try {
       output = await raceAbort(tool.run(input, { ...fullCtx, signal }), signal);
     } catch (e) {
+      // `signal.reason` is whichever source fired first, so a tie between the tool's timeout and the deadline is told apart.
+      if (signal.reason === DEADLINE) return { ...fail('budget_exhausted', `${tool.name} was stopped: the task reached its time limit.`), ...defaultMark };
       if (timeout.aborted && !ctx.signal.aborted) return { ...fail('timeout', `${tool.name} timed out.`), ...defaultMark };
       if (ctx.signal.aborted) return { ...fail('cancelled', `${tool.name} was cancelled.`), ...defaultMark };
       return { ...fail(isGarnetError(e) ? e.category : 'tool_failed', errorMessage(e)), ...defaultMark };
+    } finally {
+      clearTimeout(deadlineTimer);
     }
     const { content, truncated, artifactId } = this.limit(output.content, tool.maxOutputChars ?? DEFAULT_MAX_OUTPUT, ctx.sessionId);
     const untrusted = output.untrusted ?? defaultMark.untrusted;

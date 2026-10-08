@@ -99,7 +99,10 @@ export function visionTool(deps: VisionDeps): ToolDefinition<VisionInput> {
         else if (e.type === 'done') usage = e.usage;
         else if (e.type === 'error') throw new GarnetError(e.category, `The vision model failed: ${e.message}`);
       }
-      if (usage) deps.recordSpend?.(usage);
+      if (usage) {
+        deps.recordSpend?.(usage);
+        ctx.chargeUsage?.(usage); // the task's token budget counts this call too
+      }
       return { content: `${resolved.provider}/${resolved.model} on ${label}:\n${text.trim() || '(no answer)'}`, data: { provider: resolved.provider, model: resolved.model } };
     },
   };

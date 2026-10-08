@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { ErrorCategory } from './errors.ts';
 import type { TaskStatus } from './session.ts';
+import type { Usage } from './usage.ts';
 
 /** Capabilities a policy can allow, require approval for, or deny. */
 export type Capability =
@@ -11,6 +12,9 @@ export type Capability =
   | 'message.send'
   | 'memory.write'
   | 'schedule.edit';
+
+/** Longest delay `setTimeout` and `AbortSignal.timeout` accept (2^31-1 ms, about 24 days); longer waits are re-armed in steps of this. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 
 export type ToolContext = {
   sessionId: string;
@@ -29,6 +33,16 @@ export type ToolContext = {
    * to a subagent.
    */
   taint?: SessionTaint;
+  /**
+   * When the task must stop (epoch ms), not counting time spent waiting for an interactive approval; the executor
+   * already includes completed waits (the executor reports its own through `approval`). A function because the
+   * deadline moves forward while the tool runs (a subagent's approval waits). Unset: no task deadline (tests, tools run outside a task).
+   */
+  deadline?: () => number;
+  /** The executor calls these around an interactive approval so the task's clock can stop for it. */
+  approval?: { begin: () => void; end: () => void };
+  /** Charges tokens a tool spent on a side-model call (for example image analysis) to the task's token budget. */
+  chargeUsage?: (usage: Usage) => void;
   /** Starts a subagent for this session (present when delegation is enabled); bound to this session's permissions and taint. */
   subagents?: SubagentRunner;
 };
@@ -46,6 +60,8 @@ export type SubagentOutcome = {
   model: string;
   modelCalls: number;
   toolCalls: number;
+  /** Tokens the subagent used, including anything it delegated in turn. Already charged to the parent task as its calls completed. */
+  usage: Usage;
   /** Untrusted sources the subagent read beyond what its parent already had; empty when it stayed clean. */
   newTaint: readonly string[];
 };

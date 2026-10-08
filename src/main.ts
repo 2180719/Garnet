@@ -346,7 +346,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
               resolve: (providerName, modelName) => resolveModel(config, secret, base(), providerName, modelName),
               makeChild: (resolved, limits) => {
                 const d = config.delegation;
-                const childBudget: Budget = { ...budget, maxWallMs: Math.min(budget.maxWallMs, limits.maxWallMs), maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
+                const childBudget: Budget = { ...budget, maxWallMs: Math.min(budget.maxWallMs, limits.maxWallMs), maxTokens: Math.min(budget.maxTokens, limits.maxTokens), maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
                 return makeAgent(policy, childBudget, { model: resolved.adapter, maxOutputTokens: SETTINGS.get(resolved.adapter)?.model.maxOutputTokens ?? live.model.maxOutputTokens, depth: depth + 1 });
               },
             }),

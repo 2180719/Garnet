@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { z } from 'zod';
 import { tempDir } from '../../test/helpers.ts';
 import { defaultConfig } from '../config/index.ts';
-import type { Budget, Usage } from '../contracts/index.ts';
+import type { Budget, ModelAdapter, ModelEvent, ToolDefinition, Usage } from '../contracts/index.ts';
 import { FakeModel, type FakeScript } from '../models/index.ts';
 import { Policy, type Approver } from '../policy/index.ts';
 import { openDb, SessionStore } from '../store/index.ts';
@@ -72,6 +73,17 @@ test('budgets stop runaway loops', async () => {
   const task = await t.run('loop');
   assert.equal(task.status, 'budget_exhausted');
   assert.equal(task.modelCalls, 3);
+});
+
+test('tool calls in the batch that follows an exhausted token budget are not run', async () => {
+  const t = setup(
+    [{ toolCalls: [{ name: 'write_file', input: { path: 'a.txt', content: 'x' } }, { name: 'write_file', input: { path: 'b.txt', content: 'y' } }], usage: { inputTokens: 500, outputTokens: 10 } }],
+    { budget: { maxTokens: 100 } },
+  );
+  const task = await t.run('write two files');
+  assert.equal(task.status, 'budget_exhausted');
+  assert.equal(task.toolCalls, 0);
+  assert.ok(!existsSync(join(t.workspace, 'a.txt')) && !existsSync(join(t.workspace, 'b.txt')));
 });
 
 test('approval deferral pauses the task without running the tool', async () => {
@@ -332,4 +344,107 @@ test('time spent waiting for an interactive approval does not count against the 
   const task = await t.run('save a.md');
   assert.equal(task.status, 'completed', task.reason ?? '');
   assert.equal(readFileSync(join(t.workspace, 'a.md'), 'utf8'), 'x');
+});
+
+/** A started signal plus a way to wait for it, so a test acts only once the model or tool is really running. */
+function started() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, signal: resolve };
+}
+
+/**
+ * A model that, once called, never answers on its own: it waits for the request to be aborted (or, with
+ * `honorsSignal: false`, for `lateMs`, then answers) and keeps the process alive meanwhile, since abort timers do not.
+ */
+function stuckModel(opts: { honorsSignal?: boolean; lateMs?: number } = {}) {
+  const fast = new FakeModel([{ text: 'late answer' }]);
+  const running = started();
+  const model: ModelAdapter = {
+    id: 'stuck',
+    capabilities: fast.capabilities,
+    async *stream(request): AsyncIterable<ModelEvent> {
+      running.signal();
+      const keepAlive = setInterval(() => {}, 1000);
+      const outcome = await new Promise<'late' | 'aborted'>((resolve) => {
+        if (opts.honorsSignal !== false) request.signal?.addEventListener('abort', () => resolve('aborted'), { once: true });
+        if (opts.lateMs !== undefined) setTimeout(() => resolve('late'), opts.lateMs);
+      });
+      clearInterval(keepAlive);
+      if (outcome === 'aborted') {
+        yield { type: 'error', category: 'cancelled', message: 'aborted' };
+        return;
+      }
+      yield* fast.stream({ ...request, signal: undefined }); // the fake would refuse an aborted signal
+    },
+  };
+  return { model, running: running.promise };
+}
+
+function slowSetup(model: ModelAdapter, maxWallMs: number, extraTools: ToolDefinition[] = []) {
+  const store = new SessionStore(openDb(':memory:'));
+  const registry = new ToolRegistry();
+  for (const tool of extraTools) registry.register(tool);
+  const executor = new ToolExecutor({ registry, policy: new Policy(defaultConfig().permissions), approver: async () => 'approved' });
+  const agent = new Agent({ store, model, registry, executor, workspace: tempDir(), maxOutputTokens: 1000, budget: { ...defaultConfig().budgets, maxWallMs }, sleep: async () => {} });
+  return { store, run: (text: string, signal?: AbortSignal) => agent.run(store.createSession().id, text, signal ? { signal } : {}) };
+}
+
+test('the wall-clock limit aborts a model call that is still running', async () => {
+  const m = stuckModel();
+  const t = slowSetup(m.model, 300);
+  const task = await t.run('go');
+  await m.running; // the model was called, so it was the deadline that stopped it
+  assert.equal(task.status, 'budget_exhausted');
+  assert.match(task.reason ?? '', /time limit/);
+});
+
+test('a complete answer that arrives after the deadline is kept as completed', async () => {
+  const m = stuckModel({ honorsSignal: false, lateMs: 250 });
+  const t = slowSetup(m.model, 100);
+  const task = await t.run('go');
+  assert.equal(task.status, 'completed');
+});
+
+test('caller cancellation still wins over the deadline', async () => {
+  const m = stuckModel();
+  const t = slowSetup(m.model, 60_000);
+  const ac = new AbortController();
+  const done = t.run('go', ac.signal);
+  await m.running;
+  ac.abort();
+  assert.equal((await done).status, 'cancelled');
+});
+
+test('a provider error is reported as the failure it is, not as the time limit', async () => {
+  const t = slowSetup(new FakeModel([{ error: { category: 'provider_fatal', message: 'bad key' } }]), 60_000);
+  const task = await t.run('go');
+  assert.equal(task.status, 'failed');
+  assert.match(task.reason ?? '', /bad key/);
+});
+
+test('the wall-clock limit also stops a running tool', async () => {
+  const running = started();
+  const hang: ToolDefinition = {
+    name: 'hang', version: 1, description: 'never returns', input: z.object({}), capability: 'fs.read', idempotent: true,
+    async run(_input, ctx) {
+      running.signal();
+      const keepAlive = setInterval(() => {}, 1000); // a real tool holds a socket; abort timers do not keep the process alive
+      await new Promise((resolve) => ctx.signal.addEventListener('abort', () => resolve(null), { once: true }));
+      clearInterval(keepAlive);
+      return { content: 'stopped' };
+    },
+  };
+  const t = slowSetup(new FakeModel([{ toolCalls: [{ name: 'hang', input: {} }] }, { text: 'never' }]), 300, [hang]);
+  const task = await t.run('go');
+  await running.promise;
+  assert.equal(task.status, 'budget_exhausted');
+  assert.match(task.reason ?? '', /time limit/);
+});
+
+test('a wall limit beyond the timer range still works', async () => {
+  const t = slowSetup(new FakeModel([{ toolCalls: [{ name: 'ping', input: {} }] }, { text: 'ok' }]), 2 ** 40, [
+    { name: 'ping', version: 1, description: 'ping', input: z.object({}), capability: 'fs.read', idempotent: true, run: async () => ({ content: 'pong' }) },
+  ]);
+  assert.equal((await t.run('go')).status, 'completed');
 });
