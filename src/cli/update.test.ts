@@ -7,7 +7,7 @@ import { tempDir } from '../../test/helpers.ts';
 import { planService } from '../service/index.ts';
 import type { CommandResult } from '../service/index.ts';
 import type { Io } from './main.ts';
-import { UPDATE_AVAILABLE, execRun, fileLock, update, type UpdateDeps } from './update.ts';
+import { UPDATE_AVAILABLE, execRun, fileLock, renamedOrigin, update, type UpdateDeps } from './update.ts';
 
 // Real git, but only local repositories: the "remote" is a bare repo in a temp directory.
 process.env.GIT_AUTHOR_NAME = process.env.GIT_COMMITTER_NAME = 'Test';
@@ -426,4 +426,32 @@ test('help text and NO_COLOR output carry no escape sequences', async () => {
   // eslint-disable-next-line no-control-regex
   assert.doesNotMatch(h2.out.out + h2.out.err, /\x1b\[/);
   assert.doesNotMatch(h2.out.out + h2.out.err, /—/);
+});
+
+test('renamedOrigin only recognizes the old GitHub forms and keeps the protocol', () => {
+  const to = 'garnet-foundation/Garnet';
+  assert.equal(renamedOrigin('https://github.com/2180719/Garnet'), `https://github.com/${to}`);
+  assert.equal(renamedOrigin('https://github.com/2180719/Garnet.git'), `https://github.com/${to}.git`);
+  assert.equal(renamedOrigin('git@github.com:2180719/Garnet.git'), `git@github.com:${to}.git`);
+  assert.equal(renamedOrigin('ssh://git@github.com/2180719/Garnet'), `ssh://git@github.com/${to}`);
+  assert.equal(renamedOrigin('https://github.com/garnet-foundation/Garnet'), null);
+  assert.equal(renamedOrigin('https://mirror.example/2180719/Garnet'), null);
+  assert.equal(renamedOrigin('/srv/git/2180719/Garnet'), null);
+});
+
+test('an update repoints a remote that names the old GitHub location, but --check does not', async () => {
+  const f = fixture();
+  const oldUrl = 'https://github.com/2180719/Garnet';
+  const newUrl = 'https://github.com/garnet-foundation/Garnet';
+  // The new address is served by the local bare repository, so no network is needed.
+  git(f.install, 'config', `url.${join(f.root, 'origin.git')}.insteadOf`, newUrl);
+  git(f.install, 'remote', 'set-url', 'origin', oldUrl);
+  f.push({ 'src/a.ts': 'x' }, 'code only');
+  const check = harness(f);
+  await check.go(['--check']);
+  assert.equal(git(f.install, 'remote', 'get-url', 'origin'), oldUrl);
+  const h = harness(f);
+  assert.equal(await h.go(['-y']), 0);
+  assert.equal(git(f.install, 'config', '--get', 'remote.origin.url'), newUrl);
+  assert.match(h.out.out, /The repository moved/);
 });

@@ -154,6 +154,14 @@ const short = (sha: string): string => sha.slice(0, 7);
 const firstLines = (text: string, n = 8): string => text.trim().split('\n').slice(-n).join('\n    ');
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+const OLD_GITHUB_REPO = /^(https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)2180719\/Garnet(\.git)?$/;
+
+/** The repository moved from 2180719/Garnet to garnet-foundation/Garnet. Returns the new form of a recognized old GitHub remote URL (same protocol), else null. */
+export function renamedOrigin(url: string): string | null {
+  const m = OLD_GITHUB_REPO.exec(url.trim());
+  return m ? `${m[1]}garnet-foundation/Garnet${m[2] ?? ''}` : null;
+}
+
 type Failure = { fail: string; hint?: string };
 type Target = {
   remote: string;
@@ -383,8 +391,20 @@ class Updater {
     }
   }
 
+  /** Points a remote that still names the old GitHub location at the new one, so a later transfer redirect loss cannot strand this install. */
+  async followRename(): Promise<void> {
+    const branch = (await this.git(['symbolic-ref', '--short', '-q', 'HEAD'])).stdout.trim();
+    const configured = branch ? (await this.git(['config', '--get', `branch.${branch}.remote`])).stdout.trim() : '';
+    const remote = configured && configured !== '.' ? configured : 'origin';
+    const url = (await this.git(['remote', 'get-url', remote])).stdout.trim();
+    const renamed = renamedOrigin(url);
+    if (!renamed) return;
+    if ((await this.git(['remote', 'set-url', remote, renamed])).code === 0) this.ok(`The repository moved; ${remote} now points at ${renamed}.`);
+  }
+
   async update(v: Flags, refuse: (f: Failure) => number): Promise<number> {
     this.step('Looking for updates');
+    await this.followRename();
     const t = await this.resolveTarget(v.ref);
     if ('fail' in t) return refuse(t);
     await this.report(t);
