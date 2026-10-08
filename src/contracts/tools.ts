@@ -117,6 +117,12 @@ export type ToolDefinition<I = any> = {
   summarize?: (input: I, ctx: ToolContext) => string;
   /** Paths/hosts the call touches, used for scoped policy checks. */
   targets?: (input: I, ctx: ToolContext) => string[];
+  /**
+   * True when the call sends data the model composed in addition to the target
+   * URL (headers, a body). Policy then judges those bytes too: the containment
+   * exemption for owner-written and already-seen URLs covers only a plain fetch.
+   */
+  carriesData?: (input: I) => boolean;
   /** True when repeating the call cannot cause a duplicate external effect. */
   idempotent: boolean;
   /**

@@ -98,7 +98,7 @@ export class ToolExecutor {
     let taint: readonly string[] | undefined;
     try {
       for (const cap of tool.capabilitiesFor ? tool.capabilitiesFor(input) : [tool.capability]) {
-        const d = this.deps.policy.check(cap, { targets, taint: ctx.taint });
+        const d = this.deps.policy.check(cap, { targets, carriesData: tool.carriesData?.(input) ?? false, taint: ctx.taint });
         if (d.taint) taint = d.taint;
         if (rank[d.verdict] > rank[decision.verdict] || (d.verdict === decision.verdict && weight(cap) > weight(capability))) [decision, capability] = [d, cap];
       }

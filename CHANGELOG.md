@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Security fixes (from the Codex review)
+- `jobs` is protected from the admin API (`PUT /api/config`): a script job's command runs on the sandbox without an approval, so adding one over a leaked admin key ran host code after a restart with no approval prompt. Edit jobs with `garnet` commands or config.json.
+- A tool call that sends model-composed headers or a body (`http_request`) no longer gets the containment exemption for owner-written or already-seen URLs: in a conversation that read untrusted content it asks, like any other outbound data. Plain URL fetches are unchanged.
+
 ### More tools and subagents
 - New tools: `edit_file` (exact-string edits, several per call, all or none), `search_files` (regex over contents, glob over names), `todo_list`, `clarify`, `calculate` (a small parser, no `eval`), `datetime` (time zones, DST-aware conversion, date arithmetic), `session_search` and `delegate_task` (on unless `delegation.enabled` is false). Those that only read Garnet's own state declare no permission; `edit_file` needs `fs.write`.
 - `delegate_task` hands a task to a subagent on any configured provider and model (`provider` is a provider name, `model` overrides its model). The subagent has the same permissions and starts with the parent's untrusted-content state; what it reads taints the parent too. Budgets come from the new `delegation` config block (depth up to 2, call limits). Known limits: a subagent's spend is priced at the active provider's rates for the daily cap, and its tokens are not counted against the parent's task budget. Where approvals go to a chat, a subagent's needed approval is refused.

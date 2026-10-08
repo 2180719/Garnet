@@ -10,13 +10,15 @@ import { FullscreenSession, type FsInput, type FsOutput } from './fullscreen.ts'
 import type { Stage } from './layout.ts';
 import { initConfirm, initMultiSelect, initReview, initSecret, initSelect, initText, updatePrompt, viewPrompt, type PromptState, type PromptValue, type ReviewAsk } from './prompts.ts';
 
-/** Setup stages in order; a prompt id belongs to one of them (unknown ids stay in the current stage). */
-export const SETUP_STAGES = ['Import & model', 'Persona', 'Channels', 'Save', 'Finish'] as const;
+/** Setup stages in order; a prompt id belongs to one of them. Ids shared by several steps (secrets, keep-*, check, retry-*) stay in the current stage. */
+export const SETUP_STAGES = ['Import & model', 'About you', 'Channels', 'Tools', 'Extras', 'Save', 'Finish'] as const;
 
 const STAGE_OF: [RegExp, (typeof SETUP_STAGES)[number]][] = [
-  [/^(import|import-.*|reset|section|provider|provider-name|model|base-url|key-env|key|keep-key|secrets|key-file|keep-.*|check|retry-.*)$/, 'Import & model'],
-  [/^(name|owner|notes|persona.*)$/, 'Persona'],
+  [/^(import|import-.*|reset|section|provider|provider-name|model|base-url|key-env)$/, 'Import & model'],
+  [/^(name|owner|notes|onboarding|timezone|persona.*)$/, 'About you'],
   [/^(telegram.*|discord.*|signal.*|channels.*)$/, 'Channels'],
+  [/^(extras|tools|web-search.*|searxng-url|sandbox|ssh-.*|approval.*)$/, 'Tools'],
+  [/^(connectors|calendar-.*|github-.*|weather-.*|skills|voice.*|daily-limit|dashboard)$/, 'Extras'],
   [/^review$/, 'Save'],
   [/^(service|pair-.*)$/, 'Finish'],
 ];
