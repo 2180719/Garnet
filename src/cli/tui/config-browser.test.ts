@@ -191,6 +191,17 @@ test('secret names show whether they resolve, never the value', () => {
   assert.ok(calls.every((n) => /^[A-Z_]+$/.test(n)));
 });
 
+test('secret notes use the name the runtime would, and none for a fake model', () => {
+  const base = defaultConfig();
+  const brave = { ...base, web: { ...base.web, search: { ...base.web.search, backend: 'brave' as const } } };
+  const asked: string[] = [];
+  let rows = browser(brave, { secretStatus: (n) => (asked.push(n), 'missing') }).open('Web');
+  assert.ok(rows.some((r) => r.includes('apiKeyEnv') && r.includes('BRAVE_API_KEY')), rows.join('\n'));
+  const fake = { ...base, model: { ...base.model, provider: 'fake' as const } };
+  rows = browser(fake, { secretStatus: () => 'set' }).open('Model');
+  assert.ok(!rows.some((r) => r.includes('model.apiKeyEnv') && r.includes('found')), rows.join('\n'));
+});
+
 test('lists and enum-lists are generated from the schema', async () => {
   const { configSchema } = await import('../../config/index.ts');
   const fields = fieldsFromSchema(configSchema.toJSONSchema({ io: 'input' }) as never);

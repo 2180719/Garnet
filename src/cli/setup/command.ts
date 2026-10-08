@@ -51,7 +51,7 @@ from the options below, the current config, or safe defaults; nothing optional
   --github-write / --no-github-write    Let the GitHub connector comment (each comment still asks)
   --weather-location <place>, --weather-units <metric|imperial>
   --skills <list>           Built-in skills to turn on: daily-briefing,github-triage,web-research (none for none)
-  --voice <service>         none | openai | groq | other | command: speech to text for voice notes
+  --voice <service>         none | openai | groq | other: speech to text for voice notes (a command backend in config is kept)
   --voice-url <url>, --voice-model <id>, --voice-key-env <NAME>   (--voice other)
   --daily-limit <usd>       Daily spending cap in US dollars (empty for none)
   --dashboard / --no-dashboard   Serve the web dashboard (turns on the API, loopback only)

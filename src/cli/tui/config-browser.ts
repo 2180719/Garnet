@@ -333,10 +333,19 @@ function updateMulti(ctx: ConfigContext, s: ConfigState, k: Key): Next {
 
 // ---------- views ----------
 
+/** The name the runtime uses when a `*Env` field is unset; undefined when that setting needs no secret at all. */
+function effectiveSecretName(draft: ConfigState['draft'], f: Field): unknown {
+  const key = dotted(f);
+  const at = (path: string[]) => getAt(draft, path);
+  if (key === 'model.apiKeyEnv') return at(['model', 'provider']) === 'fake' ? undefined : keyEnvOf(draft.model);
+  if (key === 'web.search.apiKeyEnv') return ({ brave: 'BRAVE_API_KEY', tavily: 'TAVILY_API_KEY' } as Record<string, string>)[String(at(['web', 'search', 'backend']))];
+  return f.default;
+}
+
 function secretNote(ctx: ConfigContext, s: ConfigState, f: Field): string {
   if (!f.secretName || !ctx.secretStatus) return '';
   const explicit = getAt(s.draft, f.path);
-  const name = explicit ?? (dotted(f) === 'model.apiKeyEnv' ? keyEnvOf(s.draft.model) : f.default);
+  const name = explicit ?? effectiveSecretName(s.draft, f);
   if (typeof name !== 'string' || !name) return '';
   const status = ctx.secretStatus(name);
   const word = status === 'set' ? '✓ found' : status === 'missing' ? '✗ not found' : '? store locked';
