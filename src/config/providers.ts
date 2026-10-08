@@ -15,17 +15,34 @@ export function keyEnvOf(m: ModelConfig): string {
   return m.apiKeyEnv ?? DEFAULT_KEY_ENV[m.provider];
 }
 
-/** Key names with a well-known owner; a custom provider must never be pointed at one of them by derivation. */
-const WELL_KNOWN_KEY_ENV = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'LOCAL_MODEL_API_KEY'];
+/** Key names with a well-known owner, including the defaults other subsystems read when they name none. */
+const WELL_KNOWN_KEY_ENV = ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'LOCAL_MODEL_API_KEY', 'BRAVE_API_KEY', 'TAVILY_API_KEY'];
+
+/** Every credential name the config refers to outside provider `except`, whether or not its feature is on. A provider must never read one of them. */
+function reservedKeyNames(config: GarnetConfig, except: string): Set<string> {
+  const names = [
+    ...WELL_KNOWN_KEY_ENV,
+    ...listProviders(config).filter((p) => p.name !== except).map((p) => keyEnvOf(p.model)),
+    config.channels.telegram.tokenEnv,
+    config.channels.discord.tokenEnv,
+    config.web.search.apiKeyEnv,
+    config.media.transcription.apiKeyEnv,
+    config.sandbox.ssh.passphraseEnv,
+    config.connectors.github.tokenEnv,
+    config.connectors.calendar.urlEnv,
+    ...Object.values(config.connectors.http.credentials).map((c) => c.secretEnv),
+  ];
+  return new Set(names.filter((n): n is string => typeof n === 'string'));
+}
 
 /**
  * The key name a new provider called `name` gets (`my-laptop` -> `MY_LAPTOP_API_KEY`), so providers never share one by accident.
- * The result is always a valid secret name and never a well-known key or one another provider already reads;
- * in those cases it is prefixed with `GARNET_`.
+ * The result is always a valid secret name and never one another provider, channel, tool or connector reads;
+ * in those cases it is prefixed with `GARNET_` until it is free.
  */
 export function providerKeyEnv(config: GarnetConfig, name: string): string {
   let key = `${name.toUpperCase().replaceAll('-', '_')}_API_KEY`;
-  const taken = new Set([...WELL_KNOWN_KEY_ENV, ...listProviders(config).filter((p) => p.name !== name).map((p) => keyEnvOf(p.model))]);
+  const taken = reservedKeyNames(config, name);
   while (/^[0-9]/.test(key) || taken.has(key)) key = `GARNET_${key}`;
   return key;
 }
