@@ -320,3 +320,16 @@ test('manual compaction reports its usage as task-less spend', async () => {
   assert.equal(spend.length, 1);
   assert.equal(spend[0]!.inputTokens, 7);
 });
+
+test('time spent waiting for an interactive approval does not count against the time limit', async () => {
+  const t = setup(
+    [
+      { toolCalls: [{ name: 'write_file', input: { path: 'a.md', content: 'x' } }] },
+      { text: 'Saved.' },
+    ],
+    { budget: { maxWallMs: 100 }, approver: () => new Promise((resolve) => setTimeout(() => resolve('approved'), 250)) },
+  );
+  const task = await t.run('save a.md');
+  assert.equal(task.status, 'completed', task.reason ?? '');
+  assert.equal(readFileSync(join(t.workspace, 'a.md'), 'utf8'), 'x');
+});

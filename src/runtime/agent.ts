@@ -188,7 +188,8 @@ export class Agent {
     finish: (status: TaskStatus, reason?: string | null) => TaskRecord,
   ): Promise<TaskRecord> {
     const { store } = this.deps;
-    const deadline = started + this.deps.budget.maxWallMs;
+    // Time spent waiting on the owner's approval is not the task's time: `started` moves forward by it.
+    let deadline = started + this.deps.budget.maxWallMs;
     // The system prompt and tool set are frozen per session (context_frozen)
     // so the provider cache and prefix-bound blocks (signed thinking) remain
     // valid. Both are refreshed only by compaction.
@@ -248,6 +249,10 @@ export class Agent {
           task.toolCalls += 1;
           result = await this.deps.executor.execute(call, { sessionId, workspace: this.deps.workspace, memoryNamespace: this.deps.memoryNamespace ?? 'default', signal, allowedTools: tools.map((t) => t.name), taint });
           emit({ type: 'tool_end', call, result });
+          if (result.approvalWaitMs) {
+            started += result.approvalWaitMs;
+            deadline += result.approvalWaitMs;
+          }
           if (result.status === 'error' && result.category === 'needs_approval') waiting = `Approval needed for ${call.name}.`;
         }
         store.append(sessionId, { type: 'tool_finished', callId: call.id, operationId, result });
