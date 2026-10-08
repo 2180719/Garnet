@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import {
   PROVIDER_KINDS,
   keyEnvOf,
+  providerKeyEnv,
   listProviders,
   loadConfig,
   parseConfig,
@@ -75,14 +76,16 @@ export function providers(args: string[], io: Io, opts: Opts = {}): number {
         if (!kind || !(PROVIDER_KINDS as readonly string[]).includes(kind)) throw new GarnetError('invalid_input', `--provider must be one of ${PROVIDER_KINDS.join(', ')}.`);
         const model = values.model ?? (kind === 'gemini' ? DEFAULT_GEMINI_MODEL : undefined);
         if (!model && kind !== 'fake') throw new GarnetError('invalid_input', '--model <id> is required.');
-        const entry = { provider: kind, ...(model ? { name: model } : {}), ...(values['base-url'] ? { baseUrl: values['base-url'] } : {}), ...(values['key-env'] ? { apiKeyEnv: values['key-env'] } : {}) } as ModelConfig;
+        // A custom (openai-compatible) provider gets a key name of its own unless --key-env says otherwise.
+        const keyEnv = values['key-env'] ?? (kind === 'openai-compatible' ? providerKeyEnv(name) : undefined);
+        const entry = { provider: kind, ...(model ? { name: model } : {}), ...(values['base-url'] ? { baseUrl: values['base-url'] } : {}), ...(keyEnv ? { apiKeyEnv: keyEnv } : {}) } as ModelConfig;
         // parseConfig fills the defaults and reports problems (an openai-compatible provider needs a base URL).
         let next = withProvider(config, name, entry);
         if (values.use) next = { ...next, activeProvider: name };
         const saved = save(paths.home, next);
         const added = listProviders(saved).find((p) => p.name === name)!;
         io.out(`Added provider "${name}": ${describeProvider(added.model)}${values.use ? ' (now in use)' : ''}.\n`);
-        if (!added.model.apiKeyEnv && kind !== 'fake') io.out(`Its key is read from ${keyEnvOf(added.model)}; store it with \`garnet secrets set ${keyEnvOf(added.model)}\`.\n`);
+        if (!values['key-env'] && kind !== 'fake') io.out(`Its key is read from ${keyEnvOf(added.model)}; store it with \`garnet secrets set ${keyEnvOf(added.model)}\`.\n`);
         return 0;
       }
       case 'use': {

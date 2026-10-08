@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { tempDir } from '../../test/helpers.ts';
 import { isGarnetError } from '../contracts/index.ts';
-import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, parseEnv, redact, setInEnvFile, validBasic } from './index.ts';
+import { CONFIG_VERSION, defaultConfig, loadConfig, parseConfig, providerKeyEnv, parseEnv, redact, setInEnvFile, validBasic } from './index.ts';
 
 test('validBasic: one visible line only (it goes into every future system prompt)', () => {
   const ok = validBasic(20);
@@ -222,4 +222,9 @@ test('sandbox.ssh: documented non-secret options, safe defaults, required fields
   for (const key of ['host', 'port', 'user', 'workdir', 'identityFile', 'agent', 'passphraseEnv', 'hostKeyChecking', 'knownHostsFile', 'connectTimeoutSeconds', 'sshPath']) {
     assert.ok(ssh[key]?.description && !ssh[key]!.description!.includes('—'), key);
   }
+});
+
+test('providerKeyEnv derives a valid, distinct secret name from a provider name', () => {
+  assert.equal(providerKeyEnv('my-laptop'), 'MY_LAPTOP_API_KEY');
+  assert.notEqual(providerKeyEnv('a-b'), providerKeyEnv('a'));
 });

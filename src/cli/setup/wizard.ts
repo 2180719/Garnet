@@ -13,7 +13,9 @@ import {
   DEFAULT_NAME,
   PERSONA_MAX,
   defaultConfig,
+  findProvider,
   keyEnvOf,
+  providerKeyEnv,
   parseConfig,
   parseEnv,
   pathsFor,
@@ -287,6 +289,23 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
     p.text({ id: 'model', message: 'Model ID', help, ...(def ? { default: def } : {}), validate: required('a model ID') });
   const askKeyEnv = async (def: string) => (p.interactive ? def : await p.text({ id: 'key-env', message: 'Name of the variable or secret that holds the key', default: def, validate: validEnvName }));
 
+  // A custom provider can be given a name (kept next to the others in `providers`); other kinds stay where they are.
+  let name = current.name;
+  if (provider === 'local' || provider === 'openrouter' || provider === 'openai-compatible') {
+    name = await p.text({
+      id: 'provider-name',
+      message: 'Name for this provider',
+      help: 'Lowercase letters, digits and dashes. "default" is the main model block; a new name is added next to your other providers and becomes the one in use.',
+      default: current.name,
+      validate: (v) => (v === DEFAULT_PROVIDER || PROVIDER_NAME_RE.test(v) ? null : 'Use lowercase letters, digits and dashes (at most 32).'),
+    });
+  }
+
+  // A provider keeps the key name it already has. A new named provider gets one of its own, so two custom providers never share a key.
+  const existing = findProvider(st.config, name)?.model;
+  const keyDefault = (fallback: string) =>
+    existing && providerOf(existing) === provider ? keyEnvOf(existing) : name === DEFAULT_PROVIDER ? fallback : providerKeyEnv(name);
+
   switch (provider) {
     case 'fake':
       m.provider = 'fake';
@@ -305,7 +324,7 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
       m.provider = 'openai-compatible';
       m.baseUrl = OPENROUTER_URL;
       m.name = await askModel('IDs look like provider/model; browse https://openrouter.ai/models. Pick one that supports tools.', same ? cur.name : undefined);
-      m.apiKeyEnv = await askKeyEnv(same ? keyEnvOf(cur) : 'OPENROUTER_API_KEY');
+      m.apiKeyEnv = await askKeyEnv(keyDefault('OPENROUTER_API_KEY'));
       break;
     case 'local':
       m.provider = 'openai-compatible';
@@ -317,25 +336,14 @@ async function modelStep(p: Prompter, io: Io, deps: SetupDeps, st: State): Promi
         validate: validUrl,
       });
       m.name = await askModel('The name your server uses, e.g. from `ollama list`. Pick one that supports tools.', same ? cur.name : undefined);
-      m.apiKeyEnv = same ? keyEnvOf(cur) : LOCAL_KEY_ENV;
+      m.apiKeyEnv = keyDefault(LOCAL_KEY_ENV);
       break;
     case 'openai-compatible':
       m.provider = 'openai-compatible';
       m.baseUrl = await p.text({ id: 'base-url', message: 'API base URL (ending in /v1)', ...(same && cur.baseUrl ? { default: cur.baseUrl } : {}), validate: validUrl });
       m.name = await askModel('The model ID the API expects.', same ? cur.name : undefined);
-      m.apiKeyEnv = await askKeyEnv(same && keyEnvOf(cur) !== 'ANTHROPIC_API_KEY' ? keyEnvOf(cur) : 'OPENAI_API_KEY');
+      m.apiKeyEnv = await askKeyEnv(keyDefault('OPENAI_API_KEY'));
       break;
-  }
-  // A custom provider can be given a name (kept next to the others in `providers`); other kinds stay where they are.
-  let name = current.name;
-  if (provider === 'local' || provider === 'openrouter' || provider === 'openai-compatible') {
-    name = await p.text({
-      id: 'provider-name',
-      message: 'Name for this provider',
-      help: 'Lowercase letters, digits and dashes. "default" is the main model block; a new name is added next to your other providers and becomes the one in use.',
-      default: current.name,
-      validate: (v) => (v === DEFAULT_PROVIDER || PROVIDER_NAME_RE.test(v) ? null : 'Use lowercase letters, digits and dashes (at most 32).'),
-    });
   }
   st.config = name === DEFAULT_PROVIDER ? { ...st.config, model: m, activeProvider: DEFAULT_PROVIDER } : { ...withProvider(st.config, name, m), activeProvider: name };
 

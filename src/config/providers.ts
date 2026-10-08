@@ -15,6 +15,11 @@ export function keyEnvOf(m: ModelConfig): string {
   return m.apiKeyEnv ?? DEFAULT_KEY_ENV[m.provider];
 }
 
+/** The key name a new provider called `name` gets (`my-laptop` -> `MY_LAPTOP_API_KEY`), so providers never share one by accident. */
+export function providerKeyEnv(name: string): string {
+  return `${name.toUpperCase().replaceAll('-', '_')}_API_KEY`;
+}
+
 /** Every provider: `default` (the `model` block) first, then `providers` in file order. */
 export function listProviders(config: GarnetConfig): NamedProvider[] {
   const active = config.activeProvider;
