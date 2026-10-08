@@ -46,13 +46,13 @@ test('migration: a v1 config keeps working as the provider "default"', () => {
   assert.equal(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).version, CONFIG_VERSION);
 });
 
-test('migration: a v2 config (skills and connectors, no providers) becomes v3 with the same settings', () => {
+test('migration: a v2 config (skills and connectors, no providers) becomes the current version with the same settings', () => {
   const home = tempDir();
   writeFileSync(join(home, 'config.json'), JSON.stringify({ version: 2, skills: { enabled: [] }, model: { name: 'claude-sonnet-5-5' } }));
   const { config, migrated } = loadConfig(home);
   assert.equal(migrated, true);
-  assert.equal(config.version, 3);
-  assert.equal(CONFIG_VERSION, 3);
+  assert.equal(config.version, 4);
+  assert.equal(CONFIG_VERSION, 4);
   assert.equal(config.activeProvider, 'default');
   assert.equal(config.model.name, 'claude-sonnet-5-5');
   assert.ok(existsSync(join(home, 'config.json.bak-v2')));
@@ -113,23 +113,23 @@ test('garnet providers list|add|use|rm and config get|set|unset edit config.json
   assert.match(h.out(), /^\* default\s+anthropic · claude-opus-5-5/);
   h.reset();
 
-  assert.equal(await h.run('providers', 'add', 'work', '--provider', 'gemini', '--use'), 0);
-  assert.match(h.out(), /Added provider "work": gemini · gemini-2\.5-flash .* key GEMINI_API_KEY.*\(now in use\)/);
+  assert.equal(await h.run('providers', 'add', 'work', '--provider', 'gemini', '--use', '--offline'), 0);
+  assert.match(h.out(), /Added provider "work": gemini · gemini-3\.8-flash .* key GEMINI_API_KEY.*\(now in use\)/);
   assert.match(h.out(), /garnet secrets set GEMINI_API_KEY/);
   assert.equal(loadConfig(home).config.activeProvider, 'work');
   h.reset();
 
   // Duplicate, bad name, missing base URL, missing model: refused, file unchanged.
-  assert.equal(await h.run('providers', 'add', 'work', '--provider', 'gemini'), 2);
+  assert.equal(await h.run('providers', 'add', 'work', '--provider', 'gemini', '--offline'), 2);
   assert.match(h.err(), /already exists/);
-  assert.equal(await h.run('providers', 'add', 'Bad Name', '--provider', 'fake'), 2);
-  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'openai-compatible', '--model', 'llama3'), 1);
+  assert.equal(await h.run('providers', 'add', 'Bad Name', '--provider', 'fake', '--offline'), 2);
+  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'openai-compatible', '--model', 'llama3', '--offline'), 1);
   assert.match(h.err(), /providers\.loc\.baseUrl/);
-  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'anthropic'), 2);
+  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'anthropic', '--offline'), 2);
   assert.deepEqual(Object.keys(loadConfig(home).config.providers), ['work']);
   h.reset();
 
-  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'openai-compatible', '--model', 'llama3', '--base-url', 'http://127.0.0.1:11434/v1', '--key-env', 'LOCAL_MODEL_API_KEY'), 0);
+  assert.equal(await h.run('providers', 'add', 'loc', '--provider', 'openai-compatible', '--model', 'llama3', '--base-url', 'http://127.0.0.1:11434/v1', '--key-env', 'LOCAL_MODEL_API_KEY', '--offline'), 0);
   assert.equal(await h.run('providers', 'use', 'loc', 'qwen3'), 0);
   assert.equal(activeProvider(loadConfig(home).config).model.name, 'qwen3');
   assert.equal(await h.run('providers', 'use', 'ghost'), 1);
@@ -144,7 +144,7 @@ test('garnet providers list|add|use|rm and config get|set|unset edit config.json
 
   h.reset();
   assert.equal(await h.run('config', 'get', 'providers.work.name'), 0);
-  assert.equal(h.out(), '"gemini-2.5-flash"\n');
+  assert.equal(h.out(), '"gemini-3.8-flash"\n');
   assert.equal(await h.run('config', 'set', 'providers.work.name', 'gemini-2.5-pro'), 0);
   assert.equal(await h.run('config', 'set', 'providers.work.maxOutputTokens', '8000'), 0);
   assert.equal(loadConfig(home).config.providers.work!.maxOutputTokens, 8000);
@@ -244,4 +244,84 @@ test('a swap changes pricing with the provider; --fake (an injected model) canno
   } finally {
     fake.close();
   }
+});
+
+test('providers add and models look up the provider\'s models and current prices; offline they fall back and say so', async () => {
+  const { providers } = await import('../src/cli/providers.ts');
+  const { modelsCommand } = await import('../src/cli/models.ts');
+  const orBody = {
+    data: Array.from({ length: 25 }, (_, i) => ({
+      id: i === 0 ? 'google/gemini-3.8-flash' : `vendor/m-${i}`,
+      created: 1_790_000_000,
+      context_length: 1_048_576,
+      architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+      pricing: { prompt: '0.0000008', completion: '0.000004' },
+    })),
+  };
+  const seen: string[] = [];
+  const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    seen.push(url);
+    if (url.includes('openrouter.ai')) return new Response(JSON.stringify(orBody));
+    assert.equal((init?.headers as Record<string, string>)['authorization'], 'Bearer GKEY');
+    return new Response(JSON.stringify({ data: [{ id: 'models/gemini-3.8-flash' }, { id: 'models/gemini-3.5-flash' }] }));
+  }) as typeof fetch;
+  const home = tempDir();
+  const out: string[] = [];
+  const io: Io = { out: (t) => out.push(t), err: (t) => out.push(t) };
+  const env = { GEMINI_API_KEY: 'GKEY' };
+
+  assert.equal(await providers(['add', 'work', '--provider', 'gemini'], io, { home, fetch: fetchFn, env }), 0);
+  assert.match(out.join(''), /gemini-3\.8-flash: \$0\.8 in \/ \$4 out per million tokens \(fetched just now\)/);
+  assert.equal(seen.some((u) => u.endsWith('/v1beta/openai/models')), true, 'asked Google for its own model list');
+  assert.equal(JSON.stringify(out).includes('GKEY'), false, 'the key is never printed');
+  assert.equal(existsSync(join(home, 'cache', 'models.json')), true);
+
+  out.length = 0;
+  assert.equal(await providers(['add', 'old', '--provider', 'gemini', '--model', 'gemini-1.0-gone'], io, { home, fetch: fetchFn, env }), 0);
+  assert.match(out.join(''), /Warning: the provider does not list "gemini-1\.0-gone"/);
+  assert.match(out.join(''), /gemini-3\.5-flash/);
+
+  out.length = 0;
+  const down = (async () => { throw new TypeError('fetch failed'); }) as typeof fetch;
+  assert.equal(await modelsCommand(['work'], io, { home, fetch: down, env: {} }), 0);
+  const text = out.join('');
+  assert.match(text, /work \(gemini\) · models from the catalog/);
+  assert.match(text, /gemini-3\.8-flash\s+\$0\.8 in\s+\$4 out/);
+  assert.match(text, /Note: could not refresh model prices from openrouter\.ai \(fetch failed\)/);
+  assert.match(text, /Note: no key found \(GEMINI_API_KEY\)/);
+
+  out.length = 0;
+  assert.equal(await modelsCommand(['nope', '--offline'], io, { home }), 2);
+});
+
+test('createModel takes the context window from the catalog for covered endpoints, and from config first', async () => {
+  const { createModel } = await import('../src/main.ts');
+  const { loadCatalog, findModel } = await import('../src/catalog/index.ts');
+  const base = defaultConfig();
+  const known = loadCatalog();
+  const win = findModel(known, { provider: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1' }, 'anthropic/claude-opus-5.5')?.contextWindow;
+  assert.ok(win && win > 128_000, 'the catalog has a larger window than the 128k fallback');
+  const mk = (extra: object) => createModel(base, () => 'k', { ...base.model, provider: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1', name: 'anthropic/claude-opus-5.5', ...extra }, known);
+  assert.equal(mk({}).capabilities.contextWindow, win);
+  assert.equal(mk({ contextWindow: 50_000 }).capabilities.contextWindow, 50_000);
+  assert.equal(createModel(base, () => 'k', { ...base.model, provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:1/v1', name: 'llama3' }, known).capabilities.contextWindow, 128_000, 'an uncovered server keeps the default');
+});
+
+test('garnet models caps a long live list, says "price unknown" on every uncovered row and reports a configured price', async () => {
+  const { modelsCommand } = await import('../src/cli/models.ts');
+  const home = tempDir();
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ version: CONFIG_VERSION, model: { provider: 'openai-compatible', name: 'm-0', baseUrl: 'http://127.0.0.1:9/v1', pricing: { input: 1, output: 2 } } }));
+  const fetchFn = (async (input: string | URL | Request) =>
+    String(input).includes('openrouter.ai')
+      ? new Response('{}', { status: 503 })
+      : new Response(JSON.stringify({ data: Array.from({ length: 40 }, (_, i) => ({ id: `m-${i}` })) }))) as typeof fetch;
+  const out: string[] = [];
+  const io: Io = { out: (t) => out.push(t), err: (t) => out.push(t) };
+  assert.equal(await modelsCommand([], io, { home, fetch: fetchFn, env: {} }), 0);
+  const text = out.join('');
+  assert.equal(text.split('\n').filter((l) => /^ {2}m-\d+/.test(l)).length, 15);
+  assert.equal(text.split('\n').filter((l) => /^ {2}m-\d+.*price unknown/.test(l)).length, 15);
+  assert.match(text, /… and 25 more/);
+  assert.match(text, /In use: m-0: price set in config/);
 });

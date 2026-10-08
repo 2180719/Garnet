@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { parseCron, validTimeZone } from './cron.ts';
 import { BUILTIN_SKILLS, CONNECTORS, SCOPE_HELP, SCOPE_RE } from './extensions.ts';
 
-export const CONFIG_VERSION = 3;
+export const CONFIG_VERSION = 4;
 
 const permission = z.enum(['allow', 'ask', 'deny']);
 
@@ -134,7 +134,7 @@ const modelSchema = z
         cacheWrite: z.number().min(0).optional().describe('USD per million cache-write tokens.'),
       })
       .optional()
-      .describe('USD per million tokens, to show dollar cost. Built in for current Anthropic models; set it for any other model. Without a price the cost shows "?", never $0.'),
+      .describe('USD per million tokens, to show dollar cost. Overrides the model catalog (src/catalog: current Anthropic, Gemini and OpenAI prices, refreshed when a provider is added); set it for models the catalog does not cover, such as local servers. Without a price the cost shows "?", never $0.'),
   });
 
 export type ModelConfig = z.infer<typeof modelSchema>;
@@ -202,10 +202,19 @@ export const configSchema = z
         maxTokens: z.number().int().positive().default(500_000).describe('Total tokens allowed per task.'),
         maxToolCalls: z.number().int().positive().default(50).describe('Tool calls allowed per task.'),
         maxWallMs: z.number().int().positive().default(15 * 60_000).describe('Wall-clock limit per task.'),
-        dailyUsd: z.number().positive().optional().describe('Daily spending cap in USD (the owner\'s calendar day, see `timezone`). Once today\'s known cost reaches it, new chat turns and agent jobs are refused and a running task stops before its next model call, until tomorrow; if pricing is missing or a task today has an unknown cost, new ones are refused too (never counted as $0); script and reminder jobs are unaffected. Needs pricing (built in for current Anthropic models, or model.pricing). Off by default.'),
+        dailyUsd: z.number().positive().optional().describe('Daily spending cap in USD (the owner\'s calendar day, see `timezone`). Once today\'s known cost reaches it, new chat turns and agent jobs are refused and a running task stops before its next model call, until tomorrow; if pricing is missing or a task today has an unknown cost, new ones are refused too (never counted as $0); script and reminder jobs are unaffected. Needs pricing (from the model catalog, or model.pricing). Off by default.'),
       })
       .prefault({})
       .describe('Per-task resource limits.'),
+    delegation: z
+      .object({
+        enabled: z.boolean().default(true).describe('Let the agent hand side tasks to subagents (the `delegate_task` tool). A subagent has the same permissions and the same untrusted-content state as the session that started it, and can run on any configured provider and model.'),
+        maxDepth: z.number().int().min(1).max(2).default(2).describe('How many levels of subagents may exist: 1 means only the main agent delegates; 2 lets a subagent delegate once more.'),
+        maxModelCalls: z.number().int().positive().default(15).describe('Model calls one subagent may make (never more than `budgets.maxModelCalls`).'),
+        maxToolCalls: z.number().int().positive().default(30).describe('Tool calls one subagent may make (never more than `budgets.maxToolCalls`).'),
+      })
+      .prefault({})
+      .describe('Subagents started with `delegate_task`. Each subagent also gets the per-task `budgets` token and time limits.'),
     context: z
       .object({
         compactAtTokens: z
@@ -556,6 +565,24 @@ export const configSchema = z
           })
           .prefault({})
           .describe('Calendar connector: read-only events from an ICS feed, shown in your time zone.'),
+        http: z
+          .object({
+            credentials: z
+              .record(
+                z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, 'lowercase letters, digits and dashes'),
+                z.object({
+                  secretEnv: z.string().min(1).max(100).describe('Environment variable (or encrypted secret) holding the token or key. Only its name is stored here.'),
+                  hosts: z.array(z.string().regex(/^[a-z0-9.-]+(?::\d+)?$/, 'a lowercase host name, e.g. api.example.com')).min(1).describe('The only hosts this credential may be sent to (exact host names, https only). A model that was tricked cannot send it anywhere else.'),
+                  header: z.string().regex(/^[A-Za-z0-9-]+$/).default('Authorization').describe('Header that carries the secret.'),
+                  prefix: z.string().max(20).default('Bearer ').describe('Text placed before the secret in the header (use "" for a bare API key).'),
+                }),
+              )
+              .default({})
+              .describe('Named credentials the agent may ask for by name, e.g. { "notion": { "secretEnv": "NOTION_TOKEN", "hosts": ["api.notion.com"] } }. Without one, requests carry no credentials.'),
+            write: z.boolean().default(false).describe('Offer POST requests. A POST needs message.send as well as net.fetch, so it asks by default and shows the whole request.'),
+          })
+          .prefault({})
+          .describe('HTTP request connector: GET (and optionally POST) to any public web API, with credentials only from the list above, only to their hosts.'),
         weather: z
           .object({
             units: z.enum(['metric', 'imperial']).default('metric').describe('metric: °C, km/h, mm. imperial: °F, mph, inch.'),

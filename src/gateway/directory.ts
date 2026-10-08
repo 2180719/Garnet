@@ -109,7 +109,9 @@ export class ChatDirectory {
     return this.chats().find((c) => c.channel === ref.channel && c.account === ref.account && c.chatId === ref.chatId) ?? null;
   }
 
-  origin(sessionId: string): SessionOrigin {
+  origin(rawSessionId: string): SessionOrigin {
+    // A subagent's session has no chat of its own: it acts for the chat its parent is in.
+    const sessionId = this.deps.sessions.rootOf(rawSessionId);
     const key = this.deps.store.keyForSession(sessionId) ?? null;
     if (!key) return { conversation: null, chat: null, isJob: false };
     if (key.startsWith('job:')) return { conversation: key, chat: null, isJob: true };

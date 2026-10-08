@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### More tools and subagents
+- New tools: `edit_file` (exact-string edits, several per call, all or none), `search_files` (regex over contents, glob over names), `todo_list`, `clarify`, `calculate` (a small parser, no `eval`), `datetime` (time zones, DST-aware conversion, date arithmetic), `session_search` and `delegate_task` (on unless `delegation.enabled` is false). Those that only read Garnet's own state declare no permission; `edit_file` needs `fs.write`.
+- `delegate_task` hands a task to a subagent on any configured provider and model (`provider` is a provider name, `model` overrides its model). The subagent has the same permissions and starts with the parent's untrusted-content state; what it reads taints the parent too. Budgets come from the new `delegation` config block (depth up to 2, call limits). Known limits: a subagent's spend is priced at the active provider's rates for the daily cap, and its tokens are not counted against the parent's task budget. Where approvals go to a chat, a subagent's needed approval is refused.
+- `session_search`: full-text search (SQLite FTS5, derived and rebuildable, never fails a turn) over user and assistant text in a chat's earlier sessions. A chat never sees another chat's or the terminal's history; hits from a session that read untrusted content make the result untrusted.
+- `execute_code` (python, node or sh, fed on stdin to the sandbox; needs `exec`) and `vision_analyze` (ask any vision-capable provider about a workspace image or stored attachment; needs media on).
+- New `http` connector (`http_request`): GET, optionally POST, to public web APIs. Credentials come only from `connectors.http.credentials` (a secret name plus the hosts it may be sent to, https only); the model cannot set an `Authorization` header or send a credential elsewhere, and an echoed secret is scrubbed from the response. Off by default; those settings are protected from the admin API.
+
 ### Gemini and named providers
 - Google Gemini is a first-class provider (`model.provider = "gemini"`, key `GEMINI_API_KEY`, in `garnet setup` as "Google Gemini"): a preset over the OpenAI-compatible adapter pointed at Google's compatibility endpoint, with a table of explicit model ids (context windows, images and PDFs on).
 - Config version 3: `providers` holds more named providers and `activeProvider` picks the one in use; the old `model` block is the provider called `default`, so existing configs keep working (migrated with a backup). Names are lowercase slugs. `garnet providers list|add|use|rm`, `garnet doctor` and the setup wizard (`--provider-name`) know about them.

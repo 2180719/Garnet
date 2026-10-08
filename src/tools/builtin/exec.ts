@@ -6,11 +6,10 @@ import type { RunResult, Sandbox } from '../../sandbox/index.ts';
 
 type ExecInput = { command: string; cwd: string; timeout_seconds: number };
 
-/** `run_command`: runs a shell command in the given sandbox. Capability `exec` (deny by default). */
-export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
-  // Verified on first use (and again after a failure) so an unavailable backend is a clear error, never a fallback.
+/** Checks the sandbox on first use (and again after a failure), so an unavailable backend is a clear error, never a fallback. */
+export function sandboxReady(sandbox: Sandbox): () => Promise<void> {
   let ready: Promise<void> | null = null;
-  const ensureReady = (): Promise<void> => {
+  return () => {
     ready ??= sandbox
       .check()
       .then((status) => {
@@ -22,6 +21,11 @@ export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
       });
     return ready;
   };
+}
+
+/** `run_command`: runs a shell command in the given sandbox. Capability `exec` (deny by default). */
+export function execTool(sandbox: Sandbox): ToolDefinition<ExecInput> {
+  const ensureReady = sandboxReady(sandbox);
 
   const where = sandbox.kind === 'ssh'
     ? 'Runs on a remote host over ssh (sh -c), starting in the remote working directory that stands in for the workspace. It is not the local workspace: local files are not there unless the owner synced them, and file tools do not see what the command writes.'

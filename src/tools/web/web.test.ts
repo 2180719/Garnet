@@ -135,6 +135,31 @@ test('SSRF: redirects are re-checked on every hop', async () => {
   await assert.rejects(fetcher().fetch(at('site.test', '/to-file')), /Refused a redirect.*http and https/);
 });
 
+test('a POST body is never resent to another origin on a redirect, but may follow a same-origin one', async () => {
+  const bodies: string[] = [];
+  routes.set('/post-away', (_q, r) => {
+    r.writeHead(307, { location: at('other.test', '/sink') });
+    r.end();
+  });
+  routes.set('/post-same', (_q, r) => {
+    r.writeHead(307, { location: at('site.test', '/sink') });
+    r.end();
+  });
+  routes.set('/sink', (q, r) => {
+    let b = '';
+    q.on('data', (c) => (b += c));
+    q.on('end', () => {
+      bodies.push(b);
+      r.writeHead(200, { 'content-type': 'text/plain' });
+      r.end('ok');
+    });
+  });
+  await assert.rejects(fetcher().fetch(at('site.test', '/post-away'), { method: 'POST', body: 'secret=1' }), (e: Error & { category?: string }) => e.category === 'denied' && /Refused to resend the request body to other\.test/.test(e.message));
+  assert.deepEqual(bodies, []);
+  await fetcher().fetch(at('site.test', '/post-same'), { method: 'POST', body: 'x=1' });
+  assert.deepEqual(bodies, ['x=1']);
+});
+
 test('SSRF: DNS rebinding cannot swap the address between check and connect', async () => {
   // The first answer is checked and pinned; every later lookup answers with a private address.
   let calls = 0;

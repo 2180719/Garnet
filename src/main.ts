@@ -8,17 +8,18 @@ import { assistantName, frozenContext, projectInstructionsSection } from './cont
 import { derivedCachePrices, errorMessage, formatUsd, startOfDayIso, GarnetError, resolvePricing, type ActiveExtras, type Budget, type Pricing, type ChannelAdapter, type ModelAdapter, type OutboundMessage } from './contracts/index.ts';
 import { ApiKeys, ApiServer, assertSendAllowed, ChatDirectory, DemoChat, Gateway, persistentApprover, scopesForConversation, sendMessageTool, staticFiles, type LogFn } from './gateway/index.ts';
 import { createBackend } from './backend.ts';
+import { catalogPricing, findModel, loadCatalog, type Catalog } from './catalog/index.ts';
 import { AnthropicModel, FakeModel, GeminiModel, OpenAICompatibleModel, SwitchableModel, onboardingScript } from './models/index.ts';
-import { Policy, type Approver } from './policy/index.ts';
-import { Agent, LaneQueue, sessionTaint } from './runtime/index.ts';
-import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SessionStore, StatsStore, type Db } from './store/index.ts';
+import { denyAll, Policy, type Approver } from './policy/index.ts';
+import { Agent, LaneQueue, sessionTaint, subagentFactory, type ResolvedSubagentModel } from './runtime/index.ts';
+import { ApprovalStore, GatewayStore, JobStore, KeyStore, mediaIdsInUse, openDb, pruneOperationalRows, SearchIndex, SessionStore, StatsStore, type Db } from './store/index.ts';
 import { JobBook, scheduleTool, Scheduler } from './scheduler/index.ts';
 import { MemoryStore, memoryTool } from './memory/index.ts';
 import { importedArchiveSection } from './migrate/index.ts';
 import { ONBOARDING_TITLE, bootstrapPrompt, profileTool } from './onboarding/index.ts';
 import { BuiltinSkills, SkillStore, skillTools } from './skills/index.ts';
-import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, type Transcriber } from './media/index.ts';
-import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, execTool, fileTools, readArtifactTool, searchBackend, webFetchTool, webSearchTool } from './tools/index.ts';
+import { CommandTranscriber, MediaIngest, MediaStore, OpenAITranscriber, sendFileTool, visionTool, type Transcriber } from './media/index.ts';
+import { ArtifactStore, ToolExecutor, ToolRegistry, WebFetcher, calculateTool, delegateTaskTool, clarifyTool, datetimeTool, editFileTool, executeCodeTool, execTool, fileTools, readArtifactTool, searchBackend, searchFilesTool, sessionSearchTool, todoListTool, webFetchTool, webSearchTool } from './tools/index.ts';
 import { assertSandboxReady, createSandbox, requiresIsolation, type Sandbox, type SandboxOptions } from './sandbox/index.ts';
 import { isInside, openSecretStore, secretLookup, type SecretLookup, type SecretStore } from './secrets/index.ts';
 
@@ -175,13 +176,17 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   // A session's optional built-ins: chosen from config by its conversation's scopes when its context is first
   // frozen (see Agent.selectExtras), then read back from that record, so they never change mid-session.
   const connectorOf = new Map<string, ConnectorName>();
-  const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(sessionId) ?? null, config.routes, [config.skills, config.connectors]), [...connectorOf.values()]);
+  const selectExtras = (sessionId: string): ActiveExtras => extrasForScopes(config, scopesForConversation(gatewayStore.keyForSession(store.rootOf(sessionId)) ?? null, config.routes, [config.skills, config.connectors]), [...connectorOf.values()]);
   const extrasFor = (sessionId: string): ActiveExtras => frozenContext(store.events(sessionId))?.extras ?? selectExtras(sessionId);
   const builtinSkillFor = (name: string, sessionId: string) => (extrasFor(sessionId).skills.includes(name) ? builtinSkills.get(name) : undefined);
-  for (const tool of [...fileTools, memoryTool(memory), ...skillTools(skills, { builtin: builtinSkillFor }), readArtifactTool(artifacts)]) registry.register(tool);
+  for (const tool of [...fileTools, editFileTool, searchFilesTool, todoListTool, clarifyTool, calculateTool, datetimeTool({ defaultTimeZone: ownerTimeZone(config) }), memoryTool(memory), ...skillTools(skills, { builtin: builtinSkillFor }), readArtifactTool(artifacts)]) registry.register(tool);
   // Like the other optional tools, set_profile exists only when its permission is not deny (the tool set is fixed per session).
   const onboarding = Boolean(options.onboarding) && config.permissions['memory.write'] !== 'deny';
   if (onboarding) registry.register(profileTool(paths.home));
+  if (config.delegation.enabled) registry.register(delegateTaskTool);
+  // Derived from the event log; a chat searches only its own earlier sessions (see GatewayStore.searchableSessions).
+  const searchIndex = new SearchIndex(db, store);
+  registry.register(sessionSearchTool({ search: (sessionId, query, opts) => searchIndex.search(gatewayStore.searchableSessions(store.rootOf(sessionId)), query, opts) }));
   // Like run_command, these exist only when their permission is not deny (the tool set is fixed per session).
   if (config.permissions['schedule.edit'] !== 'deny') {
     const target = (t: { channel: string; account: string; chatId: string; name: string | null }) => ({ ...t, label: ChatDirectory.label({ ...t, senderId: null }) });
@@ -229,11 +234,24 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       }),
     );
   }
+  // vision_analyze needs the media store (attachments) and any model that can see images, the session's own or a named one.
+  if (mediaStore) {
+    registry.register(
+      visionTool({
+        media: mediaStore,
+        resolve: (providerName, modelName) => resolveModel(config, secret, { name: live.name, model: live.model, adapter: model }, providerName, modelName),
+        providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name, vision: p.model.vision ?? (p.model.provider === 'anthropic' || p.model.provider === 'gemini') })),
+        refuse: () => refuse(),
+        recordSpend: (usage) => stats.recordSpend(usage),
+      }),
+    );
+  }
   // run_command exists only when the owner opted into exec; the tool set is fixed per session.
   let sandbox: Sandbox | null = null;
   if (config.permissions.exec !== 'deny') {
     sandbox = createSandbox(config.sandbox.backend, sandboxOptions(config, paths.workspace, secret));
     registry.register(execTool(sandbox));
+    registry.register(executeCodeTool(sandbox));
   }
   // web_fetch and web_search exist only when net.fetch is not denied. They run in-process (the sandbox has no network).
   const trustedEndpoints = registerWebTools(registry, config, secret);
@@ -244,9 +262,10 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
   for (const { connector, tool } of registerConnectors(registry, config, secret, ownerTimeZone(config), inUse)) connectorOf.set(tool, connector);
   const approvals = new ApprovalStore(db);
   const approver = options.approver ?? persistentApprover(approvals);
+  const catalog = loadCatalog(paths.home); // cache or bundled snapshot; never fetches at startup
   const injected = options.model !== undefined || options.noModel === true;
   // The demo provider has no real model: the wake-up conversation plays its offline script instead of echoing.
-  const first = options.model ?? (options.noModel ? new FakeModel() : onboarding && activeProvider(config).model.provider === 'fake' ? new FakeModel(onboardingScript()) : createModel(config, secret));
+  const first = options.model ?? (options.noModel ? new FakeModel() : onboarding && activeProvider(config).model.provider === 'fake' ? new FakeModel(onboardingScript()) : createModel(config, secret, undefined, catalog));
   // An injected model is used as is (tests read it back); only a configured one can be swapped.
   const switchable = injected ? null : new SwitchableModel(first);
   const model: ModelAdapter = switchable ?? first;
@@ -264,7 +283,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
         saveText: (sessionId, text) => artifacts.save(sessionId, text),
       })
     : null;
-  const currentPricing = (): Pricing | undefined => resolvePricing(live.model.provider, live.model.name, live.model.pricing);
+  const currentPricing = (): Pricing | undefined => resolvePricing(live.model.pricing, () => catalogPricing(catalog, live.model, live.model.name));
   const stats = new StatsStore(db);
   /**
    * The daily spending cap (budgets.dailyUsd), for the owner's calendar day: refuses new model-calling
@@ -283,12 +302,16 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     return `Daily spending cap reached: ${formatUsd(known)} spent today (${tz}) of ${formatUsd(cap)} (budgets.dailyUsd). Model tasks are refused until midnight ${tz}; the owner can raise or remove the cap in config.json.`;
   };
   /** Builds an agent with its own policy and budget (interactive, or a scheduled job's narrower grant). */
-  const makeAgent = (policy: Policy, budget: Budget): Agent =>
-    new Agent({
+  const makeAgent = (policy: Policy, budget: Budget, own: { model?: ModelAdapter; maxOutputTokens?: number; depth?: number } = {}): Agent => {
+    // What "the current model" means for tasks this agent starts: the live provider, or for a subagent the one it runs on.
+    const base = (): ModelBase => (own.model ? { name: SETTINGS.get(own.model)?.name ?? live.name, model: SETTINGS.get(own.model)?.model ?? live.model, adapter: own.model } : { name: live.name, model: live.model, adapter: model });
+    const depth = own.depth ?? 0;
+    return new Agent({
       store,
-      model,
+      model: own.model ?? model,
       registry,
-      executor: new ToolExecutor({ registry, policy, approver, artifacts }),
+      // A subagent cannot wait for a chat approval (its session is not a chat), so there a needed approval is a refusal.
+      executor: new ToolExecutor({ registry, policy, approver: depth > 0 && !options.approver ? denyAll : approver, artifacts }),
       budget,
       refuse,
       recordSpend: (usage) => stats.recordSpend(usage),
@@ -308,12 +331,29 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
       compactAtTokens: config.context.compactAtTokens,
       keepTurns: config.context.keepTurns,
       get maxOutputTokens() {
-        return live.model.maxOutputTokens;
+        return own.maxOutputTokens ?? live.model.maxOutputTokens;
       },
       ...(mediaStore ? { loadAttachment: (ref: { id: string }) => mediaStore.read(ref.id) } : {}),
       maxAttachmentsInContext: config.media.maxInContext,
       timeZone: ownerTimeZone(config),
+      ...(config.delegation.enabled
+        ? {
+            subagents: subagentFactory({
+              store,
+              depth,
+              maxDepth: config.delegation.maxDepth,
+              providers: () => listProviders(config).map((p) => ({ name: p.name, model: p.model.name })),
+              resolve: (providerName, modelName) => resolveModel(config, secret, base(), providerName, modelName),
+              makeChild: (resolved, limits) => {
+                const d = config.delegation;
+                const childBudget: Budget = { ...budget, maxWallMs: Math.min(budget.maxWallMs, limits.maxWallMs), maxModelCalls: Math.min(budget.maxModelCalls, d.maxModelCalls), maxToolCalls: Math.min(budget.maxToolCalls, d.maxToolCalls) };
+                return makeAgent(policy, childBudget, { model: resolved.adapter, maxOutputTokens: SETTINGS.get(resolved.adapter)?.model.maxOutputTokens ?? live.model.maxOutputTokens, depth: depth + 1 });
+              },
+            }),
+          }
+        : {}),
     });
+  };
   const ownerPolicy = new Policy(config.permissions, { containment: config.containment, allowHosts: config.web.allowHosts, trustedEndpoints });
   const agent = makeAgent(ownerPolicy, config.budgets);
   return {
@@ -357,7 +397,7 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
         const target = findProvider(config, name);
         if (!target) throw new GarnetError('invalid_input', `No provider named "${name}" (known: ${listProviders(config).map((p) => p.name).join(', ')}).`);
         const settings: ModelConfig = modelName ? { ...target.model, name: modelName } : target.model;
-        const next = createModel(config, secret, settings); // throws, changing nothing, when the key is missing
+        const next = createModel(config, secret, settings, catalog); // throws, changing nothing, when the key is missing
         switchable!.swap(next);
         live = { name, model: settings, active: true };
         return live;
@@ -365,6 +405,28 @@ export function createGarnet(options: CreateOptions = {}): Garnet {
     },
     close: () => db.close(),
   };
+}
+
+/** A provider's name and settings, and the adapter built from them: what a task is running on now. */
+type ModelBase = { name: string; model: ModelConfig; adapter: ModelAdapter };
+
+/** Which provider and settings an adapter made by `resolveModel` was built from, so a subagent's own delegations default to its model. */
+const SETTINGS = new WeakMap<ModelAdapter, { name: string; model: ModelConfig }>();
+
+/**
+ * The model for a side task (a subagent, an image question), relative to `base`, what the asking task runs on. A named
+ * provider uses its own settings (and `modelName` overrides its model); with only a model name, `base`'s provider is
+ * kept. With neither, the task shares `base`'s adapter (also what tests and `--fake` inject).
+ */
+function resolveModel(config: GarnetConfig, secret: SecretLookup, base: ModelBase, providerName: string | undefined, modelName: string | undefined): ResolvedSubagentModel {
+  const known = listProviders(config).map((p) => p.name).join(', ');
+  const target = providerName === undefined ? { name: base.name, model: base.model } : findProvider(config, providerName);
+  if (!target) throw new GarnetError('invalid_input', `No provider named "${providerName}" (known: ${known}).`);
+  const settings: ModelConfig = modelName ? { ...target.model, name: modelName } : target.model;
+  if (providerName === undefined && modelName === undefined) return { adapter: base.adapter, provider: target.name, model: settings.name };
+  const adapter = createModel(config, secret, settings); // throws when the key is missing
+  SETTINGS.set(adapter, { name: target.name, model: settings });
+  return { adapter, provider: target.name, model: settings.name };
 }
 
 /** The owner's time zone: `timezone` in config, else the host's. */
@@ -415,18 +477,18 @@ function registerConnectors(registry: ToolRegistry, config: GarnetConfig, secret
 }
 
 /** `secret` resolves a name (environment first, then the encrypted store); see src/secrets. */
-export function createModel(config: GarnetConfig, secret: SecretLookup, settings: ModelConfig = activeProvider(config).model): ModelAdapter {
+export function createModel(config: GarnetConfig, secret: SecretLookup, settings: ModelConfig = activeProvider(config).model, catalog: Catalog = loadCatalog()): ModelAdapter {
   const m = settings;
   if (m.provider === 'fake') return new FakeModel();
   const keyEnv = keyEnvOf(m);
   const apiKey = secret(keyEnv);
   if (m.provider === 'gemini') {
     if (!apiKey) throw new GarnetError('config', `No Gemini API key found. Set the ${keyEnv} environment variable or store it with \`garnet secrets set ${keyEnv}\`.`);
-    return new GeminiModel({ apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf, baseUrl: m.baseUrl });
+    return new GeminiModel({ apiKey, model: m.name, contextWindow: m.contextWindow ?? findModel(catalog, m, m.name)?.contextWindow ?? undefined, vision: m.vision, pdf: m.pdf, baseUrl: m.baseUrl });
   }
   if (m.provider === 'openai-compatible') {
     // Local servers often need no key.
-    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow, vision: m.vision, pdf: m.pdf });
+    return new OpenAICompatibleModel({ baseUrl: m.baseUrl!, apiKey, model: m.name, contextWindow: m.contextWindow ?? findModel(catalog, m, m.name)?.contextWindow ?? undefined, vision: m.vision, pdf: m.pdf });
   }
   if (!apiKey) {
     throw new GarnetError('config', `No API key found. Set the ${keyEnv} environment variable or store it with \`garnet secrets set ${keyEnv}\`, or run with --fake.`);

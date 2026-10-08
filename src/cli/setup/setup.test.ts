@@ -14,6 +14,7 @@ import type { Io } from '../main.ts';
 import { init, setup } from './command.ts';
 import { AnswerPrompter, TerminalPrompter, makeStyle, stripKeySequences, type Answer, type MultiSelectAsk } from './prompt.ts';
 import { runSetup, type Pairing, type SetupDeps } from './wizard.ts';
+import { OPENROUTER_MODELS_URL } from '../../catalog/index.ts';
 import { checkDiscord, checkModel, checkSignal, checkTelegram } from './checks.ts';
 
 const kdf = { N: 2 ** 10, r: 8, p: 1 };
@@ -22,13 +23,14 @@ const TG = '123456789:AAThisIsNotARealTelegramToken_xyz';
 
 type Call = { url: string; headers: Record<string, string> };
 
-function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((url: string) => { status: number; body: unknown })[]; installed?: boolean; pending?: Pairing[]; sources?: SetupDeps['importSources'] } = {}) {
+function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((url: string) => { status: number; body: unknown })[]; installed?: boolean; catalog?: unknown; pending?: Pairing[]; sources?: SetupDeps['importSources'] } = {}) {
   const home = opts.home ?? tempDir();
   const keyDir = tempDir();
   const env: NodeJS.ProcessEnv = opts.env ?? {};
   let out = '';
   const io: Io = { out: (t) => (out += t), err: (t) => (out += t) };
   const calls: Call[] = [];
+  const catalogCalls: string[] = [];
   const responses = [...(opts.responses ?? [])];
   const svc = { installs: 0, restarts: 0, installed: opts.installed ?? false };
   const ok = (cmd: string[]): ServiceResult => ({ ok: true, files: [], commands: [{ cmd, code: 0, stdout: '', stderr: '' }], notes: [] });
@@ -44,6 +46,10 @@ function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((u
     now: () => new Date('2026-10-06T12:00:00Z'),
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
+      if (url === OPENROUTER_MODELS_URL) {
+        catalogCalls.push(url);
+        return new Response(JSON.stringify(opts.catalog ?? { data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       calls.push({ url, headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)) });
       const r = (responses.shift() ?? (() => ({ status: 200, body: { data: [] } })))(url);
       return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
@@ -80,7 +86,7 @@ function harness(opts: { home?: string; env?: NodeJS.ProcessEnv; responses?: ((u
     const p = new AnswerPrompter(answers, { interactive, secrets });
     return { p, done: runSetup(p, io, deps) };
   };
-  return { home, env, deps, io, run, calls, svc, imports, approved, out: () => out, config: () => parseConfig(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))) };
+  return { home, env, deps, io, run, calls, catalogCalls, svc, imports, approved, out: () => out, config: () => parseConfig(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))) };
 }
 
 test('first run: Anthropic key goes into a new encrypted store, checked live with consent, never printed or put in config', async () => {
@@ -414,12 +420,12 @@ test('non-interactive: the service is only touched with --service (install, or r
   assert.equal(fresh.svc.installs, 1);
 });
 
-test('gemini: its own key name, the table default model, a models check on the compatibility endpoint', async () => {
-  const h = harness({ responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-2.5-flash' }] } })] });
+test('gemini: its own key name, the default model, a models check on the compatibility endpoint', async () => {
+  const h = harness({ responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-3.8-flash' }] } })] });
   assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: true, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
   const c = h.config();
   assert.equal(c.model.provider, 'gemini');
-  assert.equal(c.model.name, 'gemini-2.5-flash');
+  assert.equal(c.model.name, 'gemini-3.8-flash');
   assert.equal(c.model.apiKeyEnv, 'GEMINI_API_KEY');
   assert.equal(h.calls[0]!.url, 'https://generativelanguage.googleapis.com/v1beta/openai/models');
   assert.match(h.out(), /✓ server answered/);
@@ -976,4 +982,37 @@ test('re-running setup on a named provider that never set apiKeyEnv keeps the ke
   const again = harness({ home });
   assert.equal(await again.run({ section: ['model', 'done'], provider: 'openai-compatible', model: 'm1', 'base-url': 'https://a.example/v1', 'provider-name': 'legacy' }).done, 0);
   assert.equal(again.config().providers.legacy!.apiKeyEnv, 'ANTHROPIC_API_KEY');
+});
+
+const OR_FIXTURE = {
+  data: Array.from({ length: 25 }, (_, i) => ({
+    id: i === 0 ? 'google/gemini-3.8-flash' : `vendor/model-${i}`,
+    created: 1_790_000_000 + i,
+    context_length: 1_048_576,
+    architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] },
+    top_provider: { max_completion_tokens: 65_536 },
+    pricing: { prompt: '0.00000075', completion: '0.00000375', input_cache_read: '0.000000075' },
+  })),
+};
+
+test('model step: a checked setup refreshes prices and shows the price of the chosen model', async () => {
+  const h = harness({ catalog: OR_FIXTURE, responses: [() => ({ status: 200, body: { data: [{ id: 'models/gemini-3.8-flash' }] } })] });
+  assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: true, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  assert.equal(h.catalogCalls.length, 1);
+  assert.match(h.out(), /gemini-3\.8-flash: \$0\.75 in \/ \$3\.75 out per million tokens \(fetched just now\)/);
+  assert.equal(existsSync(join(h.home, 'cache', 'models.json')), true, 'the refreshed catalog is cached');
+});
+
+test('model step: without consent nothing is fetched and the bundled prices are labelled as such', async () => {
+  const h = harness({ responses: [] });
+  assert.equal(await h.run({ provider: 'gemini', secrets: 'env-file', check: false, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  assert.equal(h.catalogCalls.length, 0);
+  assert.equal(h.calls.length, 0);
+  assert.match(h.out(), /gemini-3\.8-flash: \$[\d.]+ in \/ \$[\d.]+ out per million tokens \(snapshot of \d{4}-\d\d-\d\d\)/);
+});
+
+test('model step: a model the catalog does not know says so instead of showing nothing', async () => {
+  const h = harness();
+  assert.equal(await h.run({ provider: 'gemini', model: 'gemini-9-future', secrets: 'env-file', check: false, telegram: false, discord: false, signal: false }, { key: KEY }).done, 0);
+  assert.match(h.out(), /gemini-9-future: price unknown \(not in the model catalog\).*cost will show "\?"/);
 });

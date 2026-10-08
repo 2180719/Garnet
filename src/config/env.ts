@@ -147,7 +147,7 @@ export function secretNames(config: GarnetConfig): string[] {
   const sshPassphrase = config.sandbox.backend === 'ssh' ? config.sandbox.ssh.passphraseEnv : undefined;
   // Connectors that are on anywhere (globally or in a scope) need their credentials.
   const on = new Set(enabledAnywhere(config.connectors));
-  const connectors = [...(on.has('github') ? [config.connectors.github.tokenEnv] : []), ...(on.has('calendar') ? [config.connectors.calendar.urlEnv] : [])];
+  const connectors = [...(on.has('github') ? [config.connectors.github.tokenEnv] : []), ...(on.has('calendar') ? [config.connectors.calendar.urlEnv] : []), ...(on.has('http') ? Object.values(config.connectors.http.credentials).map((c) => c.secretEnv) : [])];
   return [
     ...new Set([
       ...listProviders(config).filter((p) => p.model.provider !== 'fake').map((p) => keyEnvOf(p.model)),
